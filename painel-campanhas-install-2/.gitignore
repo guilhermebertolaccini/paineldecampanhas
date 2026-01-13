@@ -1,0 +1,25 @@
+# Node modules
+node_modules/
+react/node_modules/
+
+# Build artifacts
+react/dist/
+*.zip
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+
+# Logs
+*.log
+npm-debug.log*
+debug.log
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db

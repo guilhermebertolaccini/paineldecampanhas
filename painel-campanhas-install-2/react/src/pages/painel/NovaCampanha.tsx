@@ -1,0 +1,915 @@
+import { useState, useEffect, useMemo } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
+import { Database, Filter, MessageSquare, Truck, Send, Loader2, AlertCircle } from "lucide-react";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "@/hooks/use-toast";
+import {
+  getAvailableBases,
+  getFilters,
+  getCount,
+  getMessages,
+  getTemplateContent,
+  scheduleCampaign,
+  getCarteiras,
+  getBasesCarteira,
+  checkBaseUpdate,
+  getOtimaTemplates,
+} from "@/lib/api";
+
+const providers = [
+  { id: "OTIMA_RCS", name: "Ótima RCS", available: true },
+  { id: "OTIMA_WPP", name: "Ótima WPP", available: true },
+  { id: "CDA_RCS", name: "CDA RCS", available: true },
+  { id: "CDA", name: "CDA", available: true },
+  { id: "GOSAC", name: "GOSAC", available: true },
+  { id: "NOAH", name: "NOAH", available: true },
+  { id: "RCS", name: "RCS", available: true },
+  { id: "SALESFORCE", name: "Salesforce", available: true },
+];
+
+export default function NovaCampanha() {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const [step, setStep] = useState(1);
+  const [selectedFilters, setSelectedFilters] = useState<Record<string, any>>({});
+  const [baseUpdateStatus, setBaseUpdateStatus] = useState<{
+    isUpdated: boolean;
+    message: string;
+  } | null>(null);
+  const [formData, setFormData] = useState({
+    name: "",
+    carteira: "",
+    base: "",
+    template: "",
+    templateCode: "",
+    templateSource: "",
+    message: "",
+    providers: [] as string[],
+    record_limit: 0,
+    exclude_recent_phones: true,
+    include_baits: false,
+  });
+
+  // Buscar carteiras
+  const { data: carteiras = [] } = useQuery({
+    queryKey: ['carteiras'],
+    queryFn: getCarteiras,
+  });
+
+  // Buscar bases da carteira selecionada
+  const { data: basesCarteira = [], isLoading: basesCarteiraLoading } = useQuery({
+    queryKey: ['bases-carteira', formData.carteira],
+    queryFn: async () => {
+      console.log('🔵 [NovaCampanha] Buscando bases da carteira:', formData.carteira);
+      const result = await getBasesCarteira(formData.carteira);
+      console.log('🔵 [NovaCampanha] Bases da carteira retornadas:', result);
+      return Array.isArray(result) ? result : [];
+    },
+    enabled: !!formData.carteira,
+  });
+
+  // Buscar todas as bases disponíveis (fallback se não houver carteira)
+  const { data: allBases = [], isLoading: basesLoading } = useQuery({
+    queryKey: ['available-bases'],
+    queryFn: async () => {
+      const result = await getAvailableBases();
+      console.log('🔵 [NovaCampanha] Todas as bases disponíveis:', result);
+      return Array.isArray(result) ? result : [];
+    },
+  });
+
+  // Bases filtradas por carteira
+  const bases = useMemo(() => {
+    if (!formData.carteira) {
+      return [];
+    }
+
+    if (!Array.isArray(basesCarteira) || basesCarteira.length === 0) {
+      console.log('⚠️ [NovaCampanha] Nenhuma base vinculada encontrada para carteira:', formData.carteira);
+      return [];
+    }
+
+    if (!Array.isArray(allBases) || allBases.length === 0) {
+      console.log('⚠️ [NovaCampanha] Nenhuma base disponível encontrada');
+      return [];
+    }
+
+    // Backend agora retorna array simples de strings: ['base1', 'base2', ...]
+    // Normaliza para lowercase para comparação case-insensitive
+    const nomesVinculados = basesCarteira
+      .filter((b): b is string => typeof b === 'string')
+      .map(b => b.trim().toLowerCase());
+
+    console.log('🟢 [NovaCampanha] Bases vinculadas (normalizado):', nomesVinculados);
+    console.log('🟢 [NovaCampanha] Total de bases disponíveis:', allBases.length);
+
+    // Filtra bases disponíveis usando MATCH EXATO (case-insensitive)
+    const basesFiltradas = allBases.filter((base: any) => {
+      const baseName = String(base?.name || base?.id || '').trim().toLowerCase();
+      return nomesVinculados.includes(baseName);
+    });
+
+    console.log('🟢 [NovaCampanha] Bases filtradas:', basesFiltradas.map((b: any) => b?.name || b?.id));
+    console.log('🟢 [NovaCampanha] Total após filtro:', basesFiltradas.length);
+
+    return basesFiltradas;
+  }, [formData.carteira, basesCarteira, allBases]);
+
+  // Buscar templates de mensagem locais
+  const { data: localTemplatesData = [], isLoading: localTemplatesLoading } = useQuery({
+    queryKey: ['messages'],
+    queryFn: getMessages,
+  });
+
+  // Buscar templates da Ótima (RCS e WhatsApp)
+  const { data: otimaTemplatesData = [], isLoading: otimaTemplatesLoading } = useQuery({
+    queryKey: ['otima-templates'],
+    queryFn: getOtimaTemplates,
+  });
+
+  // Processar e mesclar templates
+  const templates = useMemo(() => {
+    // Templates Locais
+    const local = (localTemplatesData || []).map((t: any) => ({
+      id: String(t.id),
+      name: t.title || '',
+      source: t.source || 'local',
+      templateCode: t.template_code || t.template_id || '',
+      walletId: null,
+      walletName: null,
+      imageUrl: null,
+    }));
+
+    // Templates Ótima (já vem com wallet_id do backend)
+    const otima = Array.isArray(otimaTemplatesData) ? otimaTemplatesData.map((t: any) => ({
+      id: `otima_${t.template_code}_${t.wallet_id}`,
+      name: t.name || t.template_code || '',
+      source: t.source || 'otima', // 'otima_rcs' ou 'otima_wpp'
+      templateCode: t.template_code || '',
+      walletId: t.wallet_id,
+      walletName: t.wallet_name,
+      imageUrl: t.image_url,
+    })) : [];
+
+    console.log('📋 [NovaCampanha] Templates locais:', local.length);
+    console.log('📋 [NovaCampanha] Templates Ótima:', otima.length);
+
+    // Se tiver carteira selecionada, filtra os templates Ótima pelo Código da Carteira (id_carteira)
+    if (formData.carteira) {
+      const selectedWallet = carteiras.find((c: any) => String(c.id) === String(formData.carteira));
+      const walletCode = selectedWallet?.id_carteira ? String(selectedWallet.id_carteira) : null;
+
+      console.log('🔍 [NovaCampanha] Filtrando templates para Código da Carteira:', walletCode);
+
+      if (!walletCode) {
+        return local;
+      }
+
+      const otimaFiltrados = otima.filter(t => String(t.walletId) === walletCode);
+      console.log('📋 [NovaCampanha] Templates Ótima filtrados:', otimaFiltrados.length);
+
+      return [...local, ...otimaFiltrados];
+    }
+
+    // Se nenhuma carteira selecionada, mostra apenas locais
+    return local;
+  }, [localTemplatesData, otimaTemplatesData, formData.carteira]);
+
+  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading;
+
+  // Buscar filtros quando base for selecionada
+  const { data: availableFilters = [], isLoading: filtersLoading } = useQuery({
+    queryKey: ['filters', formData.base],
+    queryFn: async () => {
+      try {
+        const result = await getFilters(formData.base);
+        console.log('🔍 [Filtros] Resultado da API:', result, 'Tipo:', typeof result, 'É array?', Array.isArray(result));
+
+        // Garante que sempre retorna um array
+        if (!result) {
+          console.log('⚠️ [Filtros] Resultado null/undefined, retornando array vazio');
+          return [];
+        }
+
+        if (!Array.isArray(result)) {
+          console.log('⚠️ [Filtros] Resultado não é array, retornando array vazio. Valor:', result);
+          return [];
+        }
+
+        return result;
+      } catch (error: any) {
+        console.error('🔴 [NovaCampanha] Erro ao buscar filtros:', error);
+        // Retorna array vazio em caso de erro para não quebrar a UI
+        return [];
+      }
+    },
+    enabled: !!formData.base && step >= 2,
+    retry: 1, // Tenta apenas 1 vez em caso de erro
+    retryDelay: 1000,
+  });
+
+  // Calcular contagem quando filtros mudarem
+  const { data: recordCount = 0, isLoading: countLoading } = useQuery({
+    queryKey: ['count', formData.base, selectedFilters],
+    queryFn: async () => {
+      try {
+        return await getCount({
+          table_name: formData.base,
+          filters: Object.entries(selectedFilters)
+            .filter(([_, value]) => value && value !== '' && value !== 'all')
+            .map(([key, value]) => ({ column: key, value })),
+        });
+      } catch (error: any) {
+        console.error('🔴 [NovaCampanha] Erro ao calcular contagem:', error);
+        // Retorna 0 em caso de erro
+        return 0;
+      }
+    },
+    enabled: !!formData.base && step >= 2,
+    retry: 1,
+    retryDelay: 1000,
+  });
+
+  // Buscar conteúdo do template quando selecionado
+  const { data: templateContent, refetch: refetchTemplate } = useQuery({
+    queryKey: ['template-content', formData.template],
+    queryFn: () => {
+      console.log('🔍 [useQuery template-content] formData.template:', formData.template);
+      if (!formData.template || formData.template === '' || formData.template === '0') {
+        console.error('⚠️ [useQuery template-content] ID do template vazio, não buscando');
+        return Promise.reject(new Error('ID do template vazio'));
+      }
+      return getTemplateContent(formData.template);
+    },
+    enabled: !!formData.template && formData.template !== '' && formData.template !== '0' && step >= 3,
+    retry: false, // Não tenta novamente em caso de erro
+  });
+
+  // Verificar atualização da base quando selecionada
+  const { data: baseUpdateData } = useQuery({
+    queryKey: ['base-update', formData.base],
+    queryFn: () => checkBaseUpdate(formData.base),
+    enabled: !!formData.base,
+  });
+
+  // Atualiza baseUpdateStatus quando os dados mudarem
+  useEffect(() => {
+    console.log('🔍 [useEffect baseUpdateData] Dados recebidos:', baseUpdateData);
+    if (baseUpdateData) {
+      const newStatus = {
+        isUpdated: baseUpdateData.is_updated,
+        message: baseUpdateData.message || '',
+      };
+      console.log('✅ [useEffect baseUpdateData] Setando baseUpdateStatus:', newStatus);
+      setBaseUpdateStatus(newStatus);
+    } else {
+      console.log('⚠️ [useEffect baseUpdateData] Dados ainda não disponíveis');
+    }
+  }, [baseUpdateData]);
+
+  // Atualizar mensagem quando template mudar
+  useEffect(() => {
+    if (formData.template && step === 3 && templateContent?.content) {
+      console.log('🔄 [useEffect template] Atualizando mensagem com:', templateContent.content.substring(0, 50));
+      // Template local, atualiza apenas a mensagem
+      setFormData(prev => {
+        // Evita loop: só atualiza se a mensagem realmente mudou
+        if (prev.message !== templateContent.content) {
+          console.log('✅ [useEffect template] Mensagem atualizada');
+          return { ...prev, message: templateContent.content };
+        }
+        console.log('⏭️ [useEffect template] Mensagem já está atualizada, pulando');
+        return prev;
+      });
+    }
+  }, [templateContent?.content, step]);
+
+  const scheduleMutation = useMutation({
+    mutationFn: (data: any) => scheduleCampaign(data),
+    onSuccess: () => {
+      toast({
+        title: "Campanha criada com sucesso!",
+        description: "Sua campanha foi enviada para aprovação.",
+      });
+      navigate("/painel/campanhas");
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Erro ao criar campanha",
+        description: error.message || "Erro ao criar campanha",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleProviderToggle = (providerId: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      providers: prev.providers.includes(providerId)
+        ? prev.providers.filter((p) => p !== providerId)
+        : [...prev.providers, providerId],
+    }));
+  };
+
+  const handleFilterChange = (column: string, value: any) => {
+    setSelectedFilters(prev => ({ ...prev, [column]: value }));
+  };
+
+  const handleSubmit = async () => {
+    if (!formData.name.trim()) {
+      toast({
+        title: "Nome obrigatório",
+        description: "Por favor, informe o nome da campanha",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!formData.base) {
+      toast({
+        title: "Base obrigatória",
+        description: "Por favor, selecione uma base de dados",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!formData.template) {
+      toast({
+        title: "Template obrigatório",
+        description: "Por favor, selecione um template de mensagem",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (formData.providers.length === 0) {
+      toast({
+        title: "Fornecedor obrigatório",
+        description: "Por favor, selecione pelo menos um fornecedor",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Prepara providers_config (distribuição igual se não especificado)
+    const providersConfig: Record<string, number> = {};
+    const percentPerProvider = 100 / formData.providers.length;
+    formData.providers.forEach(provider => {
+      providersConfig[provider] = percentPerProvider;
+    });
+
+    const campaignData = {
+      table_name: formData.base,
+      filters: Object.entries(selectedFilters)
+        .filter(([_, value]) => value && value !== '' && value !== 'all')
+        .map(([key, value]) => ({ column: key, value })),
+      providers_config: providersConfig,
+      template_id: formData.templateSource === 'local' ? parseInt(formData.template) : null,
+      template_code: formData.templateCode || null,
+      template_source: formData.templateSource || 'local',
+      record_limit: formData.record_limit || 0,
+      exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
+      include_baits: formData.include_baits ? 1 : 0,
+    };
+
+    scheduleMutation.mutate(campaignData);
+  };
+
+  const canGoNext = () => {
+    switch (step) {
+      case 1:
+        // Verifica se nome e base estão preenchidos E se a base está atualizada
+        const hasRequiredFields = formData.name.trim() && formData.carteira && formData.base;
+        const isBaseUpdated = !baseUpdateStatus || baseUpdateStatus.isUpdated;
+
+        // Debug logs
+        console.log('🔍 [canGoNext] Verificando condições:', {
+          step,
+          formDataName: formData.name,
+          formDataCarteira: formData.carteira,
+          formDataBase: formData.base,
+          hasRequiredFields,
+          baseUpdateStatus,
+          isBaseUpdated,
+          canProceed: hasRequiredFields && isBaseUpdated
+        });
+
+        return hasRequiredFields && isBaseUpdated;
+      case 2:
+        return true; // Filtros são opcionais
+      case 3:
+        return formData.template && formData.message.trim();
+      case 4:
+        return formData.providers.length > 0;
+      default:
+        return false;
+    }
+  };
+
+  // Renderizar filtros dinâmicos
+  const renderDynamicFilters = () => {
+    console.log('🎨 [renderDynamicFilters] availableFilters:', availableFilters);
+
+    if (filtersLoading) {
+      return (
+        <div className="space-y-4">
+          <Skeleton className="h-12 w-full" />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Skeleton className="h-20" />
+            <Skeleton className="h-20" />
+            <Skeleton className="h-20" />
+            <Skeleton className="h-20" />
+          </div>
+        </div>
+      );
+    }
+
+    if (!availableFilters || availableFilters.length === 0) {
+      return (
+        <Alert className="border-blue-200 bg-blue-50">
+          <AlertCircle className="h-4 w-4 text-blue-600" />
+          <AlertDescription className="text-blue-900">
+            Nenhum filtro disponível para esta base. Os filtros são opcionais, você pode continuar sem filtrar.
+          </AlertDescription>
+        </Alert>
+      );
+    }
+
+    return (
+      <div className="space-y-6">
+        {/* Header com contador */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">
+              Filtros Disponíveis
+            </h3>
+            <p className="text-sm text-gray-500">
+              {availableFilters.length} {availableFilters.length === 1 ? 'filtro disponível' : 'filtros disponíveis'} • Opcional
+            </p>
+          </div>
+        </div>
+
+        {/* Grid de filtros */}
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {availableFilters.map((filter: any, filterIdx: number) => {
+            const filterKey = filter.column || filter.name || filter;
+            const filterValue = selectedFilters[filterKey] || '';
+            const hasValue = filterValue && filterValue !== '' && filterValue !== 'all';
+
+            if (filter.type === 'select' || filter.options) {
+              const options = filter.options || [];
+              return (
+                <div key={`filter-${filterKey}-${filterIdx}`} className="space-y-2">
+                  <Label className="flex items-center gap-2">
+                    {filter.label || filterKey}
+                    {hasValue && (
+                      <Badge variant="secondary" className="text-xs">
+                        Filtrado
+                      </Badge>
+                    )}
+                  </Label>
+                  <Select
+                    value={filterValue || 'all'}
+                    onValueChange={(v) => handleFilterChange(filterKey, v === 'all' ? '' : v)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={`Todos`} />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-[300px]">
+                      <SelectItem value="all">Todos ({options.length} opções)</SelectItem>
+                      {options.map((opt: any, idx: number) => (
+                        <SelectItem key={`${filterKey}-${idx}`} value={String(opt)}>
+                          {String(opt)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              );
+            }
+
+            // Filtros numéricos
+            return (
+              <div key={`filter-${filterKey}-${filterIdx}`} className="space-y-2">
+                <Label className="flex items-center gap-2">
+                  {filter.label || filterKey}
+                  {hasValue && (
+                    <Badge variant="secondary" className="text-xs">
+                      Filtrado
+                    </Badge>
+                  )}
+                </Label>
+                <Input
+                  type="number"
+                  placeholder={`Ex: 1000`}
+                  value={filterValue}
+                  onChange={(e) => handleFilterChange(filterKey, e.target.value)}
+                />
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Botão limpar filtros */}
+        {Object.keys(selectedFilters).length > 0 && (
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setSelectedFilters({})}
+            >
+              Limpar todos os filtros
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Nova Campanha"
+        description="Crie uma nova campanha usando bases de dados"
+      />
+
+      {/* Progress Steps */}
+      <div className="flex items-center justify-center gap-2">
+        {[1, 2, 3, 4].map((s) => (
+          <div key={s} className="flex items-center">
+            <div
+              className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold transition-all ${s === step
+                ? "gradient-primary text-primary-foreground shadow-glow"
+                : s < step
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-muted-foreground"
+                }`}
+            >
+              {s}
+            </div>
+            {s < 4 && (
+              <div
+                className={`h-1 w-12 sm:w-20 mx-2 rounded-full ${s < step ? "bg-primary" : "bg-muted"
+                  }`}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Step Content */}
+      <Card className="animate-scale-in">
+        {step === 1 && (
+          <>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Database className="h-5 w-5 text-primary" />
+                Selecionar Base de Dados
+              </CardTitle>
+              <CardDescription>Escolha a base de dados para sua campanha</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="name">Nome da Campanha *</Label>
+                <Input
+                  id="name"
+                  placeholder="Ex: Black Friday 2024"
+                  value={formData.name}
+                  onChange={(e) => {
+                    console.log('📝 [Input Nome] Valor digitado:', e.target.value);
+                    setFormData({ ...formData, name: e.target.value });
+                  }}
+                />
+              </div>
+
+              {/* Seleção de Carteira */}
+              <div className="space-y-2">
+                <Label>Carteira *</Label>
+                <Select
+                  value={formData.carteira || undefined}
+                  onValueChange={(value) => {
+                    setFormData({ ...formData, carteira: value, base: "" });
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione uma carteira para filtrar as bases" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {carteiras.map((carteira: any) => (
+                      <SelectItem key={carteira.id} value={carteira.id}>
+                        {carteira.nome}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {formData.carteira && (
+                  <p className="text-xs text-muted-foreground">
+                    Mostrando apenas bases vinculadas a esta carteira
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label>Base de Dados</Label>
+                {!formData.carteira ? (
+                  <div className="rounded-xl border-2 border-dashed border-border p-8 text-center">
+                    <p className="text-sm text-muted-foreground">
+                      Selecione uma carteira para listar as bases disponíveis
+                    </p>
+                  </div>
+                ) : (basesLoading || basesCarteiraLoading) ? (
+                  <Skeleton className="h-48" />
+                ) : bases.length === 0 ? (
+                  <div className="rounded-xl border-2 border-dashed border-border p-8 text-center">
+                    <p className="text-sm text-muted-foreground">
+                      {formData.carteira
+                        ? "Nenhuma base vinculada a esta carteira. Vá em Configurações para vincular bases à carteira."
+                        : "Nenhuma base disponível"}
+                    </p>
+                    {formData.carteira && (
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Debug: Carteira ID {formData.carteira} | Bases vinculadas: {basesCarteira?.length || 0} | Bases disponíveis: {allBases?.length || 0}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {bases.map((base: any) => (
+                      <button
+                        key={base.id}
+                        type="button"
+                        onClick={() => {
+                          console.log('🔵 [NovaCampanha] Base selecionada:', base.id, base.name);
+                          setFormData({ ...formData, base: base.id });
+                        }}
+                        className={`rounded-xl border-2 p-4 text-left transition-all hover:border-primary/50 w-full ${formData.base === base.id
+                          ? "border-primary bg-primary/5"
+                          : "border-border"
+                          }`}
+                      >
+                        <p
+                          className="font-semibold text-sm truncate w-full"
+                          title={base.name}
+                          style={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            maxWidth: '100%'
+                          }}
+                        >
+                          {base.name}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">{base.records} registros</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Alerta de base desatualizada */}
+              {formData.base && baseUpdateStatus && !baseUpdateStatus.isUpdated && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>
+                    <strong>Base desatualizada!</strong> Esta base não foi atualizada hoje.
+                    Não é possível criar campanhas com bases desatualizadas.
+                    {baseUpdateStatus.message && (
+                      <span className="block mt-1 text-xs">{baseUpdateStatus.message}</span>
+                    )}
+                  </AlertDescription>
+                </Alert>
+              )}
+            </CardContent>
+          </>
+        )}
+
+        {step === 2 && (
+          <>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Filter className="h-5 w-5 text-primary" />
+                Filtros Avançados
+              </CardTitle>
+              <CardDescription>Defina os filtros para segmentar sua base (opcional)</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {renderDynamicFilters()}
+              <div className="rounded-lg bg-muted/50 p-4">
+                <p className="text-sm text-muted-foreground">
+                  <span className="font-semibold text-foreground">Estimativa:</span>{" "}
+                  {countLoading ? (
+                    <Loader2 className="inline h-4 w-4 animate-spin" />
+                  ) : (
+                    `${recordCount.toLocaleString('pt-BR')} registros após filtros`
+                  )}
+                </p>
+              </div>
+            </CardContent>
+          </>
+        )}
+
+        {step === 3 && (
+          <>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <MessageSquare className="h-5 w-5 text-primary" />
+                Mensagem
+              </CardTitle>
+              <CardDescription>Selecione ou crie a mensagem da campanha</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label>Template</Label>
+                {templatesLoading ? (
+                  <Skeleton className="h-10" />
+                ) : (
+                  <Select
+                    value={formData.template}
+                    onValueChange={(v) => {
+                      console.log('📝 [Template Select] Valor selecionado:', v, 'Tipo:', typeof v);
+
+                      const selectedTemplate = templates.find(t => t.id === v);
+                      console.log('📝 [Template Select] Template encontrado:', selectedTemplate);
+
+                      setFormData({
+                        ...formData,
+                        template: v,
+                        templateCode: selectedTemplate?.templateCode || '',
+                        templateSource: selectedTemplate?.source || ''
+                      });
+
+                      // Só busca conteúdo se for template local
+                      if (selectedTemplate?.source === 'local') {
+                        console.log('✅ [Template Select] Template local, buscando conteúdo...');
+                        refetchTemplate();
+                      } else {
+                        console.log('ℹ️ [Template Select] Template externo, não busca conteúdo');
+                      }
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione um template" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {templates.map((t, idx) => (
+                        <SelectItem key={`template-${t.id || idx}`} value={t.id}>
+                          <div className="flex items-center gap-2">
+                            <span>{t.name}</span>
+                            {t.source === 'otima_wpp' && (
+                              <Badge variant="outline" className="text-xs">Ótima WPP</Badge>
+                            )}
+                            {t.source === 'otima_rcs' && (
+                              <Badge variant="outline" className="text-xs">Ótima RCS</Badge>
+                            )}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label>Pré-visualização do Template</Label>
+                <div className="rounded-md border bg-gray-50 p-4 min-h-[120px]">
+                  {formData.message ? (
+                    <p className="text-sm whitespace-pre-wrap text-gray-700">
+                      {formData.message}
+                    </p>
+                  ) : (
+                    <p className="text-sm text-gray-400 italic">
+                      Selecione um template acima para ver a pré-visualização
+                    </p>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  O template selecionado será enviado para os destinatários. Variáveis como {"{nome}"}, {"{cpf}"} serão substituídas automaticamente.
+                </p>
+              </div>
+            </CardContent>
+          </>
+        )}
+
+        {step === 4 && (
+          <>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Truck className="h-5 w-5 text-primary" />
+                Fornecedores
+              </CardTitle>
+              <CardDescription>Selecione os fornecedores para distribuição</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                {providers.map((provider, idx) => (
+                  <label
+                    key={`provider-${provider.id || idx}`}
+                    className={`flex items-center gap-3 rounded-xl border-2 p-4 cursor-pointer transition-all ${formData.providers.includes(provider.id)
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/30"
+                      } ${!provider.available && "opacity-50 cursor-not-allowed"}`}
+                  >
+                    <Checkbox
+                      checked={formData.providers.includes(provider.id)}
+                      onCheckedChange={() => provider.available && handleProviderToggle(provider.id)}
+                      disabled={!provider.available}
+                    />
+                    <div>
+                      <p className="font-semibold">{provider.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {provider.available ? "Disponível" : "Indisponível"}
+                      </p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+              <div className="rounded-lg bg-muted/50 p-4">
+                <p className="text-sm text-muted-foreground">
+                  <span className="font-semibold text-foreground">Distribuição:</span>{" "}
+                  {formData.providers.length > 0
+                    ? `Igual entre ${formData.providers.length} fornecedor(es) selecionado(s)`
+                    : "Selecione pelo menos um fornecedor"}
+                </p>
+              </div>
+
+              {/* Opção para incluir iscas */}
+              <div className="rounded-lg border-2 border-dashed border-border p-4 space-y-3">
+                <div className="flex items-center gap-3">
+                  <Checkbox
+                    id="include-baits"
+                    checked={formData.include_baits}
+                    onCheckedChange={(checked) => setFormData({ ...formData, include_baits: !!checked })}
+                  />
+                  <div className="flex-1">
+                    <label htmlFor="include-baits" className="font-semibold cursor-pointer">
+                      Incluir iscas de teste
+                    </label>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Adiciona automaticamente todos os números cadastrados como iscas nesta campanha
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </>
+        )}
+
+        {/* Navigation */}
+        <CardContent className="flex justify-between border-t pt-6">
+          <Button
+            variant="outline"
+            onClick={() => setStep(Math.max(1, step - 1))}
+            disabled={step === 1 || scheduleMutation.isPending}
+          >
+            Voltar
+          </Button>
+          {step < 4 ? (
+            <Button
+              onClick={() => setStep(step + 1)}
+              disabled={!canGoNext()}
+              className="gradient-primary hover:opacity-90"
+            >
+              Próximo
+            </Button>
+          ) : (
+            <Button
+              onClick={handleSubmit}
+              disabled={scheduleMutation.isPending || !canGoNext()}
+              className="gradient-primary hover:opacity-90"
+            >
+              {scheduleMutation.isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Criando...
+                </>
+              ) : (
+                <>
+                  <Send className="mr-2 h-4 w-4" />
+                  Criar Campanha
+                </>
+              )}
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

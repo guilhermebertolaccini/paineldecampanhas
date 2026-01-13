@@ -1,0 +1,62 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Campaign {
+  id                String   @id @default(uuid())
+  agendamentoId     String   @unique
+  provider          String
+  status            CampaignStatus @default(PENDING)
+  totalMessages     Int
+  sentMessages      Int      @default(0)
+  failedMessages    Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  startedAt         DateTime?
+  completedAt       DateTime?
+  errorMessage      String?
+  messages          CampaignMessage[]
+  
+  @@index([agendamentoId])
+  @@index([status])
+  @@index([provider])
+  @@map("campaigns")
+}
+
+model CampaignMessage {
+  id                String   @id @default(uuid())
+  campaignId        String
+  campaign          Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  phone             String
+  name              String?
+  status            MessageStatus @default(PENDING)
+  attempts          Int      @default(0)
+  lastError         String?
+  sentAt            DateTime?
+  createdAt         DateTime @default(now())
+  
+  @@index([campaignId])
+  @@index([status])
+  @@map("campaign_messages")
+}
+
+enum CampaignStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  FAILED
+  RETRYING
+}
+

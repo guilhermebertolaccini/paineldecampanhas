@@ -1,0 +1,87 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: midpainel-app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      # Database
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: ${DATABASE_USER}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      DATABASE_NAME: ${DATABASE_NAME}
+      
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      
+      # Node Environment
+      NODE_ENV: ${NODE_ENV:-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - midpainel-network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: midpainel-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    environment:
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - midpainel-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: midpainel-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    command: >
+      sh -c "if [ -n \"${REDIS_PASSWORD}\" ]; then
+        redis-server --requirepass \"${REDIS_PASSWORD}\";
+      else
+        redis-server;
+      fi"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: >
+        sh -c "if [ -n \"${REDIS_PASSWORD}\" ]; then
+          redis-cli -a ${REDIS_PASSWORD} ping;
+        else
+          redis-cli ping;
+        fi"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - midpainel-network
+
+volumes:
+  postgres-data:
+  redis-data:
+
+networks:
+  midpainel-network:
+    driver: bridge
