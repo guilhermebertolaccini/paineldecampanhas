@@ -2486,6 +2486,10 @@ class Painel_Campanhas
             $provider = $provider_data['provider'];
             $provider_records = $provider_data['records'];
             $prefix = strtoupper(substr($provider, 0, 1));
+            // CORREÇÃO: WhatsApp da Ótima precisa do prefixo W, mas começa com O (OTIMA_WPP)
+            if ($provider === 'OTIMA_WPP') {
+                $prefix = 'W';
+            }
             $agendamento_id = $prefix . $agendamento_base_id;
 
             foreach ($provider_records as $record) {

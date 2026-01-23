@@ -166,6 +166,7 @@ export default function NovaCampanha() {
       walletId: t.wallet_id,
       walletName: t.wallet_name,
       imageUrl: t.image_url,
+      content: t.content || '',
     })) : [];
 
     console.log('📋 [NovaCampanha] Templates locais:', local.length);
@@ -739,53 +740,51 @@ export default function NovaCampanha() {
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label>Template</Label>
-                {templatesLoading ? (
-                  <Skeleton className="h-10" />
-                ) : (
-                  <Select
-                    value={formData.template}
-                    onValueChange={(v) => {
-                      console.log('📝 [Template Select] Valor selecionado:', v, 'Tipo:', typeof v);
+                <Select
+                  disabled={templatesLoading}
+                  value={formData.template}
+                  onValueChange={(v) => {
+                    console.log('📝 [Template Select] Valor selecionado:', v, 'Tipo:', typeof v);
 
-                      const selectedTemplate = templates.find(t => t.id === v);
-                      console.log('📝 [Template Select] Template encontrado:', selectedTemplate);
+                    const selectedTemplate = templates.find(t => t.id === v);
+                    console.log('📝 [Template Select] Template encontrado:', selectedTemplate);
 
-                      setFormData({
-                        ...formData,
-                        template: v,
-                        templateCode: selectedTemplate?.templateCode || '',
-                        templateSource: selectedTemplate?.source || ''
-                      });
+                    setFormData({
+                      ...formData,
+                      template: v,
+                      templateCode: selectedTemplate?.templateCode || '',
+                      templateSource: selectedTemplate?.source || ''
+                    });
 
-                      // Só busca conteúdo se for template local
-                      if (selectedTemplate?.source === 'local') {
-                        console.log('✅ [Template Select] Template local, buscando conteúdo...');
-                        refetchTemplate();
-                      } else {
-                        console.log('ℹ️ [Template Select] Template externo, não busca conteúdo');
-                      }
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecione um template" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {templates.map((t, idx) => (
-                        <SelectItem key={`template-${t.id || idx}`} value={t.id}>
-                          <div className="flex items-center gap-2">
-                            <span>{t.name}</span>
-                            {t.source === 'otima_wpp' && (
-                              <Badge variant="outline" className="text-xs">Ótima WPP</Badge>
-                            )}
-                            {t.source === 'otima_rcs' && (
-                              <Badge variant="outline" className="text-xs">Ótima RCS</Badge>
-                            )}
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
+                    // Só busca conteúdo se for template local
+                    if (selectedTemplate?.source === 'local') {
+                      console.log('✅ [Template Select] Template local, buscando conteúdo...');
+                      refetchTemplate();
+                    } else {
+                      console.log('ℹ️ [Template Select] Template externo, usando conteúdo pré-carregado');
+                      setFormData(prev => ({ ...prev, message: selectedTemplate?.content || '' }));
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={templatesLoading ? "Carregando templates..." : "Selecione um template"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {templates.map((t, idx) => (
+                      <SelectItem key={`template-${t.id || idx}`} value={t.id}>
+                        <div className="flex items-center gap-2">
+                          <span>{t.name}</span>
+                          {t.source === 'otima_wpp' && (
+                            <Badge variant="outline" className="text-xs">Ótima WPP</Badge>
+                          )}
+                          {t.source === 'otima_rcs' && (
+                            <Badge variant="outline" className="text-xs">Ótima RCS</Badge>
+                          )}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label>Pré-visualização do Template</Label>

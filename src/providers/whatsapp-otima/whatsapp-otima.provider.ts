@@ -53,6 +53,26 @@ export class WhatsappOtimaProvider extends BaseProvider {
     const customer_code = credentials.customer_code || '';
     const template_code = credentials.template_code || 'default'; // Pode ser configurado depois
 
+    // LOGICA DE EXTRAÇÃO DE TEMPLATE CORRIGIDA
+    let final_template_code = template_code;
+
+    // Tenta extrair template_code dos dados (prioridade sobre credenciais)
+    // O PHP salva como JSON: {"template_code":"...", "template_source":"otima_wpp", ...}
+    if (data.length > 0 && data[0].mensagem && typeof data[0].mensagem === 'string') {
+      try {
+        if (data[0].mensagem.trim().startsWith('{')) {
+          const parsed = JSON.parse(data[0].mensagem);
+          if (parsed.template_code) {
+            final_template_code = parsed.template_code;
+            this.logger.log(`📝 [WhatsApp Ótima] Usando template selecionado na campanha: ${final_template_code}`);
+          }
+        }
+      } catch (e) {
+        // Ignora erro de parse, usa valor default
+        this.logger.warn(`⚠️ [WhatsApp Ótima] Falha ao parsear mensagem JSON para extrair template: ${e.message}`);
+      }
+    }
+
     // Formata mensagens para o formato da API Ótima
     const messages: HsmMessage[] = data.map((item) => {
       const phone = this.normalizePhoneNumber(item.telefone);
@@ -89,11 +109,11 @@ export class WhatsappOtimaProvider extends BaseProvider {
       broker_code,
       customer_code,
       messages,
-      template_code,
+      template_code: final_template_code,
     };
 
     this.logger.log(`📦 [WhatsApp Ótima] Payload preparado com ${messages.length} mensagens`);
-    this.logger.log(`🏢 [WhatsApp Ótima] Broker: ${broker_code}, Customer: ${customer_code}, Template: ${template_code}`);
+    this.logger.log(`🏢 [WhatsApp Ótima] Broker: ${broker_code}, Customer: ${customer_code}, Template: ${final_template_code}`);
     this.logger.debug(`📋 [WhatsApp Ótima] Payload: ${JSON.stringify(payload, null, 2)}`);
 
     // Executa requisição com retry
