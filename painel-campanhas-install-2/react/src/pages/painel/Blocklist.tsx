@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Shield, Search, Filter } from "lucide-react";
+import { Plus, Trash2, Shield, Search, Filter, Upload } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,14 +50,18 @@ export default function Blocklist() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [tipoFilter, setTipoFilter] = useState<string>("all");
+  const [importFile, setImportFile] = useState<File | null>(null);
   const [formData, setFormData] = useState({
     tipo: "telefone" as "telefone" | "cpf",
     valor: "",
     motivo: "",
   });
+
+  const fileInputRef = useState<HTMLInputElement | null>(null);
 
   const { data: blocklist = [], isLoading } = useQuery({
     queryKey: ["blocklist", tipoFilter, searchTerm],
@@ -82,6 +86,51 @@ export default function Blocklist() {
       toast({
         title: "Erro ao adicionar",
         description: error.message || "Erro ao adicionar à blocklist",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const importMutation = useMutation({
+    mutationFn: (file: File) => {
+      const formData = new FormData();
+      formData.append("csv_file", file);
+      // wpAjax handles action and nonce automatically, but for FormData we might need to pass it differently 
+      // or rely on wpAjax to handle FormData detection.
+      // Assuming wpAjax can handle FormData or we modify how we call it.
+      // Actually wpAjax in api.ts sends JSON by default or URLSearchParams. 
+      // We need to check if wpAjax supports FormData. 
+      // Based on previous view of api.ts, it uses URLSearchParams.
+      // Use direct fetch or constructing the body with 'action' appended.
+
+      const data = new FormData();
+      data.append("action", "pc_import_blocklist_csv");
+      data.append("csv_file", file);
+      // @ts-ignore
+      data.append("nonce", (window as any).pcSettings?.nonce || "");
+
+      return fetch((window as any).pcSettings?.ajaxUrl || "/wp-admin/admin-ajax.php", {
+        method: "POST",
+        body: data,
+      }).then(async (res) => {
+        const json = await res.json();
+        if (!json.success) throw new Error(json.data?.message || "Erro desconhecido");
+        return json.data;
+      });
+    },
+    onSuccess: (data: any) => {
+      toast({
+        title: "Importação concluída!",
+        description: data.message
+      });
+      queryClient.invalidateQueries({ queryKey: ["blocklist"] });
+      setIsImportDialogOpen(false);
+      setImportFile(null);
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Erro na importação",
+        description: error.message || "Erro ao importar arquivo",
         variant: "destructive",
       });
     },
@@ -115,6 +164,18 @@ export default function Blocklist() {
     addMutation.mutate(formData);
   };
 
+  const handleImportSubmit = () => {
+    if (!importFile) {
+      toast({
+        title: "Arquivo obrigatório",
+        description: "Selecione um arquivo CSV para importar",
+        variant: "destructive",
+      });
+      return;
+    }
+    importMutation.mutate(importFile);
+  };
+
   const formatValue = (tipo: string, valor: string) => {
     if (tipo === "telefone") {
       const cleaned = valor.replace(/\D/g, "");
@@ -140,13 +201,22 @@ export default function Blocklist() {
         title="Blocklist"
         description="Gerencie telefones e CPFs bloqueados para envios"
       >
-        <Button
-          onClick={() => setIsDialogOpen(true)}
-          className="gradient-primary hover:opacity-90"
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          Adicionar
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setIsImportDialogOpen(true)}
+          >
+            <Upload className="mr-2 h-4 w-4" />
+            Importar CSV
+          </Button>
+          <Button
+            onClick={() => setIsDialogOpen(true)}
+            className="gradient-primary hover:opacity-90"
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            Adicionar
+          </Button>
+        </div>
       </PageHeader>
 
       <Card>
@@ -313,6 +383,51 @@ export default function Blocklist() {
               className="gradient-primary hover:opacity-90"
             >
               Adicionar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isImportDialogOpen} onOpenChange={setIsImportDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Importar CSV para Blocklist</DialogTitle>
+            <DialogDescription>
+              Selecione um arquivo CSV contendo telefones e/ou CPFs. O sistema tentará identificar automaticamente.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="grid w-full max-w-sm items-center gap-1.5">
+              <Label htmlFor="picture">Arquivo CSV</Label>
+              <Input
+                id="csv_file"
+                type="file"
+                accept=".csv"
+                onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+              />
+            </div>
+            <div className="text-sm text-muted-foreground">
+              <p>Formatos aceitos:</p>
+              <ul className="list-disc pl-5 mt-1">
+                <li>Coluna única com telefones ou CPFs</li>
+                <li>Múltiplas colunas (detecta telefones e CPF automaticamente)</li>
+              </ul>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsImportDialogOpen(false)}
+              disabled={importMutation.isPending}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleImportSubmit}
+              disabled={importMutation.isPending || !importFile}
+              className="gradient-primary hover:opacity-90"
+            >
+              {importMutation.isPending ? "Importando..." : "Importar"}
             </Button>
           </DialogFooter>
         </DialogContent>

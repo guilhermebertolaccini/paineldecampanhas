@@ -20,6 +20,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
+import { FilterBuilder, FilterItem } from "@/components/campaign/FilterBuilder";
 import {
   getAvailableBases,
   getFilters,
@@ -48,7 +49,7 @@ export default function NovaCampanha() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [step, setStep] = useState(1);
-  const [selectedFilters, setSelectedFilters] = useState<Record<string, any>>({});
+  const [filters, setFilters] = useState<FilterItem[]>([]);
   const [baseUpdateStatus, setBaseUpdateStatus] = useState<{
     isUpdated: boolean;
     message: string;
@@ -228,14 +229,23 @@ export default function NovaCampanha() {
 
   // Calcular contagem quando filtros mudarem
   const { data: recordCount = 0, isLoading: countLoading } = useQuery({
-    queryKey: ['count', formData.base, selectedFilters],
+    queryKey: ['count', formData.base, filters],
     queryFn: async () => {
       try {
+        // Formata os filtros novos para enviar ao backend
+        // O backend espera um array de objetos {column, operator, value}
+        // A FilterItem interface já combina com isso
+        const formattedFilters = filters
+          .filter(f => f.column && f.operator && f.value !== '' && f.value !== null)
+          .map(f => ({
+            column: f.column,
+            operator: f.operator,
+            value: f.value
+          }));
+
         return await getCount({
           table_name: formData.base,
-          filters: Object.entries(selectedFilters)
-            .filter(([_, value]) => value && value !== '' && value !== 'all')
-            .map(([key, value]) => ({ column: key, value })),
+          filters: formattedFilters,
         });
       } catch (error: any) {
         console.error('🔴 [NovaCampanha] Erro ao calcular contagem:', error);
@@ -329,10 +339,6 @@ export default function NovaCampanha() {
     }));
   };
 
-  const handleFilterChange = (column: string, value: any) => {
-    setSelectedFilters(prev => ({ ...prev, [column]: value }));
-  };
-
   const handleSubmit = async () => {
     if (!formData.name.trim()) {
       toast({
@@ -377,11 +383,17 @@ export default function NovaCampanha() {
       providersConfig[provider] = percentPerProvider;
     });
 
+    const formattedFilters = filters
+      .filter(f => f.column && f.operator && f.value !== '' && f.value !== null)
+      .map(f => ({
+        column: f.column,
+        operator: f.operator,
+        value: f.value
+      }));
+
     const campaignData = {
       table_name: formData.base,
-      filters: Object.entries(selectedFilters)
-        .filter(([_, value]) => value && value !== '' && value !== 'all')
-        .map(([key, value]) => ({ column: key, value })),
+      filters: formattedFilters,
       providers_config: providersConfig,
       template_id: formData.templateSource === 'local' ? parseInt(formData.template) : null,
       template_code: formData.templateCode || null,
@@ -398,26 +410,14 @@ export default function NovaCampanha() {
     switch (step) {
       case 1:
         // Verifica se nome e base estão preenchidos E se a base está atualizada
-        const hasRequiredFields = formData.name.trim() && formData.carteira && formData.base;
+        const hasRequiredFields = boolean(formData.name.trim() && formData.carteira && formData.base);
         const isBaseUpdated = !baseUpdateStatus || baseUpdateStatus.isUpdated;
-
-        // Debug logs
-        console.log('🔍 [canGoNext] Verificando condições:', {
-          step,
-          formDataName: formData.name,
-          formDataCarteira: formData.carteira,
-          formDataBase: formData.base,
-          hasRequiredFields,
-          baseUpdateStatus,
-          isBaseUpdated,
-          canProceed: hasRequiredFields && isBaseUpdated
-        });
 
         return hasRequiredFields && isBaseUpdated;
       case 2:
         return true; // Filtros são opcionais
       case 3:
-        return formData.template && formData.message.trim();
+        return boolean(formData.template && formData.message.trim());
       case 4:
         return formData.providers.length > 0;
       default:
@@ -425,126 +425,7 @@ export default function NovaCampanha() {
     }
   };
 
-  // Renderizar filtros dinâmicos
-  const renderDynamicFilters = () => {
-    console.log('🎨 [renderDynamicFilters] availableFilters:', availableFilters);
-
-    if (filtersLoading) {
-      return (
-        <div className="space-y-4">
-          <Skeleton className="h-12 w-full" />
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Skeleton className="h-20" />
-            <Skeleton className="h-20" />
-            <Skeleton className="h-20" />
-            <Skeleton className="h-20" />
-          </div>
-        </div>
-      );
-    }
-
-    if (!availableFilters || availableFilters.length === 0) {
-      return (
-        <Alert className="border-blue-200 bg-blue-50">
-          <AlertCircle className="h-4 w-4 text-blue-600" />
-          <AlertDescription className="text-blue-900">
-            Nenhum filtro disponível para esta base. Os filtros são opcionais, você pode continuar sem filtrar.
-          </AlertDescription>
-        </Alert>
-      );
-    }
-
-    return (
-      <div className="space-y-6">
-        {/* Header com contador */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">
-              Filtros Disponíveis
-            </h3>
-            <p className="text-sm text-gray-500">
-              {availableFilters.length} {availableFilters.length === 1 ? 'filtro disponível' : 'filtros disponíveis'} • Opcional
-            </p>
-          </div>
-        </div>
-
-        {/* Grid de filtros */}
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {availableFilters.map((filter: any, filterIdx: number) => {
-            const filterKey = filter.column || filter.name || filter;
-            const filterValue = selectedFilters[filterKey] || '';
-            const hasValue = filterValue && filterValue !== '' && filterValue !== 'all';
-
-            if (filter.type === 'select' || filter.options) {
-              const options = filter.options || [];
-              return (
-                <div key={`filter-${filterKey}-${filterIdx}`} className="space-y-2">
-                  <Label className="flex items-center gap-2">
-                    {filter.label || filterKey}
-                    {hasValue && (
-                      <Badge variant="secondary" className="text-xs">
-                        Filtrado
-                      </Badge>
-                    )}
-                  </Label>
-                  <Select
-                    value={filterValue || 'all'}
-                    onValueChange={(v) => handleFilterChange(filterKey, v === 'all' ? '' : v)}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder={`Todos`} />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-[300px]">
-                      <SelectItem value="all">Todos ({options.length} opções)</SelectItem>
-                      {options.map((opt: any, idx: number) => (
-                        <SelectItem key={`${filterKey}-${idx}`} value={String(opt)}>
-                          {String(opt)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              );
-            }
-
-            // Filtros numéricos
-            return (
-              <div key={`filter-${filterKey}-${filterIdx}`} className="space-y-2">
-                <Label className="flex items-center gap-2">
-                  {filter.label || filterKey}
-                  {hasValue && (
-                    <Badge variant="secondary" className="text-xs">
-                      Filtrado
-                    </Badge>
-                  )}
-                </Label>
-                <Input
-                  type="number"
-                  placeholder={`Ex: 1000`}
-                  value={filterValue}
-                  onChange={(e) => handleFilterChange(filterKey, e.target.value)}
-                />
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Botão limpar filtros */}
-        {Object.keys(selectedFilters).length > 0 && (
-          <div className="flex justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setSelectedFilters({})}
-            >
-              Limpar todos os filtros
-            </Button>
-          </div>
-        )}
-      </div>
-    );
-  };
+  const boolean = (value: any) => !!value;
 
   return (
     <div className="space-y-6">
@@ -713,7 +594,11 @@ export default function NovaCampanha() {
               <CardDescription>Defina os filtros para segmentar sua base (opcional)</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {renderDynamicFilters()}
+              <FilterBuilder
+                availableFilters={availableFilters}
+                filters={filters}
+                onChange={setFilters}
+              />
               <div className="rounded-lg bg-muted/50 p-4">
                 <p className="text-sm text-muted-foreground">
                   <span className="font-semibold text-foreground">Estimativa:</span>{" "}

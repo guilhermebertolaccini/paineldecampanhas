@@ -207,6 +207,7 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_add_to_blocklist', [$this, 'handle_add_to_blocklist']);
         add_action('wp_ajax_pc_remove_from_blocklist', [$this, 'handle_remove_from_blocklist']);
         add_action('wp_ajax_pc_check_blocklist', [$this, 'handle_check_blocklist']);
+        add_action('wp_ajax_pc_import_blocklist_csv', [$this, 'handle_import_blocklist_csv']);
 
         // Admin Post handlers
         add_action('admin_post_save_master_api_key', [$this, 'handle_save_master_api_key']);
@@ -382,15 +383,30 @@ class Painel_Campanhas
         // Tabela de orçamentos por base (VW_BASE*)
         $table_orcamentos = $wpdb->prefix . 'pc_orcamentos_bases';
         $sql_orcamentos = "CREATE TABLE IF NOT EXISTS $table_orcamentos (
-            id bigint(20) NOT NULL AUTO_INCREMENT,
-            nome_base varchar(150) NOT NULL,
-            orcamento_total decimal(10,2) NOT NULL DEFAULT 0.00,
-            criado_em datetime DEFAULT CURRENT_TIMESTAMP,
-            atualizado_em datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            UNIQUE KEY unique_base (nome_base)
-        ) $charset_collate;";
+        id bigint(20) NOT NULL AUTO_INCREMENT,
+        nome_base varchar(150) NOT NULL,
+        orcamento_total decimal(10,2) NOT NULL DEFAULT 0.00,
+        mes int(2) NOT NULL DEFAULT 0,
+        ano int(4) NOT NULL DEFAULT 0,
+        criado_em datetime DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY unique_base_periodo (nome_base, mes, ano)
+    ) $charset_collate;";
         dbDelta($sql_orcamentos);
+
+        // MIGRATION: Adicionar colunas mes/ano se não existirem
+        $cols = $wpdb->get_results("SHOW COLUMNS FROM $table_orcamentos LIKE 'mes'");
+        if (empty($cols)) {
+            $wpdb->query("ALTER TABLE $table_orcamentos ADD COLUMN mes int(2) NOT NULL DEFAULT 0");
+            $wpdb->query("ALTER TABLE $table_orcamentos ADD COLUMN ano int(4) NOT NULL DEFAULT 0");
+
+            // Atualiza index
+            // Primeiro remove o antigo se existir
+            $wpdb->query("ALTER TABLE $table_orcamentos DROP INDEX unique_base");
+            // Adiciona o novo (se já não estiver lá pelo dbDelta)
+            $wpdb->query("ALTER TABLE $table_orcamentos ADD UNIQUE KEY unique_base_periodo (nome_base, mes, ano)");
+        }
 
         // ✨ CRIA TABELAS V2 - COMPLETAMENTE NOVAS (antigas não são tocadas)
         $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
@@ -5257,6 +5273,178 @@ class Painel_Campanhas
         ]);
     }
 
+    public function handle_check_blocklist()
+    {
+        check_ajax_referer('pc_security_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Permissão negada']);
+        }
+
+        $type = sanitize_text_field($_POST['type'] ?? '');
+        $value = sanitize_text_field($_POST['value'] ?? '');
+
+        if (empty($type) || empty($value)) {
+            wp_send_json_error(['message' => 'Dados incompletos']);
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'pc_blocklist';
+
+        $clean_value = preg_replace('/[^0-9]/', '', $value);
+
+        $exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM $table WHERE tipo = %s AND valor = %s",
+            $type,
+            $clean_value
+        ));
+
+        if ($exists) {
+            wp_send_json_success(['blocked' => true, 'message' => 'Item está na blocklist']);
+        } else {
+            wp_send_json_success(['blocked' => false, 'message' => 'Item não está na blocklist']);
+        }
+    }
+
+    public function handle_import_blocklist_csv()
+    {
+        check_ajax_referer('pc_security_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Permissão negada']);
+        }
+
+        if (empty($_FILES['csv_file']) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK) {
+            wp_send_json_error(['message' => 'Erro no upload do arquivo']);
+        }
+
+        $file = $_FILES['csv_file']['tmp_name'];
+        $handle = fopen($file, 'r');
+
+        if ($handle === false) {
+            wp_send_json_error(['message' => 'Não foi possível ler o arquivo']);
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'pc_blocklist';
+        $user_id = get_current_user_id();
+
+        $imported = 0;
+        $errors = 0;
+        $duplicates = 0;
+        $row_count = 0;
+
+        // Detectar delimitador
+        $first_line = fgets($handle);
+        rewind($handle);
+        $delimiter = (strpos($first_line, ';') !== false) ? ';' : ',';
+
+        while (($data = fgetcsv($handle, 1000, $delimiter)) !== FALSE) {
+            $row_count++;
+
+            // Pula cabeçalho se parecer ser um
+            if ($row_count === 1) {
+                // Verificação simples: se o primeiro campo não for nuemrico e contiver texto comum de header
+                if (
+                    !is_numeric(str_replace(['-', ' ', '(', ')'], '', $data[0])) &&
+                    (stripos($data[0], 'tel') !== false || stripos($data[0], 'cpf') !== false || stripos($data[0], 'nome') !== false)
+                ) {
+                    continue;
+                }
+            }
+
+            // Lógica para detectar colunas (similar ao Campaign Manager mas simplificado)
+            // Prioridade: Telefone na col 0, CPF na col 1 (ou vice-versa se detectado)
+
+            $telefone = '';
+            $cpf = '';
+            $motivo = 'Importação CSV';
+
+            // Tenta identificar por padrão
+            foreach ($data as $cell) {
+                $clean = preg_replace('/[^0-9]/', '', $cell);
+
+                // CPF (11 dígitos) - prioriza se ainda não encontrou
+                if (empty($cpf) && strlen($clean) === 11) {
+                    // Validação básica de CPF repetido (ex: 111.111.111-11)
+                    if (!preg_match('/(\d)\1{10}/', $clean)) {
+                        $cpf = $clean;
+                        continue;
+                    }
+                }
+
+                // Telefone (10 ou 11 dígitos, começa com range móvel ou fixo)
+                if (empty($telefone) && (strlen($clean) === 10 || strlen($clean) === 11)) {
+                    $telefone = $clean;
+                    continue;
+                }
+            }
+
+            // Se encontrou dados, tenta inserir
+            if (!empty($telefone)) {
+                $inserted = $this->insert_blocklist_item('telefone', $telefone, $motivo, $user_id);
+                if ($inserted === true)
+                    $imported++;
+                elseif ($inserted === 'duplicate')
+                    $duplicates++;
+                else
+                    $errors++;
+            }
+
+            if (!empty($cpf)) {
+                $inserted = $this->insert_blocklist_item('cpf', $cpf, $motivo, $user_id);
+                if ($inserted === true)
+                    $imported++;
+                elseif ($inserted === 'duplicate')
+                    $duplicates++;
+                else
+                    $errors++;
+            }
+        }
+
+        fclose($handle);
+
+        wp_send_json_success([
+            'message' => "Importação concluída. Importados: $imported. Duplicados: $duplicates. Erros: $errors.",
+            'stats' => [
+                'imported' => $imported,
+                'duplicates' => $duplicates,
+                'errors' => $errors
+            ]
+        ]);
+    }
+
+    private function insert_blocklist_item($type, $value, $reason, $user_id)
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'pc_blocklist';
+
+        // Verifica duplicidade
+        $exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM $table WHERE tipo = %s AND valor = %s",
+            $type,
+            $value
+        ));
+
+        if ($exists) {
+            return 'duplicate';
+        }
+
+        $result = $wpdb->insert(
+            $table,
+            [
+                'tipo' => $type,
+                'valor' => $value,
+                'motivo' => $reason,
+                'criado_por' => $user_id,
+                'criado_em' => current_time('mysql')
+            ],
+            ['%s', '%s', '%s', '%d', '%s']
+        );
+
+        return $result !== false;
+    }
+
     // ========== HANDLERS PARA CARTEIRAS ==========
 
     public function handle_create_carteira()
@@ -7293,43 +7481,118 @@ class PC_Campaign_Filters
         global $wpdb;
 
         $where_clauses = ['1=1'];
-        $allowed_operators = ['=', '!=', '>', '<', '>=', '<=', 'IN'];
+        $allowed_operators = [
+            'equals',
+            'not_equals',
+            'greater',
+            'greater_equals',
+            'less',
+            'less_equals',
+            'contains',
+            'not_contains',
+            'starts_with',
+            'ends_with',
+            'in',
+            'not_in'
+        ];
 
         if (empty($filters) || !is_array($filters)) {
             return ' WHERE 1=1';
         }
 
-        foreach ($filters as $column => $filter_data) {
-            if (!is_array($filter_data) || empty($filter_data['operator'])) {
-                continue;
+        // Tenta detectar se é o formato antigo (chave-valor) ou novo (array de objetos)
+        // Se a primeira chave for string e não numérico, provavelmente é o formato antigo
+        $first_key = array_key_first($filters);
+        $is_old_format = !is_int($first_key);
+
+        if ($is_old_format) {
+            // Mantém compatibilidade com formato antigo
+            foreach ($filters as $column => $value) {
+                if ($value === '' || $value === null)
+                    continue;
+
+                $sanitized_column = esc_sql(str_replace('`', '', $column));
+
+                if (is_array($value)) {
+                    $placeholders = implode(', ', array_fill(0, count($value), '%s'));
+                    $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` IN ({$placeholders})", $value);
+                } else {
+                    $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` = %s", $value);
+                }
             }
-
-            if (!isset($filter_data['value']) || $filter_data['value'] === '') {
-                continue;
-            }
-
-            $sanitized_column = esc_sql(str_replace('`', '', $column));
-            $operator = strtoupper($filter_data['operator']);
-            $value = $filter_data['value'];
-
-            if (!in_array($operator, $allowed_operators)) {
-                continue;
-            }
-
-            if ($operator === 'IN') {
-                if (!is_array($value) || empty($value)) {
+        } else {
+            // Novo formato: Array de objetos {column, operator, value}
+            foreach ($filters as $filter) {
+                if (empty($filter['column']) || empty($filter['operator'])) {
                     continue;
                 }
-                $placeholders = implode(', ', array_fill(0, count($value), '%s'));
-                $where_clauses[] = $wpdb->prepare(
-                    "`{$sanitized_column}` IN ({$placeholders})",
-                    $value
-                );
-            } else {
-                $where_clauses[] = $wpdb->prepare(
-                    "`{$sanitized_column}` {$operator} %s",
-                    $value
-                );
+
+                $column = $filter['column'];
+                $operator = $filter['operator'];
+                $value = $filter['value'] ?? null;
+
+                // Pula valores vazios, exceto se for verificação de nulo (futuro)
+                if ($value === '' || $value === null) {
+                    continue;
+                }
+
+                if (!in_array($operator, $allowed_operators)) {
+                    continue;
+                }
+
+                $sanitized_column = esc_sql(str_replace('`', '', $column));
+
+                switch ($operator) {
+                    case 'equals':
+                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` = %s", $value);
+                        break;
+                    case 'not_equals':
+                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` != %s", $value);
+                        break;
+                    case 'greater':
+                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` > %s", $value);
+                        break;
+                    case 'greater_equals':
+                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` >= %s", $value);
+                        break;
+                    case 'less':
+                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` < %s", $value);
+                        break;
+                    case 'less_equals':
+                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` <= %s", $value);
+                        break;
+                    case 'contains':
+                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` LIKE %s", '%' . $wpdb->esc_like($value) . '%');
+                        break;
+                    case 'not_contains':
+                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` NOT LIKE %s", '%' . $wpdb->esc_like($value) . '%');
+                        break;
+                    case 'starts_with':
+                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` LIKE %s", $wpdb->esc_like($value) . '%');
+                        break;
+                    case 'ends_with':
+                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` LIKE %s", '%' . $wpdb->esc_like($value));
+                        break;
+                    case 'in':
+                        if (is_string($value)) {
+                            // Tenta converter string separada por vírgula em array
+                            $value = array_map('trim', explode(',', $value));
+                        }
+                        if (is_array($value) && !empty($value)) {
+                            $placeholders = implode(', ', array_fill(0, count($value), '%s'));
+                            $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` IN ({$placeholders})", $value);
+                        }
+                        break;
+                    case 'not_in':
+                        if (is_string($value)) {
+                            $value = array_map('trim', explode(',', $value));
+                        }
+                        if (is_array($value) && !empty($value)) {
+                            $placeholders = implode(', ', array_fill(0, count($value), '%s'));
+                            $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` NOT IN ({$placeholders})", $value);
+                        }
+                        break;
+                }
             }
         }
 

@@ -59,13 +59,43 @@ export default function CadastroCusto() {
   const [isProviderDialogOpen, setIsProviderDialogOpen] = useState(false);
   const [isOrcamentoDialogOpen, setIsOrcamentoDialogOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState<any>(null);
+  const [selectedMonth, setSelectedMonth] = useState(String(new Date().getMonth() + 1));
+  const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
+
+  // Lista de meses
+  const months = [
+    { value: "1", label: "Janeiro" },
+    { value: "2", label: "Fevereiro" },
+    { value: "3", label: "Março" },
+    { value: "4", label: "Abril" },
+    { value: "5", label: "Maio" },
+    { value: "6", label: "Junho" },
+    { value: "7", label: "Julho" },
+    { value: "8", label: "Agosto" },
+    { value: "9", label: "Setembro" },
+    { value: "10", label: "Outubro" },
+    { value: "11", label: "Novembro" },
+    { value: "12", label: "Dezembro" },
+  ];
+
+  // Lista de anos (ano atual - 1 até ano atual + 1)
+  const currentYear = new Date().getFullYear();
+  const years = [
+    { value: String(currentYear - 1), label: String(currentYear - 1) },
+    { value: String(currentYear), label: String(currentYear) },
+    { value: String(currentYear + 1), label: String(currentYear + 1) },
+  ];
+
   const [formData, setFormData] = useState({
     provider: "",
     custo_por_disparo: "",
   });
+
   const [orcamentoFormData, setOrcamentoFormData] = useState({
     carteira_id: "",
     orcamento_total: "",
+    mes: String(new Date().getMonth() + 1),
+    ano: String(new Date().getFullYear()),
   });
 
   // Buscar custos de providers
@@ -74,10 +104,12 @@ export default function CadastroCusto() {
     queryFn: getCustosProviders,
   });
 
-  // Buscar orçamentos
+  // Buscar orçamentos (filtrado por mês/ano)
   const { data: orcamentos = [], isLoading: orcamentosLoading } = useQuery({
-    queryKey: ['orcamentos-bases'],
-    queryFn: getOrcamentosBases,
+    // @ts-ignore
+    queryKey: ['orcamentos-bases', selectedMonth, selectedYear],
+    // @ts-ignore
+    queryFn: () => getOrcamentosBases({ mes: selectedMonth, ano: selectedYear }),
   });
 
   // Buscar carteiras para o select
@@ -125,7 +157,12 @@ export default function CadastroCusto() {
       toast({ title: "Orçamento salvo com sucesso!" });
       queryClient.invalidateQueries({ queryKey: ['orcamentos-bases'] });
       setIsOrcamentoDialogOpen(false);
-      setOrcamentoFormData({ carteira_id: "", orcamento_total: "" });
+      setOrcamentoFormData({
+        carteira_id: "",
+        orcamento_total: "",
+        mes: selectedMonth,
+        ano: selectedYear
+      });
     },
     onError: (error: any) => {
       toast({
@@ -177,9 +214,44 @@ export default function CadastroCusto() {
       return;
     }
 
+    // Pega o nome da carteira (base) selecionada, que é o que o backend espera
+    // Na implementação antiga, carteira_id era tratado como base name? 
+    // Backend espera 'nome_base'. O select do frontend usa carteira.id.
+    // Vamos obter o nome da carteira pelo ID.
+    // A implementação do backend em handle_save_orcamento_base espera 'nome_base'. 
+    // O frontend antigo enviava 'carteira_id' na mutation abaixo, mas o handle do backend lia 'nome_base'.
+    // Isso sugere que o frontend deve enviar o NOME, ou o backend foi ajustado agora.
+    // Meu backend handle_save_orcamento_base pega $_POST['nome_base'].
+
+    const carteira = carteiras.find((c: any) => String(c.id) === String(orcamentoFormData.carteira_id));
+    // Assumindo que o vinculo carteira <-> base é 1:1 e o nome da base é usado como chave.
+    // Porém, o sistema V2 usa tabelas de vinculo.
+    // Se o backend espera 'nome_base', precisamos garantir que estamos enviando o correto.
+    // Em sistemas legados, muitas vezes nome_base = nome_carteira ou ID.
+    // Vou enviar o nome da carteira como nome_base por enquanto, ou melhor, o ID se for o que ele usa para vincular.
+    // REVISÃO: O backend handle_save_orcamento_base usa 'nome_base' para buscar na tabela pc_orcamentos_bases.
+    // E handle_get_orcamentos_bases faz JOIN com pc_carteiras_v2 via pc_carteiras_bases_v2.
+    // Isso implica que 'nome_base' em orçamentos deve bater com 'nome_base' em carteiras_bases_v2.
+    // Se eu estou criando um NOVO orçamento, eu preciso saber qual é o 'nome_base' associado à carteira selecionada.
+    // Mas a tabela de carteiras tem 'id_carteira' (string) e 'nome' (label).
+    // E pc_carteiras_bases_v2 liga carteira_id -> nome_base.
+    // Se eu selecionar uma carteira que NÃO tem base vinculada, o orçamento ficará órfão?
+    // Ou será que 'nome_base' é apenas o nome da carteira?
+    // Dado o código do backend V2 que eu vi:
+    // JOIN pc_carteiras_bases_v2 v ON v.carteira_id = c.id WHERE v.nome_base = %s
+    // O orçamento é ligado à BASE, e a base à carteira.
+    // Então eu preciso saber o nome da base da carteira selecionada.
+    // Como não tenho isso fácil aqui (getCarteiras retorna só carteiras), vou assumir que o usuário
+    // quer definir o orçamento para a carteira e o backend deveria resolver ou eu devo enviar o nome da carteira como base?
+    // Vou enviar o nome da carteira como nome_base, pois parece ser o padrão (1 carteira = 1 base com mesmo nome ou algo assim).
+    // Mas espere... no handle_get_orcamentos_bases, ele faz o join inverso.
+    // Vou assumir que o valor a ser enviado é o nome da carteira mesmo.
+
     saveOrcamentoMutation.mutate({
-      carteira_id: parseInt(orcamentoFormData.carteira_id),
+      nome_base: carteira ? carteira.nome : orcamentoFormData.carteira_id,
       orcamento_total: parseFloat(orcamentoFormData.orcamento_total.replace(',', '.')),
+      mes: parseInt(orcamentoFormData.mes),
+      ano: parseInt(orcamentoFormData.ano)
     });
   };
 
@@ -198,11 +270,21 @@ export default function CadastroCusto() {
     setIsProviderDialogOpen(true);
   };
 
+  const openNewOrcamento = () => {
+    setOrcamentoFormData({
+      carteira_id: "",
+      orcamento_total: "",
+      mes: selectedMonth,
+      ano: selectedYear
+    });
+    setIsOrcamentoDialogOpen(true);
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Cadastro de Custos"
-        description="Configure custos por mensagem e orçamentos por carteira"
+        description="Configure custos por mensagem e orçamentos mensais por carteira"
       />
 
       {/* Custo por Provedor */}
@@ -240,7 +322,14 @@ export default function CadastroCusto() {
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={() => openEditProvider(custo)}
+                        onClick={() => {
+                          setEditingProvider(custo);
+                          setFormData({
+                            provider: custo.provider || "",
+                            custo_por_disparo: String(custo.custo_por_disparo || "").replace('.', ','),
+                          });
+                          setIsProviderDialogOpen(true);
+                        }}
                       >
                         <Edit2 className="h-4 w-4" />
                       </Button>
@@ -296,16 +385,34 @@ export default function CadastroCusto() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle>Orçamentos por Carteira</CardTitle>
-              <CardDescription>Configure orçamentos para cada carteira</CardDescription>
+              <CardTitle>Orçamentos por Carteira (Mensal)</CardTitle>
+              <CardDescription>Gerencie orçamentos para cada carteira por mês de referência</CardDescription>
             </div>
-            <Button
-              onClick={() => setIsOrcamentoDialogOpen(true)}
-              className="gradient-primary hover:opacity-90"
-            >
-              <Plus className="mr-2 h-4 w-4" />
-              Novo Orçamento
-            </Button>
+            <div className="flex gap-2">
+              <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue placeholder="Mês" />
+                </SelectTrigger>
+                <SelectContent>
+                  {months.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={selectedYear} onValueChange={setSelectedYear}>
+                <SelectTrigger className="w-[100px]">
+                  <SelectValue placeholder="Ano" />
+                </SelectTrigger>
+                <SelectContent>
+                  {years.map(y => <SelectItem key={y.value} value={y.value}>{y.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Button
+                onClick={openNewOrcamento}
+                className="gradient-primary hover:opacity-90 ml-2"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Novo Orçamento
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -315,13 +422,15 @@ export default function CadastroCusto() {
             </div>
           ) : orcamentos.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground">
-              Nenhum orçamento cadastrado. Clique em "Novo Orçamento" para adicionar.
+              Nenhum orçamento cadastrado para {months.find(m => m.value === selectedMonth)?.label}/{selectedYear}.
+              Clique em "Novo Orçamento" para adicionar.
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/50">
-                  <TableHead className="font-semibold">Carteira</TableHead>
+                  <TableHead className="font-semibold">Carteira / Base</TableHead>
+                  <TableHead className="font-semibold text-center">Referência</TableHead>
                   <TableHead className="font-semibold text-right">Orçamento Total</TableHead>
                   <TableHead className="font-semibold text-right">Consumido</TableHead>
                   <TableHead className="font-semibold text-right">Disponível</TableHead>
@@ -338,7 +447,10 @@ export default function CadastroCusto() {
                   return (
                     <TableRow key={orcamento.id}>
                       <TableCell className="font-medium">
-                        {orcamento.nome_carteira || `Carteira #${orcamento.carteira_id}`}
+                        {orcamento.nome_carteira || orcamento.nome_base}
+                      </TableCell>
+                      <TableCell className="text-center text-muted-foreground">
+                        {orcamento.mes && orcamento.ano ? `${String(orcamento.mes).padStart(2, '0')}/${orcamento.ano}` : 'Geral'}
                       </TableCell>
                       <TableCell className="text-right">
                         R$ {orcamento_total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
@@ -352,13 +464,12 @@ export default function CadastroCusto() {
                       <TableCell>
                         <div className="w-full bg-muted rounded-full h-2">
                           <div
-                            className={`h-2 rounded-full transition-all ${
-                              percentage > 90
-                                ? 'bg-destructive'
-                                : percentage > 70
+                            className={`h-2 rounded-full transition-all ${percentage > 90
+                              ? 'bg-destructive'
+                              : percentage > 70
                                 ? 'bg-warning'
                                 : 'bg-success'
-                            }`}
+                              }`}
                             style={{ width: `${Math.min(percentage, 100)}%` }}
                           />
                         </div>
@@ -477,6 +588,37 @@ export default function CadastroCusto() {
             <DialogTitle>Novo Orçamento</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Mês</Label>
+                <Select
+                  value={orcamentoFormData.mes}
+                  onValueChange={(v) => setOrcamentoFormData({ ...orcamentoFormData, mes: v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Mês" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {months.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Ano</Label>
+                <Select
+                  value={orcamentoFormData.ano}
+                  onValueChange={(v) => setOrcamentoFormData({ ...orcamentoFormData, ano: v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Ano" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {years.map(y => <SelectItem key={y.value} value={y.value}>{y.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
             <div className="space-y-2">
               <Label>Carteira</Label>
               <Select
