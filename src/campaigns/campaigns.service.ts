@@ -14,7 +14,7 @@ export class CampaignsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly httpService: HttpService,
-  ) {}
+  ) { }
 
   async createCampaign(agendamentoId: string, provider: string, totalMessages: number) {
     return this.prisma.campaign.create({
@@ -148,12 +148,12 @@ export class CampaignsService {
 
       // Mapeia credenciais para o formato esperado por cada provider
       const mappedCredentials = this.mapCredentials(provider, response.data);
-      
+
       // Log das credenciais mapeadas (mascaradas)
       const maskedCreds = this.maskCredentials(mappedCredentials);
       this.logger.log(`Credentials fetched and mapped for ${provider}:${envId}`);
       this.logger.debug(`Mapped credentials (masked): ${JSON.stringify(maskedCreds)}`);
-      
+
       return mappedCredentials;
     } catch (error: any) {
       // Tenta extrair mensagem de erro do WordPress
@@ -173,7 +173,7 @@ export class CampaignsService {
         `Error fetching credentials: ${errorMessage}`,
         error.stack,
       );
-      
+
       // Log detalhado para debug
       if (error.response) {
         this.logger.error(
@@ -188,6 +188,31 @@ export class CampaignsService {
         `Erro ao buscar credenciais: ${errorMessage}`,
         error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
       );
+    }
+  }
+
+  async fetchThrottlingConfig(agendamentoId: string): Promise<any> {
+    try {
+      const url = wordpressConfig.endpoints.campaignConfig(agendamentoId);
+      this.logger.log(`Fetching throttling config from WordPress: ${url}`);
+
+      const response = await firstValueFrom(
+        this.httpService.get(url, {
+          headers: {
+            'X-API-KEY': wordpressConfig.apiKey,
+            'Content-Type': 'application/json',
+          },
+          timeout: 10000,
+        }),
+      );
+
+      return response.data;
+    } catch (error: any) {
+      this.logger.warn(
+        `Error fetching throttling config (using default none): ${error.message}`,
+      );
+      // Return default if fails
+      return { throttling_type: 'none', throttling_config: {} };
     }
   }
 
@@ -245,7 +270,7 @@ export class CampaignsService {
 
   async getCampaignStatus(campaignId: string): Promise<CampaignStatusDto> {
     const campaign = await this.getCampaignById(campaignId);
-    
+
     if (!campaign) {
       throw new HttpException('Campanha não encontrada', HttpStatus.NOT_FOUND);
     }
@@ -331,7 +356,7 @@ export class CampaignsService {
    */
   private maskCredentials(credentials: any): any {
     const masked = { ...credentials };
-    
+
     // Campos sensíveis para mascarar
     const sensitiveFields = [
       'chave_api',
@@ -341,7 +366,7 @@ export class CampaignsService {
       'password',
       'mkc_client_secret',
     ];
-    
+
     for (const field of sensitiveFields) {
       if (masked[field] && typeof masked[field] === 'string') {
         const value = masked[field];
@@ -352,7 +377,7 @@ export class CampaignsService {
         }
       }
     }
-    
+
     return masked;
   }
 }

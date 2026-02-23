@@ -22,22 +22,32 @@ def should_exclude(path):
         'react/components.json',
         'react/eslint.config.js',
         'react/public',
+        'react/.vite',
         '.cursor',
         '__pycache__',
         '.git/',
-        '.DS_Store'
+        '.DS_Store',
+        'build-plugin.sh',
+        'build.ps1',
+        'VERIFICAR_CABECALHO.php',
+        'debug-routes.php',
+        'flush-routes.php',
+        'react-wrapper-debug.php'
     ]
 
     for pattern in exclude_patterns:
+        # Check if the pattern is in the path
+        # Use simple string matching or better path matching
         if pattern in path:
             return True
+            
     return False
 
 def create_plugin_zip():
     # Use paths relative to the script location
     script_dir = Path(__file__).parent.resolve()
     source_dir = script_dir / 'painel-campanhas-install-2'
-    output_file = script_dir / 'painel-campanhas-CORRIGIDO-FINAL.zip'
+    output_file = script_dir / 'painel-campanhas-filtro-corrigido.zip'
 
     print(f"Source: {source_dir}")
     print(f"Output: {output_file}")
@@ -48,25 +58,26 @@ def create_plugin_zip():
 
     with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for root, dirs, files in os.walk(source_dir):
-            # Calculate relative path from the parent of source_dir so the zip root isn't empty
-            # We want the zip to contain a folder "painel-campanhas-install-2" (or rename it to proper slug)
-            # Typically WP plugins zip contains "slug-name/files".
-            
-            # rel_path_from_source = os.path.relpath(root, source_dir)
-            # arcname_root = os.path.join(source_dir.name, rel_path_from_source)
-            
-            # Actually easier: relative to source_dir's parent
-            rel_path = os.path.relpath(root, script_dir)
-            
+            rel_path_from_source = os.path.relpath(root, source_dir)
+            arcname_root = os.path.join('painel-campanhas', rel_path_from_source)
+
             # Check exclusions on the directory itself (optimization)
-            if should_exclude(rel_path):
+            # We check rel_path_from_source because our exclusion patterns are relative to the plugin root (e.g. react/node_modules)
+            # But the 'exclude_patterns' in should_exclude seem to expect paths like 'painel-campanhas-install-2/...' or just be flexible?
+            # Let's look at should_exclude. It checks "if pattern in path".
+            # The previous code passed "painel-campanhas-install-2/..."
+            # Let's pass the same structure to be safe, OR fix should_exclude. 
+            # Actually, standardizing on the new arcname is better.
+            
+            if should_exclude(rel_path_from_source):
                 # Modify dirs in-place to skip traversing excluded directories
                 dirs[:] = []
                 continue
 
             for file in files:
                 file_path = os.path.join(root, file)
-                arcname = os.path.join(rel_path, file)
+                # arcname should be painel-campanhas/path/to/file
+                arcname = os.path.join(arcname_root, file)
 
                 # Skip excluded files
                 if should_exclude(arcname):

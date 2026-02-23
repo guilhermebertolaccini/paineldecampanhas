@@ -3,7 +3,7 @@
  * Plugin Name: Painel de Campanhas
  * Plugin URI:
  * Description: Sistema COMPLETO e INDEPENDENTE de gerenciamento de campanhas multicanal (WhatsApp, RCS, SMS) com interface moderna, controle de custos, carteiras, aprovacao de campanhas e integracao com microservico NestJS. Suporta RCS Otima, WhatsApp Otima, RCS CDA, CDA, GOSAC, NOAH e Salesforce.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Daniel Cayres
  * Author URI:
  * License: GPLv2 or later
@@ -237,6 +237,19 @@ class Painel_Campanhas
             'methods' => 'POST',
             'callback' => [$this, 'handle_webhook_status_update'],
             'permission_callback' => [$this, 'check_api_key_rest'],
+        ]);
+        register_rest_route('campaigns/v1', '/config/(?P<agendamento_id>[^/]+)', [
+            'methods' => 'GET',
+            'callback' => [$this, 'handle_get_campaign_config'],
+            'permission_callback' => [$this, 'check_api_key_rest'],
+            'args' => [
+                'agendamento_id' => [
+                    'required' => true,
+                    'validate_callback' => function ($param, $request, $key) {
+                        return is_string($param);
+                    }
+                ],
+            ],
         ]);
     }
 
@@ -503,6 +516,16 @@ class Painel_Campanhas
             KEY idx_valor (valor)
         ) $charset_collate;";
         dbDelta($sql_blocklist);
+        // Tabela de configurações de campanha (Throttling)
+        $table_settings = $wpdb->prefix . 'pc_campaign_settings';
+        $sql_settings = "CREATE TABLE IF NOT EXISTS $table_settings (
+            agendamento_id varchar(100) NOT NULL,
+            throttling_type enum('none', 'linear', 'split') DEFAULT 'none',
+            throttling_config JSON DEFAULT NULL,
+            criado_em datetime DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (agendamento_id)
+        ) $charset_collate;";
+        dbDelta($sql_settings);
     }
 
     public function deactivate()
@@ -2431,6 +2454,7 @@ class Painel_Campanhas
 
         // Busca registros filtrados
         $records = PC_Campaign_Filters::get_filtered_records($table_name, $filters, $record_limit);
+        error_log("🔍 [Debug pc_create_campaign] Registros após filtros: " . count($records));
 
         if (empty($records)) {
             wp_send_json_error('Nenhum registro encontrado com os filtros aplicados.');
@@ -2440,6 +2464,7 @@ class Painel_Campanhas
         $original_count = count($records);
         $records = PC_Blocklist_Validator::filter_blocked_records($records);
         $blocked_count = $original_count - count($records);
+        error_log("🔍 [Debug pc_create_campaign] Registros após blocklist: " . count($records) . " (Bloqueados: $blocked_count)");
 
         if (empty($records)) {
             wp_send_json_error('Todos os registros estão na blocklist. Nenhum envio será criado.');
@@ -2477,9 +2502,27 @@ class Painel_Campanhas
                 error_log("🎣 Iscas: Adicionados $baits_added registros de iscas");
             }
         }
+        error_log("🔍 [Debug pc_create_campaign] Registros finais antes da distribuição: " . count($records));
+
+        // Throttling Data
+        $throttling_type = sanitize_text_field($_POST['throttling_type'] ?? 'none');
+        $throttling_config_json = stripslashes($_POST['throttling_config'] ?? '{}');
+        // Validate JSON
+        json_decode($throttling_config_json);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            $throttling_config_json = '{}';
+        }
+
+        error_log("🔍 [Debug pc_create_campaign] Providers Config Recebido: " . print_r($providers_config, true));
 
         // Distribui entre provedores
         $distributed_records = $this->distribute_records($records, $providers_config);
+
+        $dist_count = 0;
+        foreach ($distributed_records as $dr) {
+            $dist_count += count($dr['records'] ?? []);
+        }
+        error_log("🔍 [Debug pc_create_campaign] Registros após distribute_records: " . count($distributed_records) . " blocos, total " . $dist_count . " registros");
 
         // Insere na tabela envios_pendentes
         $envios_table = $wpdb->prefix . 'envios_pendentes';
@@ -2497,6 +2540,7 @@ class Painel_Campanhas
 
         // Prepara todos os dados para inserção em lote
         $all_insert_data = [];
+        $generated_campaign_ids = [];
 
         foreach ($distributed_records as $provider_data) {
             $provider = $provider_data['provider'];
@@ -2508,7 +2552,13 @@ class Painel_Campanhas
             }
             $agendamento_id = $prefix . $agendamento_base_id;
 
+            // Store unique ID for settings
+            if (!in_array($agendamento_id, $generated_campaign_ids)) {
+                $generated_campaign_ids[] = $agendamento_id;
+            }
+
             foreach ($provider_records as $record) {
+                // ... (rest of the loop same as before)
                 $telefone = preg_replace('/[^0-9]/', '', $record['telefone'] ?? '');
                 if (strlen($telefone) > 11 && substr($telefone, 0, 2) === '55') {
                     $telefone = substr($telefone, 2);
@@ -2567,8 +2617,29 @@ class Painel_Campanhas
             $batches = array_chunk($all_insert_data, $batch_size);
 
             foreach ($batches as $batch) {
-                $this->bulk_insert($envios_table, $batch);
-                $total_inserted += count($batch);
+                $inserted = $this->bulk_insert($envios_table, $batch);
+                if ($inserted === false || $inserted === 0) {
+                    error_log('🚨 [ERRO] bulk_insert falhou para lote de ' . count($batch) . ' registros');
+                } else {
+                    $total_inserted += $inserted;
+                }
+            }
+
+            // Save Throttling Settings
+            if ($throttling_type !== 'none' && !empty($generated_campaign_ids)) {
+                $table_settings = $wpdb->prefix . 'pc_campaign_settings';
+                foreach ($generated_campaign_ids as $camp_id) {
+                    $wpdb->replace(
+                        $table_settings,
+                        [
+                            'agendamento_id' => $camp_id,
+                            'throttling_type' => $throttling_type,
+                            'throttling_config' => $throttling_config_json,
+                            'criado_em' => current_time('mysql')
+                        ],
+                        ['%s', '%s', '%s', '%s']
+                    );
+                }
             }
         }
 
@@ -3573,38 +3644,76 @@ class Painel_Campanhas
         global $wpdb;
 
         if (empty($data_array)) {
-            return;
+            return 0;
         }
+
+        // Verifica se a coluna id_carteira existe na tabela
+        $columns_result = $wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'id_carteira'");
+        $has_id_carteira = !empty($columns_result);
 
         // Prepara valores para INSERT múltiplo
         $values = [];
-        $placeholders = [];
 
         foreach ($data_array as $data) {
-            $id_carteira = isset($data['id_carteira']) ? $data['id_carteira'] : '';
-            $values[] = $wpdb->prepare(
-                "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %d, %d, %s)",
-                $data['telefone'],
-                $data['nome'],
-                $data['idgis_ambiente'],
-                $id_carteira,
-                $data['idcob_contrato'],
-                $data['cpf_cnpj'],
-                $data['mensagem'],
-                $data['fornecedor'],
-                $data['agendamento_id'],
-                $data['status'],
-                $data['current_user_id'],
-                $data['valido'],
-                $data['data_cadastro']
-            );
+            if ($has_id_carteira) {
+                $id_carteira = isset($data['id_carteira']) ? $data['id_carteira'] : '';
+                $values[] = $wpdb->prepare(
+                    "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %d, %d, %s)",
+                    $data['telefone'],
+                    $data['nome'],
+                    $data['idgis_ambiente'],
+                    $id_carteira,
+                    $data['idcob_contrato'],
+                    $data['cpf_cnpj'],
+                    $data['mensagem'],
+                    $data['fornecedor'],
+                    $data['agendamento_id'],
+                    $data['status'],
+                    $data['current_user_id'],
+                    $data['valido'],
+                    $data['data_cadastro']
+                );
+            } else {
+                $values[] = $wpdb->prepare(
+                    "(%s, %s, %d, %d, %s, %s, %s, %s, %s, %d, %d, %s)",
+                    $data['telefone'],
+                    $data['nome'],
+                    $data['idgis_ambiente'],
+                    $data['idcob_contrato'],
+                    $data['cpf_cnpj'],
+                    $data['mensagem'],
+                    $data['fornecedor'],
+                    $data['agendamento_id'],
+                    $data['status'],
+                    $data['current_user_id'],
+                    $data['valido'],
+                    $data['data_cadastro']
+                );
+            }
         }
 
-        $sql = "INSERT INTO {$table} 
-                (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
-                VALUES " . implode(', ', $values);
+        if ($has_id_carteira) {
+            $sql = "INSERT INTO {$table} 
+                    (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
+                    VALUES " . implode(', ', $values);
+        } else {
+            $sql = "INSERT INTO {$table} 
+                    (telefone, nome, idgis_ambiente, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
+                    VALUES " . implode(', ', $values);
+        }
 
-        $wpdb->query($sql);
+        error_log('🔵 [bulk_insert] Inserindo ' . count($data_array) . ' registros na tabela ' . $table);
+        error_log('🔵 [bulk_insert] id_carteira coluna existe: ' . ($has_id_carteira ? 'SIM' : 'NÃO'));
+
+        $result = $wpdb->query($sql);
+        if ($result === false) {
+            error_log('🚨 [ERRO MySQL bulk_insert] ' . $wpdb->last_error);
+            error_log('🚨 [ERRO MySQL Query] ' . substr($sql, 0, 1000) . '...');
+            return 0;
+        }
+
+        error_log('✅ [bulk_insert] ' . $result . ' registros inseridos com sucesso');
+        return $result;
     }
 
     public function handle_get_recurring()
@@ -4245,7 +4354,10 @@ class Painel_Campanhas
                 (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
                 VALUES " . implode(', ', $values);
 
-        $wpdb->query($sql);
+        $result = $wpdb->query($sql);
+        if ($result === false) {
+            error_log('🚨 [ERRO MySQL bulk_insert_recurring] ' . $wpdb->last_error);
+        }
     }
 
     // ========== HANDLERS PARA APROVAR CAMPANHAS ==========
@@ -4282,9 +4394,9 @@ class Painel_Campanhas
         $query = "
             SELECT
                 t1.agendamento_id,
-                t1.idgis_ambiente,
+                MAX(t1.idgis_ambiente) AS idgis_ambiente,
                 t1.fornecedor AS provider,
-                t1.status,
+                MAX(t1.status) AS status,
                 MIN(t1.data_cadastro) AS created_at,
                 COUNT(*) AS total_clients,
                 MAX(t1.current_user_id) AS current_user_id,
@@ -4292,7 +4404,7 @@ class Painel_Campanhas
             FROM `{$table}` AS t1
             LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
             WHERE {$where_sql}
-            GROUP BY t1.agendamento_id, t1.idgis_ambiente, t1.fornecedor
+            GROUP BY t1.agendamento_id, t1.fornecedor
             ORDER BY MIN(t1.data_cadastro) DESC
         ";
 
@@ -4314,7 +4426,7 @@ class Painel_Campanhas
 
         // Remove /api se estiver na URL base (o NestJS não tem prefixo /api por padrão)
         if (substr($base_url, -4) === '/api') {
-            $base_url = rtrim($base_url, '/api');
+            $base_url = substr($base_url, 0, -4);
         }
 
         return $base_url . '/campaigns/dispatch';
@@ -4417,7 +4529,7 @@ class Painel_Campanhas
         }
 
         // Envia para o microserviço
-        $api_key = !empty($microservice_api_key) ? $microservice_api_key : $master_api_key;
+        $api_key = trim(!empty($microservice_api_key) ? $microservice_api_key : $master_api_key);
 
         if (empty($api_key)) {
             wp_send_json_error('API Key não configurada. Configure em API Manager.');
@@ -4429,7 +4541,7 @@ class Painel_Campanhas
 
         // Remove /api se estiver na URL base (o NestJS não tem prefixo /api por padrão)
         if (substr($base_url, -4) === '/api') {
-            $base_url = rtrim($base_url, '/api');
+            $base_url = substr($base_url, 0, -4);
         }
 
         $dispatch_url = $base_url . '/campaigns/dispatch';
@@ -5273,38 +5385,7 @@ class Painel_Campanhas
         ]);
     }
 
-    public function handle_check_blocklist()
-    {
-        check_ajax_referer('pc_security_nonce', 'nonce');
 
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(['message' => 'Permissão negada']);
-        }
-
-        $type = sanitize_text_field($_POST['type'] ?? '');
-        $value = sanitize_text_field($_POST['value'] ?? '');
-
-        if (empty($type) || empty($value)) {
-            wp_send_json_error(['message' => 'Dados incompletos']);
-        }
-
-        global $wpdb;
-        $table = $wpdb->prefix . 'pc_blocklist';
-
-        $clean_value = preg_replace('/[^0-9]/', '', $value);
-
-        $exists = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $table WHERE tipo = %s AND valor = %s",
-            $type,
-            $clean_value
-        ));
-
-        if ($exists) {
-            wp_send_json_success(['blocked' => true, 'message' => 'Item está na blocklist']);
-        } else {
-            wp_send_json_success(['blocked' => false, 'message' => 'Item não está na blocklist']);
-        }
-    }
 
     public function handle_import_blocklist_csv()
     {
@@ -6845,12 +6926,12 @@ class Painel_Campanhas
         $query = "
             SELECT
                 t1.agendamento_id,
-                t1.idgis_ambiente,
+                MAX(t1.idgis_ambiente) AS idgis_ambiente,
                 t1.fornecedor AS provider,
-                t1.status,
+                MAX(t1.status) AS status,
                 MIN(t1.data_cadastro) AS data_cadastro,
                 COUNT(t1.id) AS total_clients,
-                COALESCE(u.display_name, 'Usuário Desconhecido') AS scheduled_by
+                COALESCE(MAX(u.display_name), 'Usuário Desconhecido') AS scheduled_by
             FROM `{$envios_table}` AS t1
             LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
             WHERE t1.current_user_id = %d
@@ -6877,7 +6958,7 @@ class Painel_Campanhas
         $query = $wpdb->prepare($query, $params);
 
         $query .= "
-            GROUP BY t1.agendamento_id, t1.idgis_ambiente, t1.fornecedor, t1.status, scheduled_by
+            GROUP BY t1.agendamento_id, t1.fornecedor
             ORDER BY MIN(t1.data_cadastro) DESC
         ";
 
@@ -7627,29 +7708,55 @@ class PC_Campaign_Filters
             $limit_sql = $wpdb->prepare(" LIMIT %d", $limit);
         }
 
-        $sql = "SELECT 
-                    `TELEFONE` as telefone,
-                    `NOME` as nome,
-                    `IDGIS_AMBIENTE` as idgis_ambiente,
-                    `IDCOB_CONTRATO` as idcob_contrato,
-                    COALESCE(`CPF`, `CPF_CNPJ`) as cpf_cnpj
-                FROM `{$table_name}`" . $where_sql . $limit_sql;
+        // Use SELECT * to avoid issues with column names case sensitivity or missing columns
+        $sql = "SELECT * FROM `{$table_name}`" . $where_sql . $limit_sql;
 
         $records = $wpdb->get_results($sql, ARRAY_A);
 
-        if ($wpdb->last_error) {
+        if ($records === null || $wpdb->last_error) {
             error_log('PC Campaign Filters - Erro ao buscar registros: ' . $wpdb->last_error);
             return [];
         }
 
+        // Helper function to get value from record case-insensitively
+        $get_val = function ($record, $keys) {
+            if (!is_array($keys))
+                $keys = [$keys];
+            foreach ($keys as $key) {
+                if (isset($record[$key]))
+                    return $record[$key];
+                if (isset($record[strtolower($key)]))
+                    return $record[strtolower($key)];
+                if (isset($record[strtoupper($key)]))
+                    return $record[strtoupper($key)];
+                // Try to find key case-insensitively
+                foreach ($record as $k => $v) {
+                    if (strcasecmp($k, $key) === 0)
+                        return $v;
+                }
+            }
+            return '';
+        };
+
         $normalized_records = [];
         foreach ($records as $record) {
+            $telefone = $get_val($record, ['TELEFONE', 'celular', 'phone']);
+            // Fallback: try to find any column that looks like a phone
+            if (empty($telefone)) {
+                foreach ($record as $k => $v) {
+                    if (stripos($k, 'tel') !== false || stripos($k, 'cel') !== false) {
+                        $telefone = $v;
+                        break;
+                    }
+                }
+            }
+
             $normalized_records[] = [
-                'telefone' => $record['telefone'] ?? '',
-                'nome' => $record['nome'] ?? '',
-                'idgis_ambiente' => $record['idgis_ambiente'] ?? 0,
-                'idcob_contrato' => $record['idcob_contrato'] ?? 0,
-                'cpf_cnpj' => $record['cpf_cnpj'] ?? ''
+                'telefone' => $telefone,
+                'nome' => $get_val($record, ['NOME', 'name', 'cliente']),
+                'idgis_ambiente' => $get_val($record, ['IDGIS_AMBIENTE', 'id_gis', 'ambiente']),
+                'idcob_contrato' => $get_val($record, ['IDCOB_CONTRATO', 'contrato', 'id_contrato']),
+                'cpf_cnpj' => $get_val($record, ['CPF', 'CNPJ', 'cpf_cnpj', 'doc'])
             ];
         }
 

@@ -156,6 +156,9 @@ export const scheduleCampaign = (data: Record<string, any>) => {
     template_id: data.template_id || data.template,
     record_limit: data.record_limit || 0,
     exclude_recent_phones: data.exclude_recent_phones !== undefined ? data.exclude_recent_phones : 1,
+    include_baits: data.include_baits !== undefined ? data.include_baits : 0,
+    throttling_type: data.throttling_type || 'none',
+    throttling_config: JSON.stringify(data.throttling_config || {}),
   };
 
   // Adiciona campos para templates da Ótima

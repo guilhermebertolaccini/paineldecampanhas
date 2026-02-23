@@ -66,6 +66,8 @@ export default function NovaCampanha() {
     record_limit: 0,
     exclude_recent_phones: true,
     include_baits: false,
+    throttling_type: 'none',
+    throttling_config: {} as any,
   });
 
   // Buscar carteiras
@@ -376,12 +378,18 @@ export default function NovaCampanha() {
       return;
     }
 
-    // Prepara providers_config (distribuição igual se não especificado)
-    const providersConfig: Record<string, number> = {};
+    // Prepara providers_config (formato esperado pelo backend: mode, providers, percentages)
+    const providersConfigMap: Record<string, number> = {};
     const percentPerProvider = 100 / formData.providers.length;
     formData.providers.forEach(provider => {
-      providersConfig[provider] = percentPerProvider;
+      providersConfigMap[provider] = percentPerProvider;
     });
+
+    const providersConfig = {
+      mode: 'split',
+      providers: formData.providers,
+      percentages: providersConfigMap
+    };
 
     const formattedFilters = filters
       .filter(f => f.column && f.operator && f.value !== '' && f.value !== null)
@@ -419,6 +427,15 @@ export default function NovaCampanha() {
       case 3:
         return boolean(formData.template && formData.message.trim());
       case 4:
+        // Configuração de envio (sempre válido, pois tem defaults)
+        if (formData.throttling_type === 'linear') {
+          return !!formData.throttling_config?.qtd_msgs && !!formData.throttling_config?.intervalo_minutos;
+        }
+        if (formData.throttling_type === 'split') {
+          return !!formData.throttling_config?.fase1_percent && !!formData.throttling_config?.fase1_horas && !!formData.throttling_config?.fase2_horas;
+        }
+        return true;
+      case 5:
         return formData.providers.length > 0;
       default:
         return false;
@@ -436,7 +453,7 @@ export default function NovaCampanha() {
 
       {/* Progress Steps */}
       <div className="flex items-center justify-center gap-2">
-        {[1, 2, 3, 4].map((s) => (
+        {[1, 2, 3, 4, 5].map((s) => (
           <div key={s} className="flex items-center">
             <div
               className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold transition-all ${s === step
@@ -448,7 +465,7 @@ export default function NovaCampanha() {
             >
               {s}
             </div>
-            {s < 4 && (
+            {s < 5 && (
               <div
                 className={`h-1 w-12 sm:w-20 mx-2 rounded-full ${s < step ? "bg-primary" : "bg-muted"
                   }`}
@@ -696,6 +713,164 @@ export default function NovaCampanha() {
           <>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
+                <Loader2 className="h-5 w-5 text-primary" />
+                Configuração de Envio
+              </CardTitle>
+              <CardDescription>Defina a velocidade de disparo da campanha</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="space-y-4">
+                <Label>Tipo de Envio</Label>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div
+                    className={`cursor-pointer rounded-lg border-2 p-4 transition-all ${formData.throttling_type === 'none'
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/20"
+                      }`}
+                    onClick={() => setFormData(prev => ({ ...prev, throttling_type: 'none' }))}
+                  >
+                    <div className="font-semibold mb-1">Imediato</div>
+                    <div className="text-sm text-muted-foreground">
+                      Envia todas as mensagens o mais rápido possível
+                    </div>
+                  </div>
+
+                  <div
+                    className={`cursor-pointer rounded-lg border-2 p-4 transition-all ${formData.throttling_type === 'linear'
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/20"
+                      }`}
+                    onClick={() => setFormData(prev => ({
+                      ...prev,
+                      throttling_type: 'linear',
+                      // Default config for linear
+                      throttling_config: prev.throttling_type === 'linear' ? prev.throttling_config : { qtd_msgs: 100, intervalo_minutos: 60 }
+                    }))}
+                  >
+                    <div className="font-semibold mb-1">Linear</div>
+                    <div className="text-sm text-muted-foreground">
+                      Quantidade fixa de mensagens a cada intervalo de tempo
+                    </div>
+                  </div>
+
+                  <div
+                    className={`cursor-pointer rounded-lg border-2 p-4 transition-all ${formData.throttling_type === 'split'
+                      ? "border-primary bg-primary/5 text-primary"
+                      : "border-border hover:border-primary/20"
+                      }`}
+                    onClick={() => setFormData(prev => ({
+                      ...prev,
+                      throttling_type: 'split',
+                      // Default config for split
+                      throttling_config: prev.throttling_type === 'split' ? prev.throttling_config : { fase1_percent: 70, fase1_horas: 2, fase2_horas: 4 }
+                    }))}
+                  >
+                    <div className="font-semibold mb-1">Por Etapas (Split)</div>
+                    <div className="text-sm text-muted-foreground">
+                      Envia X% em Y horas, e o restante em Z horas
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {formData.throttling_type === 'linear' && (
+                <div className="p-4 bg-muted/30 rounded-lg space-y-4 animate-in fade-in slide-in-from-top-2">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Quantidade de Mensagens</Label>
+                      <Input
+                        type="number"
+                        min="1"
+                        value={formData.throttling_config?.qtd_msgs || 100}
+                        onChange={(e) => setFormData(prev => ({
+                          ...prev,
+                          throttling_config: { ...prev.throttling_config, qtd_msgs: parseInt(e.target.value) || 0 }
+                        }))}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Intervalo (minutos)</Label>
+                      <Input
+                        type="number"
+                        min="1"
+                        value={formData.throttling_config?.intervalo_minutos || 60}
+                        onChange={(e) => setFormData(prev => ({
+                          ...prev,
+                          throttling_config: { ...prev.throttling_config, intervalo_minutos: parseInt(e.target.value) || 0 }
+                        }))}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Serão enviadas <strong>{formData.throttling_config?.qtd_msgs || 0}</strong> mensagens a cada <strong>{formData.throttling_config?.intervalo_minutos || 0}</strong> minutos.
+                  </p>
+                </div>
+              )}
+
+              {formData.throttling_type === 'split' && (
+                <div className="p-4 bg-muted/30 rounded-lg space-y-4 animate-in fade-in slide-in-from-top-2">
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label>Fase 1: Envio Inicial (%)</Label>
+                      <div className="flex items-center gap-4">
+                        <Input
+                          type="number"
+                          min="1"
+                          max="99"
+                          className="w-24"
+                          value={formData.throttling_config?.fase1_percent || 70}
+                          onChange={(e) => setFormData(prev => ({
+                            ...prev,
+                            throttling_config: { ...prev.throttling_config, fase1_percent: parseInt(e.target.value) || 0 }
+                          }))}
+                        />
+                        <span className="text-sm text-muted-foreground">% do total</span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label>Duração Fase 1 (horas)</Label>
+                        <Input
+                          type="number"
+                          min="0.1"
+                          step="0.1"
+                          value={formData.throttling_config?.fase1_horas || 2}
+                          onChange={(e) => setFormData(prev => ({
+                            ...prev,
+                            throttling_config: { ...prev.throttling_config, fase1_horas: parseFloat(e.target.value) || 0 }
+                          }))}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Duração Fase 2 (horas)</Label>
+                        <Input
+                          type="number"
+                          min="0.1"
+                          step="0.1"
+                          value={formData.throttling_config?.fase2_horas || 4}
+                          onChange={(e) => setFormData(prev => ({
+                            ...prev,
+                            throttling_config: { ...prev.throttling_config, fase2_horas: parseFloat(e.target.value) || 0 }
+                          }))}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-sm text-muted-foreground space-y-1">
+                    <p>• <strong>Fase 1:</strong> Envia <strong>{formData.throttling_config?.fase1_percent}%</strong> da base distribuídos em <strong>{formData.throttling_config?.fase1_horas} horas</strong>.</p>
+                    <p>• <strong>Fase 2:</strong> Envia o restante (<strong>{100 - (formData.throttling_config?.fase1_percent || 0)}%</strong>) distribuídos nas próximas <strong>{formData.throttling_config?.fase2_horas} horas</strong>.</p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </>
+        )}
+
+        {step === 5 && (
+          <>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
                 <Truck className="h-5 w-5 text-primary" />
                 Fornecedores
               </CardTitle>
@@ -765,7 +940,7 @@ export default function NovaCampanha() {
           >
             Voltar
           </Button>
-          {step < 4 ? (
+          {step < 5 ? (
             <Button
               onClick={() => setStep(step + 1)}
               disabled={!canGoNext()}
