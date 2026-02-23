@@ -255,20 +255,25 @@ class Painel_Campanhas
 
     public function check_api_key_rest($request)
     {
-        $master_key = get_option('acm_master_api_key');
+        $master_key = trim(get_option('acm_master_api_key', ''));
         if (empty($master_key)) {
             error_log('🔴 [REST API] Master API Key não configurada');
             return new WP_Error('no_master_key', 'Master API Key não configurada.', ['status' => 503]);
         }
 
-        $provided_key = $request->get_header('X-API-KEY');
+        $provided_key = trim($request->get_header('X-API-KEY') ?? '');
         if (empty($provided_key)) {
             error_log('🔴 [REST API] X-API-KEY header não fornecido');
+            error_log('🔴 [REST API] Headers recebidos: ' . json_encode(array_keys($request->get_headers())));
             return new WP_Error('no_key_provided', 'API Key não fornecida no header X-API-KEY.', ['status' => 401]);
         }
 
         if ($provided_key !== $master_key) {
-            error_log('🔴 [REST API] API Key inválida. Fornecida: ' . substr($provided_key, 0, 10) . '... (esperada: ' . substr($master_key, 0, 10) . '...)');
+            $mask = function ($k) {
+                return strlen($k) > 8 ? substr($k, 0, 4) . '...' . substr($k, -4) : '[' . strlen($k) . ' chars]'; };
+            error_log('🔴 [REST API] API Key inválida!');
+            error_log('🔴 [REST API]   Fornecida: "' . $mask($provided_key) . '" (len=' . strlen($provided_key) . ')');
+            error_log('🔴 [REST API]   Esperada:  "' . $mask($master_key) . '" (len=' . strlen($master_key) . ')');
             return new WP_Error('invalid_key', 'API Key inválida.', ['status' => 401]);
         }
 
