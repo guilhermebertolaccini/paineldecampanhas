@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Shield, Info, AlertCircle, CheckCircle2, Clock } from "lucide-react";
+import { Activity, Shield, Info, AlertCircle, CheckCircle2, Clock, Wallet } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -12,12 +12,12 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table";
-import { getGosacOficialConnections } from "@/lib/api";
+import { getWalletsHealth } from "@/lib/api";
 
 export default function LineHealth() {
     const { data: connections = [], isLoading } = useQuery({
-        queryKey: ['gosac-connections'],
-        queryFn: getGosacOficialConnections,
+        queryKey: ['wallets-health'],
+        queryFn: getWalletsHealth,
     });
 
     const getStatusBadge = (status: string) => {
@@ -41,7 +41,7 @@ export default function LineHealth() {
         <div className="space-y-6">
             <PageHeader
                 title="Saúde das Linhas"
-                description="Monitore os limites de mensagens e restrições das contas Gosac Oficial."
+                description="Status e saúde das conexões em todas as carteiras registradas."
             />
 
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -82,9 +82,9 @@ export default function LineHealth() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle>Conexões Oficiais</CardTitle>
+                    <CardTitle>Visão Consolidada</CardTitle>
                     <CardDescription>
-                        Detalhes de limites e status das conexões Gosac Oficial integradas.
+                        Status das conexões mapeadas através das carteiras e provedores.
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -97,7 +97,7 @@ export default function LineHealth() {
                     ) : connections.length === 0 ? (
                         <div className="text-center py-10 text-muted-foreground">
                             <Info className="w-10 h-10 mx-auto mb-2 opacity-20" />
-                            <p>Nenhuma conexão encontrada ou credencial não configurada.</p>
+                            <p>Nenhuma conexão encontrada ou credenciais não configuradas.</p>
                         </div>
                     ) : (
                         <div className="rounded-md border overflow-hidden">
@@ -105,27 +105,35 @@ export default function LineHealth() {
                                 <TableHeader>
                                     <TableRow className="bg-muted/50">
                                         <TableHead className="font-bold">Nome / ID</TableHead>
-                                        <TableHead className="font-bold text-center">Ambiente</TableHead>
+                                        <TableHead className="font-bold">Carteira</TableHead>
+                                        <TableHead className="font-bold text-center">Provedor</TableHead>
                                         <TableHead className="font-bold text-center">Status</TableHead>
-                                        <TableHead className="font-bold text-center">Limite Diário</TableHead>
+                                        <TableHead className="font-bold text-center">Limite</TableHead>
                                         <TableHead className="font-bold text-center">Restrição</TableHead>
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
-                                    {connections.map((conn: any) => (
-                                        <TableRow key={conn.id}>
+                                    {connections.map((conn: any, index: number) => (
+                                        <TableRow key={`${conn.id}-${index}`}>
                                             <TableCell className="font-medium">
                                                 <div className="font-bold">{conn.name}</div>
                                                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-mono">{conn.id}</div>
                                             </TableCell>
+                                            <TableCell>
+                                                <div className="flex items-center text-xs font-semibold">
+                                                    <Wallet className="w-3 h-3 mr-1 text-muted-foreground" />
+                                                    {conn.wallet_name}
+                                                </div>
+                                                <div className="text-[10px] text-muted-foreground font-mono">ID: {conn.id_ambient}</div>
+                                            </TableCell>
                                             <TableCell className="text-center">
-                                                <Badge variant="outline" className="font-mono text-[10px]">{conn.env_id}</Badge>
+                                                <Badge variant="secondary" className="text-[10px] uppercase">{conn.provider}</Badge>
                                             </TableCell>
                                             <TableCell className="text-center">{getStatusBadge(conn.status)}</TableCell>
                                             <TableCell className="text-center">{getLimitBadge(conn.messagingLimit)}</TableCell>
                                             <TableCell className="text-center">
                                                 {conn.accountRestriction === 'NONE' || !conn.accountRestriction ? (
-                                                    <span className="text-green-600 text-xs font-bold uppercase">Nenhuma</span>
+                                                    <span className="text-green-600 text-xs font-bold uppercase tracking-tight">Normal</span>
                                                 ) : (
                                                     <Badge variant="destructive" className="font-bold text-[10px]">{conn.accountRestriction}</Badge>
                                                 )}

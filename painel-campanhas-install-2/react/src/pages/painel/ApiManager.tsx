@@ -69,6 +69,8 @@ export default function ApiManager() {
     otima_wpp_broker_code: "",
     otima_rcs_token: "",
     otima_rcs_customer_code: "",
+    gosac_oficial_token: "",
+    gosac_oficial_url: "",
     dashboard_password: "",
   });
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -139,6 +141,8 @@ export default function ApiManager() {
         otima_wpp_broker_code: staticCredsData.otima_wpp_broker_code || "",
         otima_rcs_token: staticCredsData.otima_rcs_token || "",
         otima_rcs_customer_code: staticCredsData.otima_rcs_customer_code || "",
+        gosac_oficial_token: staticCredsData.gosac_oficial_token || "",
+        gosac_oficial_url: staticCredsData.gosac_oficial_url || "",
         dashboard_password: staticCredsData.dashboard_password || "",
       };
       console.log('🔵 [ApiManager] Credenciais carregadas no estado:', Object.entries(loadedCreds).filter(([_, v]) => v && v.trim()).map(([k, v]) => `${k}: ${v.substring(0, 10)}...`));
@@ -757,6 +761,47 @@ export default function ApiManager() {
                 <p className="text-xs text-muted-foreground">
                   Código do cliente para buscar templates RCS. Use o botão "Buscar" para listar os customer codes disponíveis da API da Ótima. Após salvar, os templates serão carregados automaticamente.
                 </p>
+              </div>
+            </div>
+          </div>
+          {/* Gosac Oficial */}
+          <div className="border-b pb-4 space-y-4">
+            <h4 className="font-semibold">Gosac Oficial</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>API Token</Label>
+                <div className="relative">
+                  <Input
+                    type={visibleKeys.includes("gosac_oficial_token") ? "text" : "password"}
+                    value={staticCreds.gosac_oficial_token}
+                    onChange={(e) =>
+                      setStaticCreds({ ...staticCreds, gosac_oficial_token: e.target.value })
+                    }
+                    placeholder="Token de autenticação"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleKeyVisibility("gosac_oficial_token")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {visibleKeys.includes("gosac_oficial_token") ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>API URL</Label>
+                <Input
+                  value={staticCreds.gosac_oficial_url}
+                  onChange={(e) =>
+                    setStaticCreds({ ...staticCreds, gosac_oficial_url: e.target.value })
+                  }
+                  placeholder="https://api.gosac.com.br"
+                />
               </div>
             </div>
           </div>

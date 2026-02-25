@@ -157,6 +157,8 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_get_otima_templates', [$this, 'handle_get_otima_templates']);
         add_action('wp_ajax_pc_get_gosac_oficial_templates', [$this, 'handle_get_gosac_oficial_templates']);
         add_action('wp_ajax_pc_get_gosac_oficial_connections', [$this, 'handle_get_gosac_oficial_connections']);
+        add_action('wp_ajax_pc_get_all_connections_health', [$this, 'handle_get_all_connections_health']);
+        add_action('wp_ajax_pc_get_templates_by_wallet', [$this, 'handle_get_templates_by_wallet']);
 
         // AJAX para Aprovar Campanhas
         add_action('wp_ajax_pc_get_pending_campaigns', [$this, 'handle_get_pending_campaigns']);
@@ -1003,6 +1005,8 @@ class Painel_Campanhas
                 'otima_wpp_broker_code' => 'sanitize_text_field',
                 'otima_rcs_token' => 'sanitize_text_field',
                 'otima_rcs_customer_code' => 'sanitize_text_field',
+                'gosac_oficial_token' => 'sanitize_text_field',
+                'gosac_oficial_url' => 'esc_url_raw',
                 'dashboard_password' => 'sanitize_text_field'
             ];
 
@@ -1157,6 +1161,8 @@ class Painel_Campanhas
             'otima_wpp_broker_code',
             'otima_rcs_token',
             'otima_rcs_customer_code',
+            'gosac_oficial_token',
+            'gosac_oficial_url',
             'dashboard_password'
         ];
 
@@ -5155,7 +5161,7 @@ class Painel_Campanhas
 
         // Lista de providers que usam credenciais estáticas
         // Para Ótima, verificamos se contém "OTIMA" no nome (case-insensitive)
-        $static_providers = ['RCS', 'CDA', 'SALESFORCE', 'MKC'];
+        $static_providers = ['RCS', 'CDA', 'SALESFORCE', 'MKC', 'GOSAC_OFICIAL'];
 
         // Verifica se é provider estático (incluindo variações de Ótima)
         $is_static_provider = in_array($provider, $static_providers) ||
@@ -5278,6 +5284,13 @@ class Painel_Campanhas
                 ];
 
                 error_log('✅ [REST API] Credenciais Ótima RCS retornadas com sucesso');
+            } elseif ($provider === 'GOSAC_OFICIAL') {
+                $credentials = [
+                    'token' => $static_credentials['gosac_oficial_token'] ?? '',
+                    'url' => $static_credentials['gosac_oficial_url'] ?? '',
+                ];
+
+                error_log('✅ [REST API] Credenciais Gosac Oficial retornadas com sucesso');
             }
 
             if (empty($credentials) || !$this->has_valid_credentials($credentials)) {
@@ -7573,6 +7586,164 @@ class Painel_Campanhas
                             'components' => $tpl['components'] ?? [],
                             'env_id' => $env_id
                         ];
+                    }
+                }
+            }
+        }
+
+        wp_send_json_success($all_templates);
+    }
+
+    public function handle_get_all_connections_health()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        global $wpdb;
+        $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
+        $carteiras = $wpdb->get_results("SELECT id, nome, id_carteira FROM $table_carteiras WHERE ativo = 1", ARRAY_A);
+
+        $credentials = get_option('acm_provider_credentials', []);
+
+        $all_health_data = [];
+        $fetched_envs = []; // Cache para evitar requisições duplicadas para o mesmo ambiente
+
+        foreach ($carteiras as $wallet) {
+            $id_ambient = trim($wallet['id_carteira']);
+            if (empty($id_ambient))
+                continue;
+
+            // Busca os providers configurados para este ambiente
+            foreach ($credentials as $provider => $envs) {
+                if (!is_array($envs) || !isset($envs[$id_ambient]))
+                    continue;
+
+                $cache_key = $provider . '_' . $id_ambient;
+
+                if (!isset($fetched_envs[$cache_key])) {
+                    $provider_conns = [];
+                    if ($provider === 'gosac_oficial') {
+                        $data = $envs[$id_ambient];
+                        $url = rtrim($data['url'], '/') . '/connections/official';
+                        $token = $data['token'] ?? '';
+
+                        if (!empty($url) && !empty($token)) {
+                            $response = wp_remote_get($url, [
+                                'headers' => [
+                                    'Authorization' => $token,
+                                    'Content-Type' => 'application/json',
+                                    'Accept' => 'application/json',
+                                ],
+                                'timeout' => 15,
+                            ]);
+
+                            if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+                                $body = wp_remote_retrieve_body($response);
+                                $connections_data = json_decode($body, true);
+                                $conns = isset($connections_data['data']) ? $connections_data['data'] : $connections_data;
+
+                                if (is_array($conns)) {
+                                    foreach ($conns as $conn) {
+                                        $provider_conns[] = [
+                                            'id' => $conn['id'] ?? '',
+                                            'name' => $conn['name'] ?? '',
+                                            'status' => $conn['status'] ?? '',
+                                            'messagingLimit' => $conn['messagingLimit'] ?? '',
+                                            'accountRestriction' => $conn['accountRestriction'] ?? '',
+                                            'provider' => 'Gosac Oficial',
+                                            'id_ambient' => $id_ambient
+                                        ];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    $fetched_envs[$cache_key] = $provider_conns;
+                }
+
+                // Adiciona as conexões encontradas para esta carteira (vínculo virtual)
+                foreach ($fetched_envs[$cache_key] as $conn) {
+                    $conn_copy = $conn;
+                    $conn_copy['wallet_name'] = $wallet['nome'];
+                    $all_health_data[] = $conn_copy;
+                }
+            }
+        }
+
+        wp_send_json_success($all_health_data);
+    }
+
+    public function handle_get_templates_by_wallet()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        $wallet_id = intval($_POST['wallet_id'] ?? 0);
+        if (!$wallet_id) {
+            wp_send_json_error('ID da carteira inválido');
+            return;
+        }
+
+        global $wpdb;
+        $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
+        $wallet = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table_carteiras WHERE id = %d", $wallet_id), ARRAY_A);
+
+        if (!$wallet || empty($wallet['id_carteira'])) {
+            wp_send_json_error('Carteira não encontrada ou sem ID de ambiente');
+            return;
+        }
+
+        $id_ambient = trim($wallet['id_carteira']);
+        $credentials = get_option('acm_provider_credentials', []);
+        $all_templates = [];
+
+        foreach ($credentials as $provider => $envs) {
+            if (!is_array($envs) || !isset($envs[$id_ambient]))
+                continue;
+
+            $data = $envs[$id_ambient];
+
+            if ($provider === 'gosac_oficial') {
+                $url = rtrim($data['url'], '/') . '/templates/waba';
+                $token = $data['token'] ?? '';
+
+                if (!empty($url) && !empty($token)) {
+                    $response = wp_remote_get($url, [
+                        'headers' => [
+                            'Authorization' => $token,
+                            'Content-Type' => 'application/json',
+                            'Accept' => 'application/json',
+                        ],
+                        'timeout' => 15,
+                    ]);
+
+                    if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+                        $body = wp_remote_retrieve_body($response);
+                        $templates_data = json_decode($body, true);
+                        $temps = isset($templates_data['data']) ? $templates_data['data'] : $templates_data;
+
+                        if (is_array($temps)) {
+                            foreach ($temps as $template) {
+                                $all_templates[] = [
+                                    'id' => $template['id'] ?? $template['name'],
+                                    'name' => $template['name'] ?? '',
+                                    'content' => $template['content'] ?? '',
+                                    'category' => $template['category'] ?? '',
+                                    'language' => $template['language'] ?? '',
+                                    'status' => $template['status'] ?? '',
+                                    'provider' => 'Gosac Oficial',
+                                    'id_ambient' => $id_ambient
+                                ];
+                            }
+                        }
                     }
                 }
             }

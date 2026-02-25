@@ -561,3 +561,12 @@ export const deleteCustomProvider = (providerKey: string) => {
   return wpAjax('pc_delete_custom_provider', { provider_key: providerKey });
 };
 
+// Generalized Health and Templates
+export const getWalletsHealth = () => {
+  return wpAjax('pc_get_all_connections_health', {});
+};
+
+export const getTemplatesByWallet = (walletId: number | string) => {
+  return wpAjax('pc_get_templates_by_wallet', { wallet_id: walletId });
+};
+

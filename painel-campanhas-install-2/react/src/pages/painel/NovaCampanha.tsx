@@ -32,8 +32,7 @@ import {
   getCarteiras,
   getBasesCarteira,
   checkBaseUpdate,
-  getOtimaTemplates,
-  getGosacOficialTemplates,
+  getTemplatesByWallet,
   getIscas,
 } from "@/lib/api";
 
@@ -152,16 +151,11 @@ export default function NovaCampanha() {
     queryFn: getIscas,
   });
 
-  // Buscar templates da Ótima (RCS e WhatsApp)
-  const { data: otimaTemplatesData = [], isLoading: otimaTemplatesLoading } = useQuery({
-    queryKey: ['otima-templates'],
-    queryFn: getOtimaTemplates,
-  });
-
-  // Buscar templates do Gosac Oficial
-  const { data: gosacOficialTemplatesData = [], isLoading: gosacOficialTemplatesLoading } = useQuery({
-    queryKey: ['gosac-oficial-templates'],
-    queryFn: getGosacOficialTemplates,
+  // Buscar templates externos por carteira
+  const { data: externalTemplatesData = [], isLoading: externalTemplatesLoading } = useQuery({
+    queryKey: ['external-templates', formData.carteira],
+    queryFn: () => getTemplatesByWallet(formData.carteira),
+    enabled: !!formData.carteira,
   });
 
   // Processar e mesclar templates
@@ -177,59 +171,28 @@ export default function NovaCampanha() {
       imageUrl: null,
     }));
 
-    // Templates Ótima (já vem com wallet_id do backend)
-    const otima = Array.isArray(otimaTemplatesData) ? otimaTemplatesData.map((t: any) => ({
-      id: `otima_${t.template_code}_${t.wallet_id}`,
-      name: t.name || t.template_code || '',
-      source: t.source || 'otima', // 'otima_rcs' ou 'otima_wpp'
-      templateCode: t.template_code || '',
-      walletId: t.wallet_id,
-      walletName: t.wallet_name,
+    // Templates Externos (já filtrados por carteira pelo backend)
+    const external = Array.isArray(externalTemplatesData) ? externalTemplatesData.map((t: any) => ({
+      id: `${t.provider}_${t.id}_${t.id_ambient}`,
+      name: t.name || t.id || '',
+      source: t.provider === 'Gosac Oficial' ? 'gosac_oficial' : (t.source || 'external'),
+      templateCode: t.name || '',
+      walletId: t.id_ambient,
+      walletName: t.wallet_name || `${t.provider} (${t.id_ambient})`,
       imageUrl: t.image_url,
       content: t.content || '',
-    })) : [];
-
-    // Templates Gosac Oficial
-    const gosacOficial = Array.isArray(gosacOficialTemplatesData) ? gosacOficialTemplatesData.map((t: any) => ({
-      id: `gosac_oficial_${t.id}_${t.env_id}`,
-      name: t.name || t.id || '',
-      source: 'gosac_oficial',
-      templateCode: t.name || '',
-      walletId: t.env_id, // Usamos env_id como identificador de "wallet" para filtro
-      walletName: `Gosac (${t.env_id})`,
       language: t.language,
       category: t.category,
       components: t.components,
     })) : [];
 
     console.log('📋 [NovaCampanha] Templates locais:', local.length);
-    console.log('📋 [NovaCampanha] Templates Ótima:', otima.length);
-    console.log('📋 [NovaCampanha] Templates Gosac Oficial:', gosacOficial.length);
+    console.log('📋 [NovaCampanha] Templates externos:', external.length);
 
-    // Se tiver carteira selecionada, filtra os templates Ótima pelo Código da Carteira (id_carteira)
-    if (formData.carteira) {
-      const selectedWallet = carteiras.find((c: any) => String(c.id) === String(formData.carteira));
-      const walletCode = selectedWallet?.id_carteira ? String(selectedWallet.id_carteira) : null;
+    return [...local, ...external];
+  }, [localTemplatesData, externalTemplatesData]);
 
-      console.log('🔍 [NovaCampanha] Filtrando templates para Código da Carteira:', walletCode);
-
-      if (!walletCode) {
-        return local;
-      }
-
-      const otimaFiltrados = otima.filter(t => String(t.walletId) === walletCode);
-      const gosacFiltrados = gosacOficial.filter(t => String(t.walletId) === walletCode);
-      console.log('📋 [NovaCampanha] Templates Ótima filtrados:', otimaFiltrados.length);
-      console.log('📋 [NovaCampanha] Templates Gosac filtrados:', gosacFiltrados.length);
-
-      return [...local, ...otimaFiltrados, ...gosacFiltrados];
-    }
-
-    // Se nenhuma carteira selecionada, mostra locais + todos os oficiais (opcional, aqui mantemos apenas local como estava)
-    return local;
-  }, [localTemplatesData, otimaTemplatesData, gosacOficialTemplatesData, formData.carteira]);
-
-  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || gosacOficialTemplatesLoading;
+  const templatesLoading = localTemplatesLoading || externalTemplatesLoading;
 
   // Buscar filtros quando base for selecionada
   const { data: availableFilters = [], isLoading: filtersLoading } = useQuery({
