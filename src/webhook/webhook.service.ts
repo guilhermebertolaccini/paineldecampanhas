@@ -5,7 +5,7 @@ import { wordpressConfig } from '../config/wordpress.config';
 
 export interface WebhookStatusPayload {
   agendamento_id: string;
-  status: 'enviado' | 'erro_envio' | 'erro_credenciais' | 'erro_validacao' | 'processando' | 'mkc_executado' | 'mkc_erro';
+  status: 'enviado' | 'erro_envio' | 'erro_credenciais' | 'erro_validacao' | 'processando' | 'iniciado' | 'erro_inicio' | 'mkc_executado' | 'mkc_erro';
   resposta_api?: string;
   data_disparo?: string;
   total_enviados?: number;
@@ -17,7 +17,7 @@ export interface WebhookStatusPayload {
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
 
-  constructor(private readonly httpService: HttpService) {}
+  constructor(private readonly httpService: HttpService) { }
 
   async sendStatusUpdate(payload: WebhookStatusPayload): Promise<boolean> {
     try {

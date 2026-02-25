@@ -19,6 +19,7 @@ import {
   X,
   Fish,
   Trophy,
+  Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -53,6 +54,7 @@ const navItems: NavItem[] = [
   { label: "Configurações", href: "/painel/configuracoes", icon: Settings, adminOnly: true },
   { label: "Cadastro de Iscas", href: "/painel/iscas", icon: Fish },
   { label: "Blocklist", href: "/painel/blocklist", icon: Shield, adminOnly: true },
+  { label: "Saúde das Linhas", href: "/painel/saude-linhas", icon: Activity },
   { label: "API Manager", href: "/painel/api-manager", icon: Key, adminOnly: true },
 ];
 
@@ -131,73 +133,73 @@ export function Sidebar() {
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto sidebar-scroll px-3 py-4">
           <ul className="space-y-1">
-              {navItems.map((item) => (
-                <li key={item.label}>
-                  {item.children ? (
-                    <div>
-                      <button
-                        onClick={() => toggleExpanded(item.label)}
-                        className={cn(
-                          "flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                          isParentActive(item)
-                            ? "bg-sidebar-accent text-sidebar-primary"
-                            : "text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground"
-                        )}
-                      >
-                        <div className="flex items-center gap-3">
-                          <item.icon className="h-5 w-5" />
-                          <span>{item.label}</span>
-                        </div>
-                        <ChevronDown
-                          className={cn(
-                            "h-4 w-4 transition-transform",
-                            expandedItems.includes(item.label) && "rotate-180"
-                          )}
-                        />
-                      </button>
-                      {expandedItems.includes(item.label) && (
-                        <ul className="mt-1 ml-4 space-y-1 border-l border-sidebar-border pl-4">
-                          {item.children.map((child) => (
-                            <li key={child.href}>
-                              <Link
-                                to={child.href}
-                                onClick={() => setIsMobileOpen(false)}
-                                className={cn(
-                                  "block rounded-lg px-3 py-2 text-sm transition-colors no-underline",
-                                  isActive(child.href)
-                                    ? "bg-sidebar-accent text-sidebar-primary font-medium"
-                                    : "text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground"
-                                )}
-                              >
-                                {child.label}
-                              </Link>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  ) : (
-                    <Link
-                      to={item.href}
-                      onClick={() => setIsMobileOpen(false)}
+            {navItems.map((item) => (
+              <li key={item.label}>
+                {item.children ? (
+                  <div>
+                    <button
+                      onClick={() => toggleExpanded(item.label)}
                       className={cn(
-                        "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors no-underline",
-                        isActive(item.href)
+                        "flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                        isParentActive(item)
                           ? "bg-sidebar-accent text-sidebar-primary"
                           : "text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground"
                       )}
                     >
-                      <item.icon className="h-5 w-5" />
-                      <span>{item.label}</span>
-                      {item.adminOnly && (
-                        <span className="ml-auto text-[10px] font-medium uppercase tracking-wide text-sidebar-primary bg-sidebar-accent px-1.5 py-0.5 rounded">
-                          Admin
-                        </span>
-                      )}
-                    </Link>
-                  )}
-                </li>
-              ))}
+                      <div className="flex items-center gap-3">
+                        <item.icon className="h-5 w-5" />
+                        <span>{item.label}</span>
+                      </div>
+                      <ChevronDown
+                        className={cn(
+                          "h-4 w-4 transition-transform",
+                          expandedItems.includes(item.label) && "rotate-180"
+                        )}
+                      />
+                    </button>
+                    {expandedItems.includes(item.label) && (
+                      <ul className="mt-1 ml-4 space-y-1 border-l border-sidebar-border pl-4">
+                        {item.children.map((child) => (
+                          <li key={child.href}>
+                            <Link
+                              to={child.href}
+                              onClick={() => setIsMobileOpen(false)}
+                              className={cn(
+                                "block rounded-lg px-3 py-2 text-sm transition-colors no-underline",
+                                isActive(child.href)
+                                  ? "bg-sidebar-accent text-sidebar-primary font-medium"
+                                  : "text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                              )}
+                            >
+                              {child.label}
+                            </Link>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ) : (
+                  <Link
+                    to={item.href}
+                    onClick={() => setIsMobileOpen(false)}
+                    className={cn(
+                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors no-underline",
+                      isActive(item.href)
+                        ? "bg-sidebar-accent text-sidebar-primary"
+                        : "text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                    )}
+                  >
+                    <item.icon className="h-5 w-5" />
+                    <span>{item.label}</span>
+                    {item.adminOnly && (
+                      <span className="ml-auto text-[10px] font-medium uppercase tracking-wide text-sidebar-primary bg-sidebar-accent px-1.5 py-0.5 rounded">
+                        Admin
+                      </span>
+                    )}
+                  </Link>
+                )}
+              </li>
+            ))}
           </ul>
         </nav>
 

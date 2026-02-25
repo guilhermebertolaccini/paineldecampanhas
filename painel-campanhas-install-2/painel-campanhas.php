@@ -112,6 +112,7 @@ class Painel_Campanhas
         add_action('wp_ajax_cm_schedule_campaign', [$this, 'handle_schedule_campaign']);
         add_action('wp_ajax_cm_get_filters', [$this, 'handle_get_filters']);
         add_action('wp_ajax_cm_get_count', [$this, 'handle_get_count']);
+        add_action('wp_ajax_cm_get_count_detailed', [$this, 'handle_get_count_detailed']);
         add_action('wp_ajax_cm_get_template_content', [$this, 'handle_get_template_content']);
 
         // AJAX para mensagens
@@ -134,6 +135,7 @@ class Painel_Campanhas
 
         // AJAX para API Manager
         add_action('wp_ajax_pc_save_master_api_key', [$this, 'handle_save_master_api_key']);
+        add_action('wp_ajax_pc_get_master_api_key', [$this, 'handle_get_master_api_key']);
         add_action('wp_ajax_pc_get_static_credentials', [$this, 'handle_get_static_credentials']);
         add_action('wp_ajax_pc_get_otima_customers', [$this, 'handle_get_otima_customers']);
         add_action('wp_ajax_pc_save_microservice_config', [$this, 'handle_save_microservice_config']);
@@ -153,6 +155,8 @@ class Painel_Campanhas
 
         // AJAX Otima Templates
         add_action('wp_ajax_pc_get_otima_templates', [$this, 'handle_get_otima_templates']);
+        add_action('wp_ajax_pc_get_gosac_oficial_templates', [$this, 'handle_get_gosac_oficial_templates']);
+        add_action('wp_ajax_pc_get_gosac_oficial_connections', [$this, 'handle_get_gosac_oficial_connections']);
 
         // AJAX para Aprovar Campanhas
         add_action('wp_ajax_pc_get_pending_campaigns', [$this, 'handle_get_pending_campaigns']);
@@ -261,16 +265,28 @@ class Painel_Campanhas
             return new WP_Error('no_master_key', 'Master API Key não configurada.', ['status' => 503]);
         }
 
-        $provided_key = trim($request->get_header('X-API-KEY') ?? '');
+        $provided_key = $request->get_header('x-api-key') ?: $request->get_header('x_api_key');
+
         if (empty($provided_key)) {
-            error_log('🔴 [REST API] X-API-KEY header não fornecido');
+            $provided_key = $request->get_param('api_key');
+        }
+
+        if (empty($provided_key) && isset($_GET['api_key'])) {
+            $provided_key = $_GET['api_key'];
+        }
+
+        $provided_key = trim($provided_key ?: '');
+
+        if (empty($provided_key)) {
+            error_log('🔴 [REST API] X-API-KEY header ou api_key query param não fornecidos');
             error_log('🔴 [REST API] Headers recebidos: ' . json_encode(array_keys($request->get_headers())));
-            return new WP_Error('no_key_provided', 'API Key não fornecida no header X-API-KEY.', ['status' => 401]);
+            return new WP_Error('no_key_provided', 'API Key não fornecida no header X-API-KEY nem na URL.', ['status' => 401]);
         }
 
         if ($provided_key !== $master_key) {
             $mask = function ($k) {
-                return strlen($k) > 8 ? substr($k, 0, 4) . '...' . substr($k, -4) : '[' . strlen($k) . ' chars]'; };
+                return strlen($k) > 8 ? substr($k, 0, 4) . '...' . substr($k, -4) : '[' . strlen($k) . ' chars]';
+            };
             error_log('🔴 [REST API] API Key inválida!');
             error_log('🔴 [REST API]   Fornecida: "' . $mask($provided_key) . '" (len=' . strlen($provided_key) . ')');
             error_log('🔴 [REST API]   Esperada:  "' . $mask($master_key) . '" (len=' . strlen($master_key) . ')');
@@ -292,6 +308,14 @@ class Painel_Campanhas
         global $wpdb;
         $table = $wpdb->prefix . 'envios_pendentes';
 
+        // Lazy migrations (Garantiro que colunas vitais novas existam caso usuário não reativou plugin)
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'id_carteira'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN id_carteira varchar(100) DEFAULT NULL");
+        }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'idcob_contrato'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN idcob_contrato bigint(20) DEFAULT NULL");
+        }
+
         $query = $wpdb->prepare("
             SELECT 
                 CONCAT('55', telefone) as telefone,
@@ -310,7 +334,14 @@ class Painel_Campanhas
 
         $results = $wpdb->get_results($query, ARRAY_A);
 
+        if ($wpdb->last_error) {
+            $err = $wpdb->last_error;
+            error_log('🔴 [REST API DB ERRO] ' . $err . ' | Query: ' . $query);
+            return new WP_Error('db_error', 'Erro no banco de dados: ' . $err, ['status' => 500]);
+        }
+
         if (empty($results)) {
+            error_log('🔴 [REST API VAZIO] Agendamento ID: ' . $agendamento_id . ' retornou 0 linhas. Verifique o status da campanha no MySQL.');
             return new WP_Error('no_data', 'Nenhum dado encontrado para este agendamento.', ['status' => 404]);
         }
 
@@ -328,6 +359,7 @@ class Painel_Campanhas
                 'telefone' => (string) $row['telefone'],
                 'nome' => (string) $row['nome'],
                 'id_carteira' => (string) $id_carteira, // Usa id_carteira ao invés de idgis_ambiente
+                'idgis_ambiente' => (string) $row['idgis_ambiente'], // Necessário para o NestJS buscar as credenciais
                 'idcob_contrato' => (string) $row['idcob_contrato'],
                 'cpf_cnpj' => (string) $row['cpf_cnpj'],
                 'mensagem' => (string) $row['mensagem'],
@@ -854,6 +886,20 @@ class Painel_Campanhas
         update_option('acm_master_api_key', $master_api_key);
 
         wp_send_json_success(['message' => 'Master API Key salva com sucesso!']);
+    }
+
+    public function handle_get_master_api_key()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        $master_api_key = get_option('acm_master_api_key', '');
+
+        wp_send_json_success(['master_api_key' => $master_api_key]);
     }
 
     // ========== HANDLERS PARA API MANAGER ==========
@@ -1827,10 +1873,12 @@ class Painel_Campanhas
         $values = $temp_payload['values'];
         $match_field = $temp_payload['match_field'] ?? 'cpf';
 
+        $show_already_sent = isset($_POST['show_already_sent']) ? intval($_POST['show_already_sent']) : 0;
+
         // Busca registros usando o método que remove duplicatas
         // Assim a contagem será precisa (sem duplicatas)
         global $wpdb;
-        $records = $this->get_cpf_records($wpdb, $table_name, $values, $filters, $match_field);
+        $records = $this->get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent);
         $count = count($records);
 
         wp_send_json_success(['count' => intval($count)]);
@@ -1858,7 +1906,8 @@ class Painel_Campanhas
         $values = $temp_payload['values'];
         $match_field = $temp_payload['match_field'] ?? 'cpf';
 
-        $records = $this->get_cpf_records($wpdb, $table_name, $values, $filters, $match_field);
+        $show_already_sent = isset($_POST['show_already_sent']) ? intval($_POST['show_already_sent']) : 0;
+        $records = $this->get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent);
 
         if (empty($records)) {
             wp_send_json_error('Nenhum registro encontrado');
@@ -1889,19 +1938,61 @@ class Painel_Campanhas
         return $payload;
     }
 
-    private function get_cpf_records($wpdb, $table_name, $values, $filters, $match_field)
+    private function get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent = 0)
     {
-        $where_sql = $this->build_cpf_where_sql($wpdb, $table_name, $values, $filters, $match_field);
+        $where_sql = $this->build_cpf_where_sql($wpdb, 't', $values, $filters, $match_field, $show_already_sent);
+        $envios_table = $wpdb->prefix . 'envios_pendentes';
+
+        if (!$show_already_sent) {
+            // Usa LEFT JOIN com WHERE IS NULL para excluir envios das últimas 24h
+            $join_sql = "
+                LEFT JOIN {$envios_table} c ON (
+                    -- Compara telefones (normaliza removendo caracteres não numéricos)
+                    REGEXP_REPLACE(c.telefone, '[^0-9]', '') = REGEXP_REPLACE(t.TELEFONE, '[^0-9]', '')
+                    OR
+                    -- Remove código 55 se presente em ambos
+                    (LENGTH(REGEXP_REPLACE(c.telefone, '[^0-9]', '')) > 11 
+                     AND SUBSTRING(REGEXP_REPLACE(c.telefone, '[^0-9]', ''), 1, 2) = '55'
+                     AND SUBSTRING(REGEXP_REPLACE(c.telefone, '[^0-9]', ''), 3) = REGEXP_REPLACE(t.TELEFONE, '[^0-9]', ''))
+                    OR
+                    (LENGTH(REGEXP_REPLACE(t.TELEFONE, '[^0-9]', '')) > 11 
+                     AND SUBSTRING(REGEXP_REPLACE(t.TELEFONE, '[^0-9]', ''), 1, 2) = '55'
+                     AND SUBSTRING(REGEXP_REPLACE(t.TELEFONE, '[^0-9]', ''), 3) = REGEXP_REPLACE(c.telefone, '[^0-9]', ''))
+                )
+                AND CAST(c.data_disparo AS DATE) BETWEEN DATE_SUB(CURRENT_DATE, INTERVAL 1 DAY) AND CURRENT_DATE
+                AND c.status IN ('enviado', 'pendente', 'pendente_aprovacao')
+            ";
+
+            // Versão compatível para MySQL < 8.0
+            $mysql_version = $wpdb->get_var("SELECT VERSION()");
+            if (version_compare($mysql_version, '8.0.0', '<')) {
+                $join_sql = "
+                    LEFT JOIN {$envios_table} c ON (
+                        c.telefone = t.TELEFONE
+                        OR c.telefone LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(t.TELEFONE, '(', ''), ')', ''), '-', ''), ' ', ''), '.', ''), '%')
+                        OR t.TELEFONE LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c.telefone, '(', ''), ')', ''), '-', ''), ' ', ''), '.', ''), '%')
+                    )
+                    AND CAST(c.data_disparo AS DATE) BETWEEN DATE_SUB(CURRENT_DATE, INTERVAL 1 DAY) AND CURRENT_DATE
+                    AND c.status IN ('enviado', 'pendente', 'pendente_aprovacao')
+                ";
+            }
+
+            $where_sql .= " AND c.telefone IS NULL";
+        } else {
+            $join_sql = "";
+        }
 
         // Usa DISTINCT e GROUP BY para evitar duplicatas baseado em telefone + CPF
         $sql = "SELECT 
-                    `NOME` as nome,
-                    `TELEFONE` as telefone,
-                    `CPF` as cpf_cnpj,
-                    `IDCOB_CONTRATO` as idcob_contrato,
-                    `IDGIS_AMBIENTE` as idgis_ambiente
-                FROM `{$table_name}` {$where_sql}
-                GROUP BY `TELEFONE`, `CPF`, `NOME`, `IDCOB_CONTRATO`, `IDGIS_AMBIENTE`";
+                    t.`NOME` as nome,
+                    t.`TELEFONE` as telefone,
+                    t.`CPF` as cpf_cnpj,
+                    t.`IDCOB_CONTRATO` as idcob_contrato,
+                    t.`IDGIS_AMBIENTE` as idgis_ambiente
+                FROM `{$table_name}` t
+                {$join_sql}
+                {$where_sql}
+                GROUP BY t.`TELEFONE`, t.`CPF`, t.`NOME`, t.`IDCOB_CONTRATO`, t.`IDGIS_AMBIENTE`";
 
         $records = $wpdb->get_results($sql, ARRAY_A);
 
@@ -1957,7 +2048,7 @@ class Painel_Campanhas
         return $csv;
     }
 
-    private function build_cpf_where_sql($wpdb, $table_name, $values, $filters, $match_field)
+    private function build_cpf_where_sql($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent = 0)
     {
         $where_clauses = ['1=1'];
 
@@ -2075,8 +2166,10 @@ class Painel_Campanhas
         $temp_payload = json_decode(file_get_contents($temp_file), true);
         $values = $temp_payload['values'] ?? [];
 
+        $show_already_sent = isset($_POST['show_already_sent']) ? intval($_POST['show_already_sent']) : 0;
+
         // Busca registros usando o método que já remove duplicatas
-        $records = $this->get_cpf_records($wpdb, $table_name, $values, $filters, $match_field);
+        $records = $this->get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent);
 
         if (empty($records)) {
             wp_send_json_error('Nenhum registro encontrado');
@@ -2421,7 +2514,8 @@ class Painel_Campanhas
         $template_code = sanitize_text_field($_POST['template_code'] ?? '');
         $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
         $record_limit = intval($_POST['record_limit'] ?? 0);
-        $exclude_recent_phones = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
+        // FORCE BYPASS for testing: Set exclude_recent_phones to 0 unconditionally
+        $exclude_recent_phones = 0; // isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
 
         error_log('🔵 Dados recebidos: ' . json_encode([
             'table_name' => $table_name,
@@ -2554,6 +2648,8 @@ class Painel_Campanhas
             // CORREÇÃO: WhatsApp da Ótima precisa do prefixo W, mas começa com O (OTIMA_WPP)
             if ($provider === 'OTIMA_WPP') {
                 $prefix = 'W';
+            } elseif ($provider === 'GOSAC_OFICIAL') {
+                $prefix = 'F';
             }
             $agendamento_id = $prefix . $agendamento_base_id;
 
@@ -2617,6 +2713,7 @@ class Painel_Campanhas
         }
 
         // 🚀 OTIMIZAÇÃO: Insere em lotes de 500 registros
+        $last_db_error = '';
         if (!empty($all_insert_data)) {
             $batch_size = 500;
             $batches = array_chunk($all_insert_data, $batch_size);
@@ -2624,7 +2721,8 @@ class Painel_Campanhas
             foreach ($batches as $batch) {
                 $inserted = $this->bulk_insert($envios_table, $batch);
                 if ($inserted === false || $inserted === 0) {
-                    error_log('🚨 [ERRO] bulk_insert falhou para lote de ' . count($batch) . ' registros');
+                    $last_db_error = $wpdb->last_error;
+                    error_log('🚨 [ERRO] bulk_insert falhou para lote de ' . count($batch) . ' registros. Erro: ' . $last_db_error);
                 } else {
                     $total_inserted += $inserted;
                 }
@@ -2649,7 +2747,28 @@ class Painel_Campanhas
         }
 
         if ($total_inserted === 0) {
-            wp_send_json_error('Nenhum registro foi inserido. Verifique os filtros e tente novamente.');
+            $err_msg = 'Nenhum registro foi inserido. Verifique os filtros e tente novamente.';
+            if (!empty($last_db_error)) {
+                $err_msg .= ' Erro do Banco: ' . $last_db_error;
+            } else {
+                // If it's not a DB Error, it means all records were filtered out before reaching bulk_insert
+                if ($total_skipped > 0 || $blocked_count > 0) {
+                    $err_msg .= ' Motivo técnico: ' . count($records) . ' registros passaram pelos filtros primários, mas ';
+                    $reasons = [];
+                    if ($blocked_count > 0) {
+                        $reasons[] = "{$blocked_count} caíram na blocklist";
+                    }
+                    if ($total_skipped > 0) {
+                        $reasons[] = "{$total_skipped} foram pulados por bloqueio de 24h";
+                    }
+                    if (count($records) === 0) {
+                        // Means records were 0 before even reaching blocklist/skipped tally
+                        $reasons[] = "a consulta à base retornou 0 clientes";
+                    }
+                    $err_msg .= implode(' e ', $reasons) . '.';
+                }
+            }
+            wp_send_json_error($err_msg);
         }
 
         $message = "Campanha agendada! {$total_inserted} clientes inseridos.";
@@ -2716,6 +2835,185 @@ class Painel_Campanhas
         $count = PC_Campaign_Filters::count_records($table_name, $filters);
 
         wp_send_json_success($count);
+    }
+
+    public function handle_get_count_detailed()
+    {
+        check_ajax_referer('campaign-manager-nonce', 'nonce');
+
+        $table_name = sanitize_text_field($_POST['table_name'] ?? '');
+        $filters_json = stripslashes($_POST['filters'] ?? '[]');
+        $filters = json_decode($filters_json, true);
+        $exclude_recent = isset($_POST['exclude_recent']) && $_POST['exclude_recent'] === 'true';
+
+        if (empty($table_name)) {
+            wp_send_json_error('Nome da tabela não fornecido');
+        }
+
+        global $wpdb;
+        $envios_table = $wpdb->prefix . 'envios_pendentes';
+
+        // 1. Pega apenas os campos necessários para validação (TELEFONE, CPF_CNPJ)
+        // Isso simula o comportamento da criação da campanha, mas otimizado na memória
+        $where_sql = PC_Campaign_Filters::build_where_clause($filters);
+
+        // Verifica as colunas disponíveis para fazer SELECT correto sem gerar erro de coluna inexistente
+        $columns = array_map('strtoupper', (array) $wpdb->get_col("SHOW COLUMNS FROM `{$table_name}`"));
+        $select_fields = [];
+
+        // Telefone (Obrigatório, mas verificamos nomes comuns)
+        if (in_array('TELEFONE', $columns)) {
+            $select_fields[] = 'TELEFONE as telefone';
+        } elseif (in_array('CELULAR', $columns)) {
+            $select_fields[] = 'CELULAR as telefone';
+        } elseif (in_array('PHONE', $columns)) {
+            $select_fields[] = 'PHONE as telefone';
+        } else {
+            // Se não achar nada, tenta a primeira coluna que parece telefone ou bota NULL
+            $found_tel = false;
+            foreach ($columns as $col) {
+                if (strpos($col, 'TEL') !== false || strpos($col, 'CEL') !== false) {
+                    $select_fields[] = "`$col` as telefone";
+                    $found_tel = true;
+                    break;
+                }
+            }
+            if (!$found_tel)
+                $select_fields[] = 'NULL as telefone';
+        }
+
+        // CPF/CNPJ
+        if (in_array('CPF', $columns) && in_array('CPF_CNPJ', $columns)) {
+            $select_fields[] = 'COALESCE(CPF, CPF_CNPJ) as cpf_cnpj';
+        } elseif (in_array('CPF', $columns)) {
+            $select_fields[] = 'CPF as cpf_cnpj';
+        } elseif (in_array('CPF_CNPJ', $columns)) {
+            $select_fields[] = 'CPF_CNPJ as cpf_cnpj';
+        } elseif (in_array('CNPJ', $columns)) {
+            $select_fields[] = 'CNPJ as cpf_cnpj';
+        } elseif (in_array('DOCUMENTO', $columns)) {
+            $select_fields[] = 'DOCUMENTO as cpf_cnpj';
+        } else {
+            $select_fields[] = 'NULL as cpf_cnpj';
+        }
+
+        $select_clause = implode(', ', $select_fields);
+
+        $sql = "SELECT {$select_clause} FROM `{$table_name}`" . $where_sql;
+        // Fallback caso a tabela não tenha essas colunas nomeadas assim (vai tentar a padrão do plugin)
+        $suprime_erro = $wpdb->suppress_errors(true);
+        $records = $wpdb->get_results($sql, ARRAY_A);
+        $wpdb->suppress_errors($suprime_erro);
+
+        // Se falhou (nome de coluna diferente), tenta o método get_filtered_records_optimized que já resolve nomes
+        if ($records === null || $wpdb->last_error) {
+            $records = $this->get_filtered_records_optimized($table_name, $filters, 0, false);
+        }
+
+        $total_count = is_array($records) ? count($records) : 0;
+
+        if ($total_count === 0) {
+            wp_send_json_success([
+                'total' => 0,
+                'recent_excluded' => 0,
+                'blocked' => 0,
+                'effective' => 0
+            ]);
+            return;
+        }
+
+        // 2. Coleta telefones recentes em memória
+        $recent_phones = [];
+        if ($exclude_recent) {
+            $recent_phones = $this->get_recent_phones_batch($envios_table);
+        }
+
+        // 3. Obtém dados de blocklist (telefones e cpfs em lote como a validação normal faz)
+        $telefones = [];
+        $cpfs = [];
+        foreach ($records as $record) {
+            if (!empty($record['telefone'])) {
+                $tel_clean = preg_replace('/[^0-9]/', '', $record['telefone']);
+                if (strlen($tel_clean) >= 10) {
+                    $telefones[] = $tel_clean;
+                }
+            }
+            if (!empty($record['cpf_cnpj'])) {
+                $cpf_clean = preg_replace('/[^0-9]/', '', $record['cpf_cnpj']);
+                if (strlen($cpf_clean) === 11) {
+                    $cpfs[] = $cpf_clean;
+                }
+            }
+        }
+
+        $table_blocklist = $wpdb->prefix . 'pc_blocklist';
+        $blocked_telefones = [];
+        $blocked_cpfs = [];
+
+        if (!empty($telefones)) {
+            $telefones_unique = array_unique($telefones);
+            // Processa em chunks se for muito grande
+            foreach (array_chunk($telefones_unique, 5000) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '%s'));
+                $query = $wpdb->prepare("SELECT valor FROM $table_blocklist WHERE tipo = 'telefone' AND valor IN ($placeholders)", $chunk);
+                $blocked_telefones = array_merge($blocked_telefones, $wpdb->get_col($query));
+            }
+        }
+
+        if (!empty($cpfs)) {
+            $cpfs_unique = array_unique($cpfs);
+            foreach (array_chunk($cpfs_unique, 5000) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '%s'));
+                $query = $wpdb->prepare("SELECT valor FROM $table_blocklist WHERE tipo = 'cpf' AND valor IN ($placeholders)", $chunk);
+                $blocked_cpfs = array_merge($blocked_cpfs, $wpdb->get_col($query));
+            }
+        }
+
+        $blocked_telefones_map = array_flip($blocked_telefones);
+        $blocked_cpfs_map = array_flip($blocked_cpfs);
+
+        // 4. Itera para contar
+        $recent_excluded_count = 0;
+        $blocked_count = 0;
+        $effective_count = 0;
+
+        foreach ($records as $record) {
+            $telefone = preg_replace('/[^0-9]/', '', $record['telefone'] ?? '');
+            $telefone_normalizado = $telefone;
+            if (strlen($telefone_normalizado) > 11 && substr($telefone_normalizado, 0, 2) === '55') {
+                $telefone_normalizado = substr($telefone_normalizado, 2);
+            }
+
+            $cpf = preg_replace('/[^0-9]/', '', $record['cpf_cnpj'] ?? '');
+
+            $is_blocked = false;
+            // Blocklist priority
+            if (isset($blocked_telefones_map[$telefone])) {
+                $is_blocked = true;
+            } elseif (strlen($cpf) === 11 && isset($blocked_cpfs_map[$cpf])) {
+                $is_blocked = true;
+            }
+
+            if ($is_blocked) {
+                $blocked_count++;
+                continue; // Blocked records are dropped first
+            }
+
+            // Exclusão recente second priority
+            if ($exclude_recent && isset($recent_phones[$telefone_normalizado])) {
+                $recent_excluded_count++;
+                continue;
+            }
+
+            $effective_count++;
+        }
+
+        wp_send_json_success([
+            'total' => $total_count,
+            'recent_excluded' => $recent_excluded_count,
+            'blocked' => $blocked_count,
+            'effective' => $effective_count
+        ]);
     }
 
     public function handle_check_base_update()
@@ -3652,63 +3950,44 @@ class Painel_Campanhas
             return 0;
         }
 
-        // Verifica se a coluna id_carteira existe na tabela
-        $columns_result = $wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'id_carteira'");
-        $has_id_carteira = !empty($columns_result);
+        // Lazy migrations (Garantiro que colunas vitais novas existam caso usuário não reativou plugin)
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'id_carteira'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN id_carteira varchar(100) DEFAULT NULL");
+        }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'idcob_contrato'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN idcob_contrato bigint(20) DEFAULT NULL");
+        }
 
         // Prepara valores para INSERT múltiplo
         $values = [];
 
         foreach ($data_array as $data) {
-            if ($has_id_carteira) {
-                $id_carteira = isset($data['id_carteira']) ? $data['id_carteira'] : '';
-                $values[] = $wpdb->prepare(
-                    "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %d, %d, %s)",
-                    $data['telefone'],
-                    $data['nome'],
-                    $data['idgis_ambiente'],
-                    $id_carteira,
-                    $data['idcob_contrato'],
-                    $data['cpf_cnpj'],
-                    $data['mensagem'],
-                    $data['fornecedor'],
-                    $data['agendamento_id'],
-                    $data['status'],
-                    $data['current_user_id'],
-                    $data['valido'],
-                    $data['data_cadastro']
-                );
-            } else {
-                $values[] = $wpdb->prepare(
-                    "(%s, %s, %d, %d, %s, %s, %s, %s, %s, %d, %d, %s)",
-                    $data['telefone'],
-                    $data['nome'],
-                    $data['idgis_ambiente'],
-                    $data['idcob_contrato'],
-                    $data['cpf_cnpj'],
-                    $data['mensagem'],
-                    $data['fornecedor'],
-                    $data['agendamento_id'],
-                    $data['status'],
-                    $data['current_user_id'],
-                    $data['valido'],
-                    $data['data_cadastro']
-                );
-            }
+            $id_carteira = isset($data['id_carteira']) ? $data['id_carteira'] : '';
+            $idcob_contrato = isset($data['idcob_contrato']) ? $data['idcob_contrato'] : 0;
+
+            $values[] = $wpdb->prepare(
+                "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %d, %d, %s)",
+                $data['telefone'],
+                $data['nome'],
+                $data['idgis_ambiente'],
+                $id_carteira,
+                $idcob_contrato,
+                $data['cpf_cnpj'],
+                $data['mensagem'],
+                $data['fornecedor'],
+                $data['agendamento_id'],
+                $data['status'],
+                $data['current_user_id'],
+                $data['valido'],
+                $data['data_cadastro']
+            );
         }
 
-        if ($has_id_carteira) {
-            $sql = "INSERT INTO {$table} 
-                    (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
-                    VALUES " . implode(', ', $values);
-        } else {
-            $sql = "INSERT INTO {$table} 
-                    (telefone, nome, idgis_ambiente, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
-                    VALUES " . implode(', ', $values);
-        }
+        $sql = "INSERT INTO {$table} 
+                (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
+                VALUES " . implode(', ', $values);
 
         error_log('🔵 [bulk_insert] Inserindo ' . count($data_array) . ' registros na tabela ' . $table);
-        error_log('🔵 [bulk_insert] id_carteira coluna existe: ' . ($has_id_carteira ? 'SIM' : 'NÃO'));
 
         $result = $wpdb->query($sql);
         if ($result === false) {
@@ -3980,15 +4259,64 @@ class Painel_Campanhas
 
         $limit_sql = $limit > 0 ? $wpdb->prepare(" LIMIT %d", $limit) : '';
 
+        // Dinamicamente monta o SELECT baseado nas colunas existentes para evitar erros de UNKNOWN COLUMN
+        $columns = array_map('strtoupper', (array) $wpdb->get_col("SHOW COLUMNS FROM `{$table_name}`"));
+
+        $select_fields = [];
+
+        // TELEFONE
+        if (in_array('TELEFONE', $columns)) {
+            $select_fields[] = 't.`TELEFONE` as telefone';
+        } elseif (in_array('CELULAR', $columns)) {
+            $select_fields[] = 't.`CELULAR` as telefone';
+        } else {
+            $select_fields[] = 'NULL as telefone';
+        }
+
+        // NOME
+        if (in_array('NOME', $columns)) {
+            $select_fields[] = 't.`NOME` as nome';
+        } elseif (in_array('CLIENTE', $columns)) {
+            $select_fields[] = 't.`CLIENTE` as nome';
+        } else {
+            $select_fields[] = 'NULL as nome';
+        }
+
+        // IDGIS_AMBIENTE
+        if (in_array('IDGIS_AMBIENTE', $columns)) {
+            $select_fields[] = 't.`IDGIS_AMBIENTE` as idgis_ambiente';
+        } elseif (in_array('AMBIENTE', $columns)) {
+            $select_fields[] = 't.`AMBIENTE` as idgis_ambiente';
+        } else {
+            $select_fields[] = '0 as idgis_ambiente';
+        }
+
+        // IDCOB_CONTRATO
+        if (in_array('IDCOB_CONTRATO', $columns)) {
+            $select_fields[] = 't.`IDCOB_CONTRATO` as idcob_contrato';
+        } elseif (in_array('CONTRATO', $columns)) {
+            $select_fields[] = 't.`CONTRATO` as idcob_contrato';
+        } else {
+            $select_fields[] = '0 as idcob_contrato';
+        }
+
+        // CPF_CNPJ
+        if (in_array('CPF', $columns) && in_array('CPF_CNPJ', $columns)) {
+            $select_fields[] = 'COALESCE(t.`CPF`, t.`CPF_CNPJ`) as cpf_cnpj';
+        } elseif (in_array('CPF', $columns)) {
+            $select_fields[] = 't.`CPF` as cpf_cnpj';
+        } elseif (in_array('CPF_CNPJ', $columns)) {
+            $select_fields[] = 't.`CPF_CNPJ` as cpf_cnpj';
+        } else {
+            $select_fields[] = 'NULL as cpf_cnpj';
+        }
+
+        $select_clause = implode(', ', $select_fields);
+
         // 🚀 OTIMIZAÇÃO: LEFT JOIN para excluir telefones recentes diretamente na query
         if ($exclude_recent_phones) {
             // Usa LEFT JOIN com WHERE IS NULL - muito mais rápido que NOT EXISTS
-            $sql = "SELECT 
-                        t.`TELEFONE` as telefone,
-                        t.`NOME` as nome,
-                        t.`IDGIS_AMBIENTE` as idgis_ambiente,
-                        t.`IDCOB_CONTRATO` as idcob_contrato,
-                        COALESCE(t.`CPF`, t.`CPF_CNPJ`) as cpf_cnpj
+            $sql = "SELECT {$select_clause}
                     FROM `{$table_name}` t
                     LEFT JOIN {$envios_table} c ON (
                         -- Compara telefones (normaliza removendo caracteres não numéricos)
@@ -4012,12 +4340,7 @@ class Painel_Campanhas
             $mysql_version = $wpdb->get_var("SELECT VERSION()");
             if (version_compare($mysql_version, '8.0.0', '<')) {
                 // Versão compatível: compara telefones diretamente (pode ter pequenas diferenças de formatação)
-                $sql = "SELECT 
-                            t.`TELEFONE` as telefone,
-                            t.`NOME` as nome,
-                            t.`IDGIS_AMBIENTE` as idgis_ambiente,
-                            t.`IDCOB_CONTRATO` as idcob_contrato,
-                            COALESCE(t.`CPF`, t.`CPF_CNPJ`) as cpf_cnpj
+                $sql = "SELECT {$select_clause}
                         FROM `{$table_name}` t
                         LEFT JOIN {$envios_table} c ON (
                             c.telefone = t.TELEFONE
@@ -4031,12 +4354,7 @@ class Painel_Campanhas
             }
         } else {
             // SELECT direto - busca apenas campos necessários
-            $sql = "SELECT 
-                        t.`TELEFONE` as telefone,
-                        t.`NOME` as nome,
-                        t.`IDGIS_AMBIENTE` as idgis_ambiente,
-                        t.`IDCOB_CONTRATO` as idcob_contrato,
-                        COALESCE(t.`CPF`, t.`CPF_CNPJ`) as cpf_cnpj
+            $sql = "SELECT {$select_clause}
                     FROM `{$table_name}` t" . $where_sql . $limit_sql;
         }
 
@@ -4333,17 +4651,27 @@ class Painel_Campanhas
             return;
         }
 
+        // Lazy migrations (Garantiro que colunas vitais novas existam caso usuário não reativou plugin)
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'id_carteira'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN id_carteira varchar(100) DEFAULT NULL");
+        }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'idcob_contrato'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN idcob_contrato bigint(20) DEFAULT NULL");
+        }
+
         $values = [];
 
         foreach ($data_array as $data) {
             $id_carteira = isset($data['id_carteira']) ? $data['id_carteira'] : '';
+            $idcob_contrato = isset($data['idcob_contrato']) ? $data['idcob_contrato'] : 0;
+
             $values[] = $wpdb->prepare(
                 "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %d, %d, %s)",
                 $data['telefone'],
                 $data['nome'],
                 $data['idgis_ambiente'],
                 $id_carteira,
-                $data['idcob_contrato'],
+                $idcob_contrato,
                 $data['cpf_cnpj'],
                 $data['mensagem'],
                 $data['fornecedor'],
@@ -5026,6 +5354,8 @@ class Painel_Campanhas
             'erro_credenciais' => 'erro',
             'erro_validacao' => 'erro',
             'processando' => 'pendente',
+            'iniciado' => 'enviado',
+            'erro_inicio' => 'erro',
             'mkc_executado' => 'enviado',
             'mkc_erro' => 'erro',
         ];
@@ -5190,17 +5520,21 @@ class Painel_Campanhas
 
         $nome_base = sanitize_text_field($_POST['nome_base'] ?? '');
         $orcamento_total = floatval($_POST['orcamento_total'] ?? 0);
+        $mes = intval($_POST['mes'] ?? 0);
+        $ano = intval($_POST['ano'] ?? 0);
 
-        if (empty($nome_base) || $orcamento_total < 0) {
-            wp_send_json_error('Dados inválidos');
+        if (empty($nome_base) || $orcamento_total < 0 || $mes <= 0 || $ano <= 0) {
+            wp_send_json_error('Dados inválidos. Verifique carteira, orçamento, mês e ano.');
         }
 
         $table = $wpdb->prefix . 'pc_orcamentos_bases';
 
         // Verifica se já existe
         $exists = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $table WHERE nome_base = %s",
-            $nome_base
+            "SELECT id FROM $table WHERE nome_base = %s AND mes = %d AND ano = %d",
+            $nome_base,
+            $mes,
+            $ano
         ));
 
         if ($exists) {
@@ -5208,9 +5542,9 @@ class Painel_Campanhas
             $result = $wpdb->update(
                 $table,
                 ['orcamento_total' => $orcamento_total],
-                ['nome_base' => $nome_base],
+                ['nome_base' => $nome_base, 'mes' => $mes, 'ano' => $ano],
                 ['%f'],
-                ['%s']
+                ['%s', '%d', '%d']
             );
         } else {
             // Insere
@@ -5218,9 +5552,11 @@ class Painel_Campanhas
                 $table,
                 [
                     'nome_base' => $nome_base,
-                    'orcamento_total' => $orcamento_total
+                    'orcamento_total' => $orcamento_total,
+                    'mes' => $mes,
+                    'ano' => $ano
                 ],
-                ['%s', '%f']
+                ['%s', '%f', '%d', '%d']
             );
         }
 
@@ -5237,8 +5573,19 @@ class Painel_Campanhas
         global $wpdb;
 
         $table = $wpdb->prefix . 'pc_orcamentos_bases';
+        $mes = intval($_POST['mes'] ?? $_REQUEST['mes'] ?? 0);
+        $ano = intval($_POST['ano'] ?? $_REQUEST['ano'] ?? 0);
+
+        $where = "WHERE 1=1";
+        if ($mes > 0) {
+            $where .= $wpdb->prepare(" AND mes = %d", $mes);
+        }
+        if ($ano > 0) {
+            $where .= $wpdb->prepare(" AND ano = %d", $ano);
+        }
+
         $orcamentos = $wpdb->get_results(
-            "SELECT * FROM $table ORDER BY nome_base",
+            "SELECT * FROM $table $where ORDER BY nome_base",
             ARRAY_A
         );
 
@@ -7166,6 +7513,136 @@ class Painel_Campanhas
             'home_url' => home_url(),
             'admin_url' => admin_url('admin-ajax.php'),
         ]);
+    }
+
+    public function handle_get_gosac_oficial_templates()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        $credentials = get_option('acm_provider_credentials', []);
+        $gosac_oficial_creds = $credentials['gosac_oficial'] ?? [];
+
+        if (empty($gosac_oficial_creds)) {
+            wp_send_json_success([]);
+            return;
+        }
+
+        $all_templates = [];
+
+        foreach ($gosac_oficial_creds as $env_id => $data) {
+            $url = rtrim($data['url'], '/') . '/templates/waba';
+            $token = $data['token'] ?? '';
+
+            if (empty($url) || empty($token))
+                continue;
+
+            $response = wp_remote_get($url, [
+                'headers' => [
+                    'Authorization' => $token,
+                    'Content-Type' => 'application/json',
+                    'Accept' => 'application/json',
+                ],
+                'timeout' => 15,
+            ]);
+
+            if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+                error_log("🔴 [Gosac Oficial] erro ao buscar templates para $env_id: " . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
+                continue;
+            }
+
+            $body = wp_remote_retrieve_body($response);
+            $templates_data = json_decode($body, true);
+
+            if (is_array($templates_data)) {
+                // Se o retorno for um array com chave 'data', como na Ótima, ajustamos
+                $tpls = isset($templates_data['data']) ? $templates_data['data'] : $templates_data;
+
+                if (is_array($tpls)) {
+                    foreach ($tpls as $tpl) {
+                        $all_templates[] = [
+                            'id' => $tpl['id'] ?? '',
+                            'name' => $tpl['name'] ?? '',
+                            'status' => $tpl['status'] ?? '',
+                            'category' => $tpl['category'] ?? '',
+                            'language' => $tpl['language'] ?? '',
+                            'components' => $tpl['components'] ?? [],
+                            'env_id' => $env_id
+                        ];
+                    }
+                }
+            }
+        }
+
+        wp_send_json_success($all_templates);
+    }
+
+    public function handle_get_gosac_oficial_connections()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        $credentials = get_option('acm_provider_credentials', []);
+        $gosac_oficial_creds = $credentials['gosac_oficial'] ?? [];
+
+        if (empty($gosac_oficial_creds)) {
+            wp_send_json_success([]);
+            return;
+        }
+
+        $all_connections = [];
+
+        foreach ($gosac_oficial_creds as $env_id => $data) {
+            $url = rtrim($data['url'], '/') . '/connections/official';
+            $token = $data['token'] ?? '';
+
+            if (empty($url) || empty($token))
+                continue;
+
+            $response = wp_remote_get($url, [
+                'headers' => [
+                    'Authorization' => $token,
+                    'Content-Type' => 'application/json',
+                    'Accept' => 'application/json',
+                ],
+                'timeout' => 15,
+            ]);
+
+            if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+                error_log("🔴 [Gosac Oficial] erro ao buscar conexões para $env_id");
+                continue;
+            }
+
+            $body = wp_remote_retrieve_body($response);
+            $connections_data = json_decode($body, true);
+
+            if (is_array($connections_data)) {
+                $conns = isset($connections_data['data']) ? $connections_data['data'] : $connections_data;
+
+                if (is_array($conns)) {
+                    foreach ($conns as $conn) {
+                        $all_connections[] = [
+                            'id' => $conn['id'] ?? '',
+                            'name' => $conn['name'] ?? '',
+                            'status' => $conn['status'] ?? '',
+                            'messagingLimit' => $conn['messagingLimit'] ?? '',
+                            'accountRestriction' => $conn['accountRestriction'] ?? '',
+                            'env_id' => $env_id
+                        ];
+                    }
+                }
+            }
+        }
+
+        wp_send_json_success($all_connections);
     }
 
     public function handle_get_otima_templates()

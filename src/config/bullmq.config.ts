@@ -19,6 +19,8 @@ export const queueNames = {
   WHATSAPP_OTIMA_SEND: 'whatsapp-otima-send',
   SALESFORCE_SEND: 'salesforce-send',
   SALESFORCE_MKC: 'salesforce-mkc',
+  GOSAC_OFICIAL_SEND: 'gosac-oficial-send',
+  GOSAC_OFICIAL_START: 'gosac-oficial-start',
 } as const;
 
 export type QueueName = typeof queueNames[keyof typeof queueNames];

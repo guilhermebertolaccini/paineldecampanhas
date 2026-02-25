@@ -198,6 +198,14 @@ export const getCount = (data: Record<string, any>) => {
   }, 'cmNonce');
 };
 
+export const getCountDetailed = (data: Record<string, any>) => {
+  return wpAjax('cm_get_count_detailed', {
+    table_name: data.table_name || data.base,
+    filters: data.filters || [],
+    exclude_recent: data.exclude_recent,
+  }, 'cmNonce');
+};
+
 // Templates de mensagem
 export const getMessages = () => {
   return wpAjax('pc_get_messages', {});
@@ -219,9 +227,22 @@ export const deleteMessage = (id: string) => {
   return wpAjax('pc_delete_message', { message_id: id });
 };
 
+export const getIscas = () => {
+  return wpAjax('pc_get_iscas', {});
+};
+
 export const getOtimaTemplates = () => {
   return wpAjax('pc_get_otima_templates', {});
 };
+
+export const getGosacOficialTemplates = () => {
+  return wpAjax('pc_get_gosac_oficial_templates', {});
+};
+
+export const getGosacOficialConnections = () => {
+  return wpAjax('pc_get_gosac_oficial_connections', {});
+};
+
 
 export const getTemplateContent = async (id: string) => {
   console.log('📄 [getTemplateContent] ID recebido:', id, 'Tipo:', typeof id);
@@ -320,10 +341,10 @@ export const uploadCampaignFile = async (file: File, matchField: string) => {
   formData.append('action', 'cpf_cm_upload_csv');
   formData.append('nonce', nonce);
 
+  // Removendo explicitamente headers para que o fetch/browser defina o boundary correto do form-data
   const response = await fetch(ajaxUrl, {
     method: 'POST',
     body: formData,
-    credentials: 'same-origin',
   });
 
   const result = await response.json();
@@ -371,8 +392,8 @@ export const saveOrcamentoBase = (data: Record<string, any>) => {
   return wpAjax('pc_save_orcamento_base', data);
 };
 
-export const getOrcamentosBases = () => {
-  return wpAjax('pc_get_orcamentos_bases', {});
+export const getOrcamentosBases = (params: Record<string, any> = {}) => {
+  return wpAjax('pc_get_orcamentos_bases', params);
 };
 
 export const deleteOrcamentoBase = (id: string) => {
@@ -439,9 +460,6 @@ export const vincularBaseCarteira = async (carteiraId: string, bases: string[]) 
 };
 
 // Iscas
-export const getIscas = () => {
-  return wpAjax('pc_get_iscas', {});
-};
 
 export const getIsca = (id: string) => {
   return wpAjax('pc_get_isca', { id });
@@ -472,6 +490,10 @@ export const getRanking = () => {
 // API Manager
 export const saveMasterApiKey = (key: string) => {
   return wpAjax('pc_save_master_api_key', { master_api_key: key });
+};
+
+export const getMasterApiKey = () => {
+  return wpAjax('pc_get_master_api_key', {});
 };
 
 export const getMicroserviceConfig = () => {

@@ -90,8 +90,9 @@ export class CampaignsService {
 
   async fetchDataFromWordPress(agendamentoId: string): Promise<CampaignData[]> {
     try {
-      const url = wordpressConfig.endpoints.campaignData(agendamentoId);
-      this.logger.log(`Fetching campaign data from WordPress: ${url}`);
+      const base_url = wordpressConfig.endpoints.campaignData(agendamentoId);
+      const url = `${base_url}?api_key=${encodeURIComponent(wordpressConfig.apiKey)}`;
+      this.logger.log(`Fetching campaign data from WordPress: ${base_url}`);
 
       const response = await firstValueFrom(
         this.httpService.get<CampaignData[]>(url, {
@@ -126,8 +127,9 @@ export class CampaignsService {
 
   async fetchCredentials(provider: string, envId: string): Promise<any> {
     try {
-      const url = wordpressConfig.endpoints.credentials(provider.toLowerCase(), envId);
-      this.logger.log(`Fetching credentials from WordPress: ${url}`);
+      const base_url = wordpressConfig.endpoints.credentials(provider.toLowerCase(), envId);
+      const url = `${base_url}?api_key=${encodeURIComponent(wordpressConfig.apiKey)}`;
+      this.logger.log(`Fetching credentials from WordPress: ${base_url}`);
 
       const response = await firstValueFrom(
         this.httpService.get(url, {
@@ -193,8 +195,9 @@ export class CampaignsService {
 
   async fetchThrottlingConfig(agendamentoId: string): Promise<any> {
     try {
-      const url = wordpressConfig.endpoints.campaignConfig(agendamentoId);
-      this.logger.log(`Fetching throttling config from WordPress: ${url}`);
+      const base_url = wordpressConfig.endpoints.campaignConfig(agendamentoId);
+      const url = `${base_url}?api_key=${encodeURIComponent(wordpressConfig.apiKey)}`;
+      this.logger.log(`Fetching throttling config from WordPress: ${base_url}`);
 
       const response = await firstValueFrom(
         this.httpService.get(url, {
@@ -227,6 +230,7 @@ export class CampaignsService {
       'O': 'RCS_OTIMA',
       'W': 'WHATSAPP_OTIMA',
       'S': 'SALESFORCE',
+      'F': 'GOSAC_OFICIAL',
     };
 
     const provider = providerMap[prefix];
@@ -338,6 +342,7 @@ export class CampaignsService {
 
       case 'GOSAC':
       case 'NOAH':
+      case 'GOSAC_OFICIAL':
         // Já recebem url e token corretamente
         return credentials;
 

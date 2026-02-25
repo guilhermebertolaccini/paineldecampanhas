@@ -25,6 +25,7 @@ import Blocklist from "./pages/painel/Blocklist";
 import ApiManager from "./pages/painel/ApiManager";
 import Iscas from "./pages/painel/Iscas";
 import Ranking from "./pages/painel/Ranking";
+import LineHealth from "./pages/painel/LineHealth";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,7 +39,7 @@ const queryClient = new QueryClient({
 // Componente para sincronizar rota com página atual do WordPress
 function RouterSync() {
   const location = useLocation();
-  
+
   useEffect(() => {
     // Se tiver página atual do WordPress, navega para ela
     const currentPage = (window as any).pcAjax?.currentPage;
@@ -61,8 +62,9 @@ function RouterSync() {
         'api-manager': '/#/painel/api-manager',
         'iscas': '/#/painel/iscas',
         'ranking': '/#/painel/ranking',
+        'saude-linhas': '/#/painel/saude-linhas',
       };
-      
+
       const targetRoute = routeMap[currentPage];
       if (targetRoute) {
         window.location.hash = targetRoute.replace('/#', '');
@@ -81,7 +83,7 @@ const App = () => {
     if (hash && hash !== '/') {
       return hash;
     }
-    
+
     // Tenta pegar do WordPress
     const currentPage = (window as any).pcAjax?.currentPage;
     if (currentPage) {
@@ -103,10 +105,11 @@ const App = () => {
         'api-manager': '/painel/api-manager',
         'iscas': '/painel/iscas',
         'ranking': '/painel/ranking',
+        'saude-linhas': '/painel/saude-linhas',
       };
       return routeMap[currentPage] || '/painel/home';
     }
-    
+
     return '/painel/home';
   };
 
@@ -120,10 +123,10 @@ const App = () => {
           <Routes>
             {/* Redirect root to dashboard */}
             <Route path="/" element={<Navigate to={getInitialRoute()} replace />} />
-            
+
             {/* Login - without layout */}
             <Route path="/painel/login" element={<Login />} />
-            
+
             {/* Dashboard routes with layout */}
             <Route path="/painel" element={<DashboardLayout />}>
               <Route path="home" element={<Dashboard />} />
@@ -142,8 +145,9 @@ const App = () => {
               <Route path="api-manager" element={<ApiManager />} />
               <Route path="iscas" element={<Iscas />} />
               <Route path="ranking" element={<Ranking />} />
+              <Route path="saude-linhas" element={<LineHealth />} />
             </Route>
-            
+
             {/* Catch-all */}
             <Route path="*" element={<NotFound />} />
           </Routes>

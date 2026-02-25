@@ -53,6 +53,7 @@ export default function CampanhaArquivo() {
   const [carteira, setCarteira] = useState("");
   const [tableName, setTableName] = useState("");
   const [includeBaits, setIncludeBaits] = useState(false);
+  const [showAlreadySent, setShowAlreadySent] = useState(false);
   const [baseUpdateStatus, setBaseUpdateStatus] = useState<{ isUpdated: boolean; message: string } | null>(null);
 
   // Buscar carteiras (deve vir antes do useMemo que a usa)
@@ -303,6 +304,7 @@ export default function CampanhaArquivo() {
       provider: provider.toUpperCase(),
       match_field: matchField,
       include_baits: includeBaits ? 1 : 0,
+      show_already_sent: showAlreadySent ? 1 : 0,
     });
   };
 
@@ -575,6 +577,21 @@ export default function CampanhaArquivo() {
                     Adiciona automaticamente todos os números cadastrados como iscas nesta campanha
                   </p>
                 </div>
+              </div>
+            </div>
+
+            {/* Filtro Adicional: Mostrar já enviados */}
+            <div className="space-y-2">
+              <Label>Filtros Adicionais</Label>
+              <div className="flex items-center gap-3 p-4 rounded-lg border border-border">
+                <Checkbox
+                  id="show-already-sent"
+                  checked={showAlreadySent}
+                  onCheckedChange={(checked) => setShowAlreadySent(!!checked)}
+                />
+                <label htmlFor="show-already-sent" className="font-medium text-sm cursor-pointer">
+                  Mostrar registros já enviados (ignorar bloqueio de 24h)
+                </label>
               </div>
             </div>
 

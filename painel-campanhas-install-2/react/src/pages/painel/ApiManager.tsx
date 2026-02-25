@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import {
   saveMasterApiKey,
+  getMasterApiKey,
   getMicroserviceConfig,
   saveMicroserviceConfig,
   getStaticCredentials,
@@ -33,6 +34,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 
 const PROVIDERS = [
   { value: 'gosac', label: 'GOSAC' },
+  { value: 'gosac_oficial', label: 'Gosac Oficial' },
   { value: 'noah', label: 'Noah' },
   { value: 'salesforce', label: 'Salesforce' },
 ];
@@ -86,6 +88,12 @@ export default function ApiManager() {
     queryFn: getMicroserviceConfig,
   });
 
+  // Buscar master api key
+  const { data: masterKeyData } = useQuery({
+    queryKey: ['master-api-key'],
+    queryFn: getMasterApiKey,
+  });
+
   // Buscar credenciais estáticas
   const { data: staticCredsData, isLoading: staticCredsLoading } = useQuery({
     queryKey: ['static-credentials'],
@@ -100,6 +108,12 @@ export default function ApiManager() {
       });
     }
   }, [microConfigData]);
+
+  useEffect(() => {
+    if (masterKeyData && masterKeyData.master_api_key !== undefined) {
+      setMasterKey(masterKeyData.master_api_key);
+    }
+  }, [masterKeyData]);
 
   useEffect(() => {
     if (staticCredsData) {
@@ -136,6 +150,7 @@ export default function ApiManager() {
     mutationFn: (key: string) => saveMasterApiKey(key),
     onSuccess: () => {
       toast({ title: "Master API Key salva com sucesso!" });
+      queryClient.invalidateQueries({ queryKey: ['master-api-key'] });
     },
     onError: (error: any) => {
       toast({
@@ -232,8 +247,8 @@ export default function ApiManager() {
     }
 
     const credentialData: any = {};
-    
-    if (['gosac', 'noah'].includes(dynamicCredential.provider)) {
+
+    if (['gosac', 'gosac_oficial', 'noah'].includes(dynamicCredential.provider)) {
       if (!dynamicCredential.url || !dynamicCredential.token) {
         toast({
           title: "Campos obrigatórios",
@@ -1206,7 +1221,7 @@ function CustomProviderDialog({
   const handleSubmit = () => {
     try {
       const jsonTemplate = JSON.parse(formData.json_template);
-      
+
       if (!formData.provider_key || !formData.provider_name) {
         toast({
           title: "Campos obrigatórios",

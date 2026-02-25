@@ -19,12 +19,13 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { FilterBuilder, FilterItem } from "@/components/campaign/FilterBuilder";
 import {
   getAvailableBases,
   getFilters,
-  getCount,
+  getCountDetailed,
   getMessages,
   getTemplateContent,
   scheduleCampaign,
@@ -32,17 +33,21 @@ import {
   getBasesCarteira,
   checkBaseUpdate,
   getOtimaTemplates,
+  getGosacOficialTemplates,
+  getIscas,
 } from "@/lib/api";
 
 const providers = [
   { id: "OTIMA_RCS", name: "Ótima RCS", available: true },
-  { id: "OTIMA_WPP", name: "Ótima WPP", available: true },
   { id: "CDA_RCS", name: "CDA RCS", available: true },
-  { id: "CDA", name: "CDA", available: true },
-  { id: "GOSAC", name: "GOSAC", available: true },
-  { id: "NOAH", name: "NOAH", available: true },
-  { id: "RCS", name: "RCS", available: true },
+  { id: "OTIMA_WPP", name: "Ótima WPP", available: true },
+  { id: "CDA", name: "CDA WPP", available: true },
+  { id: "GOSAC", name: "Gosac", available: true },
+  { id: "GOSAC_OFICIAL", name: "Gosac Oficial", available: true },
+  { id: "NOAH", name: "Noah", available: true },
+  { id: "NOAH_OFICIAL", name: "Noah Oficial", available: true },
   { id: "SALESFORCE", name: "Salesforce", available: true },
+  { id: "TECH_IA", name: "Tech IA", available: true },
 ];
 
 export default function NovaCampanha() {
@@ -141,10 +146,22 @@ export default function NovaCampanha() {
     queryFn: getMessages,
   });
 
+  // Buscar iscas (baits) cadastradas e ativas
+  const { data: baitsData = [], isLoading: baitsLoading } = useQuery({
+    queryKey: ['baits'],
+    queryFn: getIscas,
+  });
+
   // Buscar templates da Ótima (RCS e WhatsApp)
   const { data: otimaTemplatesData = [], isLoading: otimaTemplatesLoading } = useQuery({
     queryKey: ['otima-templates'],
     queryFn: getOtimaTemplates,
+  });
+
+  // Buscar templates do Gosac Oficial
+  const { data: gosacOficialTemplatesData = [], isLoading: gosacOficialTemplatesLoading } = useQuery({
+    queryKey: ['gosac-oficial-templates'],
+    queryFn: getGosacOficialTemplates,
   });
 
   // Processar e mesclar templates
@@ -172,8 +189,22 @@ export default function NovaCampanha() {
       content: t.content || '',
     })) : [];
 
+    // Templates Gosac Oficial
+    const gosacOficial = Array.isArray(gosacOficialTemplatesData) ? gosacOficialTemplatesData.map((t: any) => ({
+      id: `gosac_oficial_${t.id}_${t.env_id}`,
+      name: t.name || t.id || '',
+      source: 'gosac_oficial',
+      templateCode: t.name || '',
+      walletId: t.env_id, // Usamos env_id como identificador de "wallet" para filtro
+      walletName: `Gosac (${t.env_id})`,
+      language: t.language,
+      category: t.category,
+      components: t.components,
+    })) : [];
+
     console.log('📋 [NovaCampanha] Templates locais:', local.length);
     console.log('📋 [NovaCampanha] Templates Ótima:', otima.length);
+    console.log('📋 [NovaCampanha] Templates Gosac Oficial:', gosacOficial.length);
 
     // Se tiver carteira selecionada, filtra os templates Ótima pelo Código da Carteira (id_carteira)
     if (formData.carteira) {
@@ -187,16 +218,18 @@ export default function NovaCampanha() {
       }
 
       const otimaFiltrados = otima.filter(t => String(t.walletId) === walletCode);
+      const gosacFiltrados = gosacOficial.filter(t => String(t.walletId) === walletCode);
       console.log('📋 [NovaCampanha] Templates Ótima filtrados:', otimaFiltrados.length);
+      console.log('📋 [NovaCampanha] Templates Gosac filtrados:', gosacFiltrados.length);
 
-      return [...local, ...otimaFiltrados];
+      return [...local, ...otimaFiltrados, ...gosacFiltrados];
     }
 
-    // Se nenhuma carteira selecionada, mostra apenas locais
+    // Se nenhuma carteira selecionada, mostra locais + todos os oficiais (opcional, aqui mantemos apenas local como estava)
     return local;
-  }, [localTemplatesData, otimaTemplatesData, formData.carteira]);
+  }, [localTemplatesData, otimaTemplatesData, gosacOficialTemplatesData, formData.carteira]);
 
-  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading;
+  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || gosacOficialTemplatesLoading;
 
   // Buscar filtros quando base for selecionada
   const { data: availableFilters = [], isLoading: filtersLoading } = useQuery({
@@ -230,8 +263,8 @@ export default function NovaCampanha() {
   });
 
   // Calcular contagem quando filtros mudarem
-  const { data: recordCount = 0, isLoading: countLoading } = useQuery({
-    queryKey: ['count', formData.base, filters],
+  const { data: countData = { total: 0, recent_excluded: 0, blocked: 0, effective: 0 }, isLoading: countLoading } = useQuery({
+    queryKey: ['count', formData.base, filters, formData.exclude_recent_phones],
     queryFn: async () => {
       try {
         // Formata os filtros novos para enviar ao backend
@@ -245,14 +278,15 @@ export default function NovaCampanha() {
             value: f.value
           }));
 
-        return await getCount({
+        return await getCountDetailed({
           table_name: formData.base,
           filters: formattedFilters,
+          exclude_recent: formData.exclude_recent_phones,
         });
       } catch (error: any) {
         console.error('🔴 [NovaCampanha] Erro ao calcular contagem:', error);
-        // Retorna 0 em caso de erro
-        return 0;
+        // Retorna zerado em caso de erro
+        return { total: 0, recent_excluded: 0, blocked: 0, effective: 0 };
       }
     },
     enabled: !!formData.base && step >= 2,
@@ -616,17 +650,58 @@ export default function NovaCampanha() {
                 filters={filters}
                 onChange={setFilters}
               />
-              <div className="rounded-lg bg-muted/50 p-4">
-                <p className="text-sm text-muted-foreground">
-                  <span className="font-semibold text-foreground">Estimativa:</span>{" "}
-                  {countLoading ? (
-                    <Loader2 className="inline h-4 w-4 animate-spin" />
-                  ) : (
-                    `${recordCount.toLocaleString('pt-BR')} registros após filtros`
+              <div className="space-y-4">
+                <div className="flex items-center justify-between border rounded-lg p-4 bg-card">
+                  <div className="space-y-0.5">
+                    <Label className="text-base font-semibold">Enviar para acionados</Label>
+                    <p className="text-sm text-muted-foreground mr-6">
+                      Se ativado, envia para todos. Se desmarcado, remove clientes que já receberam campanhas nas últimas 24h.
+                    </p>
+                  </div>
+                  <div className="flex items-center space-x-3">
+                    <span className={`text-sm font-medium ${!formData.exclude_recent_phones ? 'text-primary' : 'text-muted-foreground'}`}>
+                      {!formData.exclude_recent_phones ? "Sim" : "Não"}
+                    </span>
+                    <Switch
+                      checked={!formData.exclude_recent_phones}
+                      onCheckedChange={(checked) => setFormData({ ...formData, exclude_recent_phones: !checked })}
+                      className="scale-110"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-lg bg-muted/50 p-4 space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Total Bruto (após filtros):</span>
+                    <span className="font-semibold">{countLoading ? <Loader2 className="inline h-3 w-3 animate-spin" /> : countData.total.toLocaleString('pt-BR')}</span>
+                  </div>
+
+                  {countData.blocked > 0 && (
+                    <div className="flex items-center justify-between text-sm text-destructive">
+                      <span>Removidos pela Blocklist:</span>
+                      <span>- {countData.blocked.toLocaleString('pt-BR')}</span>
+                    </div>
                   )}
-                </p>
-              </div>
-            </CardContent>
+
+                  {countData.recent_excluded > 0 && (
+                    <div className="flex items-center justify-between text-sm text-yellow-600 dark:text-yellow-500">
+                      <span>Removidos (envio recente):</span>
+                      <span>- {countData.recent_excluded.toLocaleString('pt-BR')}</span>
+                    </div>
+                  )}
+
+                  <div className="border-t pt-2 mt-2 flex items-center justify-between text-sm">
+                    <span className="font-semibold text-foreground">Total Líquido Estimado:</span>
+                    <span className="font-bold text-primary text-base">
+                      {countLoading ? (
+                        <Loader2 className="inline h-4 w-4 animate-spin" />
+                      ) : (
+                        countData.effective.toLocaleString('pt-BR')
+                      )}
+                    </span>
+                  </div>
+                </div>
+              </div></CardContent>
           </>
         )}
 
@@ -926,6 +1001,28 @@ export default function NovaCampanha() {
                     </p>
                   </div>
                 </div>
+
+                {/* Lista de Iscas Renderizada Condicionalmente */}
+                {formData.include_baits && baitsData.length > 0 && (
+                  <div className="mt-4 p-3 bg-muted rounded-md text-sm">
+                    <p className="font-semibold mb-2">Serão enviadas cópias para {baitsData.length} isca(s):</p>
+                    <ul className="list-disc list-inside text-muted-foreground space-y-1">
+                      {baitsData.slice(0, 10).map((isca: any, idx: number) => (
+                        <li key={idx} className="truncate">
+                          {isca.telefone} {isca.nome ? `- ${isca.nome}` : ''}
+                        </li>
+                      ))}
+                      {baitsData.length > 10 && (
+                        <li className="italic">+ {baitsData.length - 10} outras iscas.</li>
+                      )}
+                    </ul>
+                  </div>
+                )}
+                {formData.include_baits && baitsData.length === 0 && !baitsLoading && (
+                  <div className="mt-4 p-3 bg-destructive/10 text-destructive rounded-md text-sm border border-destructive/20">
+                    <p>Você não possui enables ativas cadastradas no sistema. Nenhuma isca será enviada.</p>
+                  </div>
+                )}
               </div>
             </CardContent>
           </>

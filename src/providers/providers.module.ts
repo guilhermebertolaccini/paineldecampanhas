@@ -6,6 +6,7 @@ import { RcsModule } from './rcs/rcs.module';
 import { SalesforceModule } from './salesforce/salesforce.module';
 import { RcsOtimaModule } from './rcs-otima/rcs-otima.module';
 import { WhatsappOtimaModule } from './whatsapp-otima/whatsapp-otima.module';
+import { GosacOficialModule } from './gosac-oficial/gosac-oficial.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { WhatsappOtimaModule } from './whatsapp-otima/whatsapp-otima.module';
     SalesforceModule,
     RcsOtimaModule,
     WhatsappOtimaModule,
+    GosacOficialModule,
   ],
   exports: [
     CdaModule,
@@ -25,6 +27,7 @@ import { WhatsappOtimaModule } from './whatsapp-otima/whatsapp-otima.module';
     SalesforceModule,
     RcsOtimaModule,
     WhatsappOtimaModule,
+    GosacOficialModule,
   ],
 })
-export class ProvidersModule {}
+export class ProvidersModule { }

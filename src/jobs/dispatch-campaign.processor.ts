@@ -19,6 +19,7 @@ export class DispatchCampaignProcessor extends WorkerHost {
     @InjectQueue(queueNames.RCS_OTIMA_SEND) private readonly rcsOtimaQueue: Queue,
     @InjectQueue(queueNames.WHATSAPP_OTIMA_SEND) private readonly whatsappOtimaQueue: Queue,
     @InjectQueue(queueNames.SALESFORCE_SEND) private readonly salesforceQueue: Queue,
+    @InjectQueue(queueNames.GOSAC_OFICIAL_SEND) private readonly gosacOficialQueue: Queue,
   ) {
     super();
   }
@@ -187,6 +188,7 @@ export class DispatchCampaignProcessor extends WorkerHost {
       'RCS_OTIMA': this.rcsOtimaQueue,
       'WHATSAPP_OTIMA': this.whatsappOtimaQueue,
       'SALESFORCE': this.salesforceQueue,
+      'GOSAC_OFICIAL': this.gosacOficialQueue,
     };
 
     const queue = queueMap[provider];
