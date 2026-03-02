@@ -34,6 +34,7 @@ import {
   checkBaseUpdate,
   getTemplatesByWallet,
   getIscas,
+  saveRecurring,
 } from "@/lib/api";
 
 const providers = [
@@ -72,6 +73,7 @@ export default function NovaCampanha() {
     include_baits: false,
     throttling_type: 'none',
     throttling_config: {} as any,
+    is_recurring: false,
   });
 
   // Buscar carteiras
@@ -329,6 +331,24 @@ export default function NovaCampanha() {
     },
   });
 
+  const saveRecurringMutation = useMutation({
+    mutationFn: (data: any) => saveRecurring(data),
+    onSuccess: () => {
+      toast({
+        title: "Filtro salvo com sucesso!",
+        description: "Você pode gerar esta campanha manualmente a qualquer momento em 'Filtros Salvos'.",
+      });
+      navigate("/painel/campanhas");
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Erro ao salvar filtro",
+        description: error.message || "Erro ao salvar filtro",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleProviderToggle = (providerId: string) => {
     setFormData((prev) => ({
       ...prev,
@@ -396,19 +416,39 @@ export default function NovaCampanha() {
         value: f.value
       }));
 
-    const campaignData = {
-      table_name: formData.base,
-      filters: formattedFilters,
-      providers_config: providersConfig,
-      template_id: formData.templateSource === 'local' ? parseInt(formData.template) : null,
-      template_code: formData.templateCode || null,
-      template_source: formData.templateSource || 'local',
-      record_limit: formData.record_limit || 0,
-      exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
-      include_baits: formData.include_baits ? 1 : 0,
-    };
+    if (formData.is_recurring) {
+      const recurringData = {
+        nome_campanha: formData.name,
+        table_name: formData.base,
+        template_id: formData.templateSource === 'local' ? parseInt(formData.template) : null,
+        template_code: formData.templateCode || null,
+        template_source: formData.templateSource || 'local',
+        providers_config: providersConfig,
+        filters: formattedFilters,
+        record_limit: formData.record_limit || 0,
+        exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
+        include_baits: formData.include_baits ? 1 : 0,
+        throttling_type: formData.throttling_type || 'none',
+        throttling_config: formData.throttling_config || {},
+      };
+      saveRecurringMutation.mutate(recurringData);
+    } else {
+      const campaignData = {
+        table_name: formData.base,
+        filters: formattedFilters,
+        providers_config: providersConfig,
+        template_id: formData.templateSource === 'local' ? parseInt(formData.template) : null,
+        template_code: formData.templateCode || null,
+        template_source: formData.templateSource || 'local',
+        record_limit: formData.record_limit || 0,
+        exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
+        include_baits: formData.include_baits ? 1 : 0,
+        throttling_type: formData.throttling_type || 'none',
+        throttling_config: formData.throttling_config || {},
+      };
 
-    scheduleMutation.mutate(campaignData);
+      scheduleMutation.mutate(campaignData);
+    }
   };
 
   const canGoNext = () => {
@@ -987,6 +1027,25 @@ export default function NovaCampanha() {
                   </div>
                 )}
               </div>
+
+              {/* Opção para Salvar Filtro (Antiga Campanha Recorrente) */}
+              <div className="rounded-lg border border-border p-4 bg-muted/20">
+                <div className="flex items-center gap-3">
+                  <Switch
+                    id="save-filter"
+                    checked={formData.is_recurring}
+                    onCheckedChange={(checked) => setFormData({ ...formData, is_recurring: checked })}
+                  />
+                  <div className="flex-1">
+                    <label htmlFor="save-filter" className="font-semibold cursor-pointer">
+                      Salvar como Filtro Salvo
+                    </label>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Salva esta configuração de público (filtros), template, iscas e envio para ser gerada manualmente depois, com estimativa de volume em tempo real na tela de Filtros Salvos.
+                    </p>
+                  </div>
+                </div>
+              </div>
             </CardContent>
           </>
         )}
@@ -1011,13 +1070,18 @@ export default function NovaCampanha() {
           ) : (
             <Button
               onClick={handleSubmit}
-              disabled={scheduleMutation.isPending || !canGoNext()}
+              disabled={scheduleMutation.isPending || saveRecurringMutation.isPending || !canGoNext()}
               className="gradient-primary hover:opacity-90"
             >
-              {scheduleMutation.isPending ? (
+              {scheduleMutation.isPending || saveRecurringMutation.isPending ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Criando...
+                  Salvando...
+                </>
+              ) : formData.is_recurring ? (
+                <>
+                  <Database className="mr-2 h-4 w-4" />
+                  Salvar Filtro
                 </>
               ) : (
                 <>

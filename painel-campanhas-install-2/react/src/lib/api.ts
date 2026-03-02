@@ -294,9 +294,13 @@ export const getRecurring = () => {
   return wpAjax('cm_get_recurring', {}, 'cmNonce');
 };
 
+export const getRecurringEstimates = (id: string | number) => {
+  return wpAjax('cm_get_recurring_estimates', { id: parseInt(id.toString()) }, 'cmNonce');
+};
+
 export const saveRecurring = (data: Record<string, any>) => {
   // Formata os dados conforme esperado pelo backend
-  return wpAjax('cm_save_recurring', {
+  const payload: Record<string, any> = {
     nome_campanha: data.nome_campanha,
     table_name: data.table_name,
     template_id: data.template_id,
@@ -308,8 +312,22 @@ export const saveRecurring = (data: Record<string, any>) => {
       : JSON.stringify(data.filters || []),
     record_limit: data.record_limit || 0,
     exclude_recent_phones: data.exclude_recent_phones !== undefined ? data.exclude_recent_phones : 1,
+    include_baits: data.include_baits !== undefined ? data.include_baits : 0,
+    throttling_type: data.throttling_type || 'none',
+    throttling_config: typeof data.throttling_config === 'string'
+      ? data.throttling_config
+      : JSON.stringify(data.throttling_config || {}),
     id: data.id, // Se tiver id, será update, senão será insert
-  }, 'cmNonce');
+  };
+
+  if (data.template_code) {
+    payload.template_code = data.template_code;
+  }
+  if (data.template_source) {
+    payload.template_source = data.template_source;
+  }
+
+  return wpAjax('cm_save_recurring', payload, 'cmNonce');
 };
 
 export const deleteRecurring = (id: string) => {

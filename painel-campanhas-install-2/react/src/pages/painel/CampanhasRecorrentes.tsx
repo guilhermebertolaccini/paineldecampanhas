@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Play, Trash2, Clock, CheckCircle, Pause, Loader2, Info } from "lucide-react";
+import { Play, Trash2, Clock, CheckCircle, Pause, Loader2, Info, Users } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +25,7 @@ import {
   deleteRecurring,
   toggleRecurring,
   executeRecurringNow,
+  getRecurringEstimates,
 } from "@/lib/api";
 
 interface RecurringCampaign {
@@ -41,6 +43,7 @@ interface RecurringCampaign {
 export default function CampanhasRecorrentes() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [estimates, setEstimates] = useState<Record<string, { count: number; date: string }>>({});
 
   // Buscar campanhas recorrentes
   const { data: campaigns = [], isLoading } = useQuery({
@@ -85,16 +88,31 @@ export default function CampanhasRecorrentes() {
     onSuccess: () => {
       toast({
         title: "Execução iniciada",
-        description: "A campanha está sendo executada.",
+        description: "A geração da campanha foi agendada e será processada em breve.",
       });
       queryClient.invalidateQueries({ queryKey: ['recurring-campaigns'] });
     },
     onError: (error: any) => {
       toast({
         title: "Erro ao executar",
-        description: error.message || "Erro ao executar campanha",
+        description: error.message || "Erro ao gerar campanha",
         variant: "destructive",
       });
+    },
+  });
+
+  const estimateMutation = useMutation({
+    mutationFn: (id: string) => getRecurringEstimates(id),
+    onSuccess: (data: any, id: string) => {
+      if (data.success) {
+        setEstimates(prev => ({ ...prev, [id]: { count: data.data.estimated_count, date: new Date().toISOString() } }));
+        toast({ title: "Estimativa concluída", description: `Público estimado: ${data.data.estimated_count} contatos.` });
+      } else {
+        toast({ title: "Aviso", description: data.data?.message || "Erro na estimativa.", variant: "destructive" });
+      }
+    },
+    onError: (error: any) => {
+      toast({ title: "Erro", description: error.message || "Erro ao estimar", variant: "destructive" });
     },
   });
 
@@ -122,14 +140,14 @@ export default function CampanhasRecorrentes() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Campanhas Recorrentes"
-        description="Visualize e execute campanhas automáticas já configuradas"
+        title="Filtros Salvos"
+        description="Visualize, estime e execute campanhas com filtros pré-configurados."
       />
 
       <Alert>
         <Info className="h-4 w-4" />
         <AlertDescription>
-          Para criar novas campanhas recorrentes, vá em <strong>Nova Campanha</strong> e marque a opção "Campanha Recorrente" ao final do formulário.
+          Para criar novos filtros salvos, vá em <strong>Nova Campanha</strong> e marque a opção "Salvar Filtros" ao final do formulário. As campanhas geradas terão um cooldown automático de 24h por número.
         </AlertDescription>
       </Alert>
 
@@ -143,9 +161,9 @@ export default function CampanhasRecorrentes() {
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16">
             <Clock className="h-12 w-12 text-muted-foreground mb-4" />
-            <h3 className="text-lg font-semibold">Nenhuma campanha recorrente</h3>
+            <h3 className="text-lg font-semibold">Nenhum filtro salvo</h3>
             <p className="text-muted-foreground text-center mt-2">
-              Crie sua primeira campanha recorrente através da tela <strong>Nova Campanha</strong>
+              Crie seu primeiro filtro salvo através da tela <strong>Nova Campanha</strong>
             </p>
           </CardContent>
         </Card>
@@ -161,9 +179,8 @@ export default function CampanhasRecorrentes() {
                 <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
                   <div className="flex items-start gap-4">
                     <div
-                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${
-                        campaign.ativo ? "bg-success/10" : "bg-muted"
-                      }`}
+                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${campaign.ativo ? "bg-success/10" : "bg-muted"
+                        }`}
                     >
                       {campaign.ativo ? (
                         <CheckCircle className="h-6 w-6 text-success" />
@@ -187,17 +204,30 @@ export default function CampanhasRecorrentes() {
                       disabled={toggleMutation.isPending}
                     />
                     <Button
-                      variant="outline"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => estimateMutation.mutate(campaign.id)}
+                      disabled={!campaign.ativo || estimateMutation.isPending}
+                    >
+                      {estimateMutation.isPending && estimateMutation.variables === campaign.id ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Users className="mr-2 h-4 w-4" />
+                      )}
+                      Estimar
+                    </Button>
+                    <Button
+                      variant="default"
                       size="sm"
                       onClick={() => handleExecuteNow(campaign)}
                       disabled={!campaign.ativo || executeMutation.isPending}
                     >
-                      {executeMutation.isPending ? (
+                      {executeMutation.isPending && executeMutation.variables === campaign.id ? (
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                       ) : (
                         <Play className="mr-2 h-4 w-4" />
                       )}
-                      Executar Agora
+                      Gerar Agora
                     </Button>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
@@ -207,9 +237,9 @@ export default function CampanhasRecorrentes() {
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
-                          <AlertDialogTitle>Excluir campanha recorrente?</AlertDialogTitle>
+                          <AlertDialogTitle>Excluir filtro salvo?</AlertDialogTitle>
                           <AlertDialogDescription>
-                            Esta ação não pode ser desfeita. A campanha "{campaign.nome_campanha}" será removida permanentemente.
+                            Esta ação não pode ser desfeita. O filtro salvo "{campaign.nome_campanha}" será removido permanentemente.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
@@ -250,6 +280,16 @@ export default function CampanhasRecorrentes() {
                       {campaign.ativo ? "Ativa" : "Inativa"}
                     </Badge>
                   </div>
+                  {estimates[campaign.id] && (
+                    <div className="rounded-lg bg-primary/10 p-3 sm:col-span-4 mt-2">
+                      <p className="text-sm font-medium flex items-center gap-2">
+                        <Users className="h-4 w-4" /> Público estimado agora: {estimates[campaign.id].count} contatos
+                        <span className="text-xs text-muted-foreground font-normal ml-auto">
+                          (Cooldown de 24h já aplicado)
+                        </span>
+                      </p>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>

@@ -107,6 +107,7 @@ class Painel_Campanhas
         add_action('wp_ajax_cm_toggle_recurring', [$this, 'handle_toggle_recurring']);
         add_action('wp_ajax_cm_execute_recurring_now', [$this, 'handle_execute_recurring_now']);
         add_action('wp_ajax_cm_preview_recurring_count', [$this, 'handle_preview_recurring_count']);
+        add_action('wp_ajax_cm_get_recurring_estimates', [$this, 'handle_get_recurring_estimates']);
 
         // AJAX para criar campanhas (delegar para campaign-manager se disponível, senão usar handler próprio)
         add_action('wp_ajax_cm_schedule_campaign', [$this, 'handle_schedule_campaign']);
@@ -2443,11 +2444,22 @@ class Painel_Campanhas
         $filters_json = stripslashes($_POST['filters'] ?? '[]');
         $providers_config_json = stripslashes($_POST['providers_config'] ?? '{}');
         $template_id = intval($_POST['template_id'] ?? 0);
+        $template_code = sanitize_text_field($_POST['template_code'] ?? '');
+        $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
         $record_limit = intval($_POST['record_limit'] ?? 0);
         $exclude_recent_phones = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
+        $include_baits = isset($_POST['include_baits']) ? intval($_POST['include_baits']) : 0;
 
-        if (empty($nome_campanha) || empty($table_name) || empty($template_id)) {
-            wp_send_json_error('Dados incompletos para criar template.');
+        $throttling_type = sanitize_text_field($_POST['throttling_type'] ?? 'none');
+        $throttling_config_json = stripslashes($_POST['throttling_config'] ?? '{}');
+
+        // Validation based on source
+        if (empty($nome_campanha) || empty($table_name)) {
+            wp_send_json_error('Dados incompletos para criar filtro salvo.');
+        }
+
+        if ($template_source === 'local' && $template_id <= 0) {
+            wp_send_json_error('Template_id inválido para template local.');
         }
 
         // Cria tabela se não existir
@@ -2461,17 +2473,34 @@ class Painel_Campanhas
             filtros_json text,
             providers_config text NOT NULL,
             template_id bigint(20) NOT NULL,
+            template_code varchar(255) DEFAULT NULL,
+            template_source varchar(100) DEFAULT 'local',
             record_limit int(11) DEFAULT 0,
             ativo tinyint(1) DEFAULT 1,
             ultima_execucao datetime DEFAULT NULL,
             criado_por bigint(20) NOT NULL,
             criado_em datetime DEFAULT CURRENT_TIMESTAMP,
             atualizado_em datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            throttling_type varchar(50) DEFAULT 'none',
+            throttling_config text,
+            include_baits tinyint(1) DEFAULT 0,
             PRIMARY KEY (id)
         ) $charset_collate;";
 
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
+
+        // Verifica se as novas colunas existem e adiciona se necessário (migração)
+        $column_check = $wpdb->get_results("SHOW COLUMNS FROM `$table` LIKE 'template_code'");
+        if (empty($column_check)) {
+            $wpdb->query("ALTER TABLE `$table` 
+                ADD COLUMN template_code varchar(255) DEFAULT NULL AFTER template_id,
+                ADD COLUMN template_source varchar(100) DEFAULT 'local' AFTER template_code,
+                ADD COLUMN throttling_type varchar(50) DEFAULT 'none' AFTER atualizado_em,
+                ADD COLUMN throttling_config text AFTER throttling_type,
+                ADD COLUMN include_baits tinyint(1) DEFAULT 0 AFTER throttling_config;
+            ");
+        }
 
         // Adiciona exclusão ao config
         $config_array = json_decode($providers_config_json, true);
@@ -2489,18 +2518,24 @@ class Painel_Campanhas
                 'filtros_json' => $filters_json,
                 'providers_config' => $providers_config_json,
                 'template_id' => $template_id,
+                'template_code' => $template_code,
+                'template_source' => $template_source,
                 'record_limit' => $record_limit,
+                'throttling_type' => $throttling_type,
+                'throttling_config' => $throttling_config_json,
+                'include_baits' => $include_baits,
                 'ativo' => 1,
                 'criado_por' => get_current_user_id()
             ],
-            ['%s', '%s', '%s', '%s', '%d', '%d', '%d', '%d']
+            // nome, tabela, filtros, prov_config, temp_id, temp_code, temp_source, limit, thrott_type, thrott_conf, baits, ativo, autor
+            ['%s', '%s', '%s', '%s', '%d', '%s', '%s', '%d', '%s', '%s', '%d', '%d', '%d']
         );
 
         if ($result === false) {
-            wp_send_json_error('Erro ao salvar template: ' . $wpdb->last_error);
+            wp_send_json_error('Erro ao salvar filtro: ' . $wpdb->last_error);
         }
 
-        wp_send_json_success('Template salvo com sucesso!');
+        wp_send_json_success('Filtro salvo com sucesso!');
     }
 
     public function handle_schedule_campaign()
@@ -4053,6 +4088,55 @@ class Painel_Campanhas
         }
     }
 
+    public function handle_get_recurring_estimates()
+    {
+        check_ajax_referer('campaign-manager-nonce', 'nonce');
+        global $wpdb;
+
+        $id = intval($_POST['id'] ?? 0);
+        $current_user_id = get_current_user_id();
+        $table = $wpdb->prefix . 'cm_recurring_campaigns';
+
+        // Busca o filtro salvo
+        $campaign = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$table} WHERE id = %d AND criado_por = %d",
+            $id,
+            $current_user_id
+        ), ARRAY_A);
+
+        if (!$campaign) {
+            wp_send_json_error('Filtro salvo não encontrado.');
+            return;
+        }
+
+        $table_name = $campaign['tabela_origem'];
+        $filters_json = $campaign['filtros_json'];
+        $providers_config_json = $campaign['providers_config'];
+
+        $filters = json_decode($filters_json, true) ?: [];
+        $providers_config = json_decode($providers_config_json, true) ?: [];
+        $exclude_recent_phones = isset($providers_config['exclude_recent_phones']) ? intval($providers_config['exclude_recent_phones']) : 1;
+
+        // Adiciona a regra de 24h se necessário
+        if ($exclude_recent_phones === 1) {
+            $filters[] = [
+                'field' => 'exclude_recent',
+                'operator' => 'exclude_recent',
+                'value' => 'true'
+            ];
+        }
+
+        $count = PC_Campaign_Filters::count_records($table_name, $filters);
+
+        // Se houver limitador de registros configurado no filtro salvo, usamos o menor valor
+        $record_limit = intval($campaign['record_limit']);
+        if ($record_limit > 0 && $count > $record_limit) {
+            $count = $record_limit;
+        }
+
+        wp_send_json_success(['estimate' => $count]);
+    }
+
     public function handle_toggle_recurring()
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
@@ -4489,6 +4573,10 @@ class Painel_Campanhas
                 $campaign_name_short = substr($campaign_name_clean, 0, 30);
                 $agendamento_id = $prefix . $agendamento_base_id . '_' . $campaign_name_short;
 
+                $template_source = $campaign['template_source'] ?? 'local';
+                $template_code = $campaign['template_code'] ?? '';
+                $generated_campaign_ids = [];
+
                 foreach ($provider_records as $record) {
                     // 🚀 Telefones recentes já foram excluídos no LEFT JOIN da query
                     // Não precisa mais verificar aqui!
@@ -4511,6 +4599,20 @@ class Painel_Campanhas
                     // Prepara mensagem
                     $mensagem_final = $this->replace_placeholders($mensagem_template, $record);
 
+                    // Para templates da Ótima, armazena template_code no campo mensagem
+                    $mensagem_para_armazenar = $mensagem_final;
+                    if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code)) {
+                        $mensagem_para_armazenar = json_encode([
+                            'template_code' => $template_code,
+                            'template_source' => $template_source,
+                            'original_message' => $mensagem_final
+                        ]);
+                    }
+
+                    if (!in_array($agendamento_id, $generated_campaign_ids)) {
+                        $generated_campaign_ids[] = $agendamento_id;
+                    }
+
                     $all_insert_data[] = [
                         'telefone' => $telefone_normalizado,
                         'nome' => $record['nome'] ?? '',
@@ -4518,7 +4620,7 @@ class Painel_Campanhas
                         'id_carteira' => $id_carteira, // Novo campo
                         'idcob_contrato' => intval($record['idcob_contrato'] ?? 0),
                         'cpf_cnpj' => $record['cpf_cnpj'] ?? '',
-                        'mensagem' => $mensagem_final,
+                        'mensagem' => $mensagem_para_armazenar,
                         'fornecedor' => $provider,
                         'agendamento_id' => $agendamento_id,
                         'status' => 'pendente_aprovacao',
@@ -4545,6 +4647,26 @@ class Painel_Campanhas
                     $total_inserted += count($batch);
                 }
                 error_log('🔵 Inserção concluída! Total: ' . $total_inserted);
+            }
+
+            // Save Throttling Settings
+            $throttling_type = $campaign['throttling_type'] ?? 'none';
+            $throttling_config_json = $campaign['throttling_config'] ?? '{}';
+
+            if ($throttling_type !== 'none' && !empty($generated_campaign_ids)) {
+                $table_settings = $wpdb->prefix . 'pc_campaign_settings';
+                foreach ($generated_campaign_ids as $camp_id) {
+                    $wpdb->replace(
+                        $table_settings,
+                        [
+                            'agendamento_id' => $camp_id,
+                            'throttling_type' => $throttling_type,
+                            'throttling_config' => $throttling_config_json,
+                            'criado_em' => current_time('mysql')
+                        ],
+                        ['%s', '%s', '%s', '%s']
+                    );
+                }
             }
 
             if ($total_inserted === 0) {
