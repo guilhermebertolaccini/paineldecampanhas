@@ -93,11 +93,13 @@ export function FilterBuilder({ availableFilters, filters, onChange }: FilterBui
         const filterDef = availableFilters.find((f) => (f.column || f.name || f) === columnName);
         if (!filterDef) return [];
 
-        if (filterDef.type === "numeric" || filterDef.data_type === "int" || filterDef.data_type === "decimal") {
+        const dt = String(filterDef.data_type || filterDef.type || '').toLowerCase().trim();
+        const NUMERIC_TYPES = ['int', 'bigint', 'tinyint', 'smallint', 'mediumint', 'integer', 'numeric', 'decimal', 'float', 'double', 'real'];
+        if (dt === 'numeric' || NUMERIC_TYPES.some(t => dt === t || dt.startsWith(t + '(')) || filterDef.type === 'numeric') {
             return OPERATORS_NUMBER;
         }
 
-        if (filterDef.type === "select" || filterDef.options) {
+        if (filterDef.type === 'select' || filterDef.options) {
             return OPERATORS_SELECT;
         }
 

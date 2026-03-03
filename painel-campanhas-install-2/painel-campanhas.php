@@ -161,6 +161,8 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_get_all_connections_health', [$this, 'handle_get_all_connections_health']);
         add_action('wp_ajax_pc_get_templates_by_wallet', [$this, 'handle_get_templates_by_wallet']);
 
+        // AJAX Salesforce Manual Import
+        add_action('wp_ajax_pc_run_salesforce_import', [$this, 'handle_run_salesforce_import']);
         // AJAX para Aprovar Campanhas
         add_action('wp_ajax_pc_get_pending_campaigns', [$this, 'handle_get_pending_campaigns']);
         add_action('wp_ajax_pc_get_microservice_config', [$this, 'handle_get_microservice_config']);
@@ -472,6 +474,7 @@ class Painel_Campanhas
             id bigint(20) NOT NULL AUTO_INCREMENT,
             nome varchar(255) NOT NULL,
             id_carteira varchar(100) NOT NULL,
+            id_ruler varchar(100) DEFAULT NULL,
             descricao text,
             ativo tinyint(1) DEFAULT 1,
             criado_em datetime DEFAULT CURRENT_TIMESTAMP,
@@ -479,6 +482,12 @@ class Painel_Campanhas
             UNIQUE KEY unique_id_carteira (id_carteira)
         ) $charset_collate;";
         $wpdb->query($sql_carteiras);
+
+        // Migração: Adiciona coluna id_ruler se não existir na tabela antiga
+        $col_id_ruler_exists = $wpdb->get_results("SHOW COLUMNS FROM $table_carteiras LIKE 'id_ruler'");
+        if (empty($col_id_ruler_exists)) {
+            $wpdb->query("ALTER TABLE $table_carteiras ADD COLUMN id_ruler varchar(100) DEFAULT NULL AFTER id_carteira");
+        }
 
         // Cria tabela de vínculos V2
         $sql_carteiras_bases = "CREATE TABLE IF NOT EXISTS $table_carteiras_bases (
@@ -566,6 +575,41 @@ class Painel_Campanhas
             PRIMARY KEY (agendamento_id)
         ) $charset_collate;";
         dbDelta($sql_settings);
+
+        // ── salesforce_returns ────────────────────────────────────────────────
+        // Table populated by import_salesforce.php cron job.
+        $table = 'salesforce_returns'; // intentionally un-prefixed, matching the cron script
+        $sql = "CREATE TABLE IF NOT EXISTS {$table} (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            uniqueid text NOT NULL,
+            uniqueid_hash varchar(64) NOT NULL,
+            trackingtype varchar(100),
+            sendtype varchar(100),
+            mid varchar(100),
+            eid varchar(200),
+            contactkey varchar(200),
+            mobilenumber varchar(50),
+            eventdateutc datetime,
+            appid varchar(100),
+            channelid varchar(100),
+            channeltype varchar(50),
+            conversationtype varchar(50),
+            activityname varchar(150),
+            channelname varchar(150),
+            status varchar(100),
+            reason text,
+            jbdefinitionid varchar(200),
+            sendidentifier varchar(200),
+            assetid varchar(100),
+            messagetypeid varchar(100),
+            operacao__c varchar(100),
+            cpf_cnpj__c varchar(50),
+            name varchar(255),
+            criado_em datetime DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY  (id),
+            UNIQUE KEY uniqueid_hash (uniqueid_hash)
+        ) {$charset_collate};";
+        dbDelta($sql);
     }
 
     public function deactivate()
@@ -2448,6 +2492,7 @@ class Painel_Campanhas
         $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
         $record_limit = intval($_POST['record_limit'] ?? 0);
         $exclude_recent_phones = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
+        $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
         $include_baits = isset($_POST['include_baits']) ? intval($_POST['include_baits']) : 0;
 
         $throttling_type = sanitize_text_field($_POST['throttling_type'] ?? 'none');
@@ -2508,6 +2553,7 @@ class Painel_Campanhas
             $config_array = [];
         }
         $config_array['exclude_recent_phones'] = $exclude_recent_phones;
+        $config_array['exclude_recent_hours'] = $exclude_recent_hours;
         $providers_config_json = json_encode($config_array);
 
         $result = $wpdb->insert(
@@ -2555,8 +2601,8 @@ class Painel_Campanhas
         $template_code = sanitize_text_field($_POST['template_code'] ?? '');
         $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
         $record_limit = intval($_POST['record_limit'] ?? 0);
-        // FORCE BYPASS for testing: Set exclude_recent_phones to 0 unconditionally
-        $exclude_recent_phones = 0; // isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
+        $exclude_recent_phones = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
+        $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
 
         error_log('🔵 Dados recebidos: ' . json_encode([
             'table_name' => $table_name,
@@ -2616,7 +2662,14 @@ class Painel_Campanhas
 
         // 🎣 ISCAS - Adiciona iscas ativas se solicitado
         $include_baits = isset($_POST['include_baits']) ? intval($_POST['include_baits']) : 0;
+        $test_only = isset($_POST['test_only']) ? intval($_POST['test_only']) : 0;
         $baits_added = 0;
+
+        // Se for um disparo de teste, ignoramos os clientes e usamos SÓ as iscas.
+        if ($include_baits && $test_only) {
+            $records = [];
+            error_log("🧪 [Test Send] Ativado Disparo de Teste. Ignorando base e disparando apenas para Iscas.");
+        }
 
         if ($include_baits) {
             $table_iscas = $wpdb->prefix . 'cm_baits';
@@ -2642,6 +2695,11 @@ class Painel_Campanhas
                 error_log("🎣 Iscas: Adicionados $baits_added registros de iscas");
             }
         }
+
+        if (empty($records) && $test_only) {
+            wp_send_json_error('Nenhuma isca ativa encontrada para o Disparo de Teste.');
+        }
+
         error_log("🔍 [Debug pc_create_campaign] Registros finais antes da distribuição: " . count($records));
 
         // Throttling Data
@@ -2674,7 +2732,7 @@ class Painel_Campanhas
         // 🚀 OTIMIZAÇÃO: Busca todos os telefones recentes de uma vez (se necessário)
         $recent_phones = [];
         if ($exclude_recent_phones) {
-            $recent_phones = $this->get_recent_phones_batch($envios_table);
+            $recent_phones = $this->get_recent_phones_batch($envios_table, $exclude_recent_hours);
             error_log('🔵 Telefones recentes encontrados: ' . count($recent_phones));
         }
 
@@ -2830,7 +2888,8 @@ class Painel_Campanhas
             'records_skipped' => $total_skipped,
             'records_blocked' => $blocked_count,
             'baits_added' => $baits_added,
-            'exclusion_enabled' => $exclude_recent_phones
+            'exclusion_enabled' => $exclude_recent_phones,
+            'exclude_recent_hours' => $exclude_recent_hours
         ]);
     }
 
@@ -2886,6 +2945,7 @@ class Painel_Campanhas
         $filters_json = stripslashes($_POST['filters'] ?? '[]');
         $filters = json_decode($filters_json, true);
         $exclude_recent = isset($_POST['exclude_recent']) && $_POST['exclude_recent'] === 'true';
+        $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
 
         if (empty($table_name)) {
             wp_send_json_error('Nome da tabela não fornecido');
@@ -2966,7 +3026,7 @@ class Painel_Campanhas
         // 2. Coleta telefones recentes em memória
         $recent_phones = [];
         if ($exclude_recent) {
-            $recent_phones = $this->get_recent_phones_batch($envios_table);
+            $recent_phones = $this->get_recent_phones_batch($envios_table, $exclude_recent_hours);
         }
 
         // 3. Obtém dados de blocklist (telefones e cpfs em lote como a validação normal faz)
@@ -3920,15 +3980,15 @@ class Painel_Campanhas
     /**
      * 🚀 OTIMIZADO: Busca telefones recentes com query simples e normalização eficiente
      */
-    private function get_recent_phones_batch($envios_table)
+    private function get_recent_phones_batch($envios_table, $hours = 48)
     {
         global $wpdb;
 
         // 🚀 Query simples e rápida - usa índices em data_cadastro e status
-        // Limita busca aos últimos 2 dias para reduzir volume
+        $hours_safe = intval($hours);
         $sql = "SELECT DISTINCT telefone 
                 FROM {$envios_table} 
-                WHERE data_cadastro >= DATE_SUB(NOW(), INTERVAL 2 DAY)
+                WHERE data_cadastro >= DATE_SUB(NOW(), INTERVAL {$hours_safe} HOUR)
                   AND status IN ('enviado', 'pendente', 'pendente_aprovacao')
                   AND telefone IS NOT NULL 
                   AND telefone != ''
@@ -4308,7 +4368,7 @@ class Painel_Campanhas
      * 🚀 SELECT DIRETO: Busca registros filtrados sem overhead do Campaign Manager
      * @param bool $exclude_recent_phones Se true, faz LEFT JOIN para excluir telefones com envios recentes
      */
-    private function get_filtered_records_optimized($table_name, $filters, $limit = 0, $exclude_recent_phones = false)
+    private function get_filtered_records_optimized($table_name, $filters, $limit = 0, $exclude_recent_phones = false, $exclude_recent_hours = 48)
     {
         global $wpdb;
 
@@ -4421,7 +4481,7 @@ class Painel_Campanhas
                          AND SUBSTRING(REGEXP_REPLACE(t.TELEFONE, '[^0-9]', ''), 1, 2) = '55'
                          AND SUBSTRING(REGEXP_REPLACE(t.TELEFONE, '[^0-9]', ''), 3) = REGEXP_REPLACE(c.telefone, '[^0-9]', ''))
                     )
-                    AND CAST(c.data_disparo AS DATE) BETWEEN DATE_SUB(CURRENT_DATE, INTERVAL 1 DAY) AND CURRENT_DATE
+                    AND c.data_cadastro >= DATE_SUB(NOW(), INTERVAL " . intval($exclude_recent_hours) . " HOUR)
                     AND c.status IN ('enviado', 'pendente', 'pendente_aprovacao')
                     " . $where_sql . "
                     AND c.telefone IS NULL" . $limit_sql;
@@ -4437,7 +4497,7 @@ class Painel_Campanhas
                             OR c.telefone LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(t.TELEFONE, '(', ''), ')', ''), '-', ''), ' ', ''), '.', ''), '%')
                             OR t.TELEFONE LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c.telefone, '(', ''), ')', ''), '-', ''), ' ', ''), '.', ''), '%')
                         )
-                        AND CAST(c.data_disparo AS DATE) BETWEEN DATE_SUB(CURRENT_DATE, INTERVAL 1 DAY) AND CURRENT_DATE
+                        AND c.data_cadastro >= DATE_SUB(NOW(), INTERVAL " . intval($exclude_recent_hours) . " HOUR)
                         AND c.status IN ('enviado', 'pendente', 'pendente_aprovacao')
                         " . $where_sql . "
                         AND c.telefone IS NULL" . $limit_sql;
@@ -4490,6 +4550,8 @@ class Painel_Campanhas
             $exclude_recent_phones = $exclude_recent_execution !== null ? $exclude_recent_execution :
                 (isset($providers_config['exclude_recent_phones']) ? intval($providers_config['exclude_recent_phones']) : 1);
 
+            $exclude_recent_hours = isset($providers_config['exclude_recent_hours']) ? intval($providers_config['exclude_recent_hours']) : 48;
+
             // 2. 🚀 OTIMIZADO: Busca registros com SELECT direto + LEFT JOIN para excluir telefones recentes
             error_log('🔵 Buscando registros filtrados (SELECT direto com exclusão de telefones recentes)...');
             $step_start = microtime(true);
@@ -4497,7 +4559,8 @@ class Painel_Campanhas
                 $campaign['tabela_origem'],
                 $filters,
                 $campaign['record_limit'],
-                $exclude_recent_phones  // Passa flag para fazer LEFT JOIN
+                $exclude_recent_phones, // Passa flag para fazer LEFT JOIN
+                $exclude_recent_hours
             );
             error_log('🔵 Registros encontrados: ' . count($records) . ' em ' . round(microtime(true) - $step_start, 2) . 's');
 
@@ -5407,12 +5470,27 @@ class Painel_Campanhas
 
                 error_log('✅ [REST API] Credenciais Ótima RCS retornadas com sucesso');
             } elseif ($provider === 'GOSAC_OFICIAL') {
+                global $wpdb;
+                $carteiras_table = $wpdb->prefix . 'pc_carteiras_v2';
+                $id_ruler = '';
+                
+                if (!empty($env_id)) {
+                    $carteira = $wpdb->get_row($wpdb->prepare(
+                        "SELECT id_ruler FROM $carteiras_table WHERE id_carteira = %s AND ativo = 1 LIMIT 1",
+                        $env_id
+                    ), ARRAY_A);
+                    if ($carteira && !empty($carteira['id_ruler'])) {
+                        $id_ruler = $carteira['id_ruler'];
+                    }
+                }
+
                 $credentials = [
                     'token' => $static_credentials['gosac_oficial_token'] ?? '',
                     'url' => $static_credentials['gosac_oficial_url'] ?? '',
+                    'idRuler' => $id_ruler,
                 ];
 
-                error_log('✅ [REST API] Credenciais Gosac Oficial retornadas com sucesso');
+                error_log('✅ [REST API] Credenciais Gosac Oficial retornadas com sucesso. idRuler=' . $id_ruler);
             }
 
             if (empty($credentials) || !$this->has_valid_credentials($credentials)) {
@@ -6022,6 +6100,7 @@ class Painel_Campanhas
 
         $nome = sanitize_text_field($_POST['nome'] ?? '');
         $id_carteira = sanitize_text_field($_POST['id_carteira'] ?? '');
+        $id_ruler = sanitize_text_field($_POST['id_ruler'] ?? '');
         $descricao = sanitize_textarea_field($_POST['descricao'] ?? '');
 
         if (empty($nome) || empty($id_carteira)) {
@@ -6045,9 +6124,10 @@ class Painel_Campanhas
             [
                 'nome' => $nome,
                 'id_carteira' => $id_carteira,
+                'id_ruler' => $id_ruler,
                 'descricao' => $descricao
             ],
-            ['%s', '%s', '%s']
+            ['%s', '%s', '%s', '%s']
         );
 
         if ($result === false) {
@@ -6110,6 +6190,7 @@ class Painel_Campanhas
         $id = intval($_POST['id'] ?? 0);
         $nome = sanitize_text_field($_POST['nome'] ?? '');
         $id_carteira = sanitize_text_field($_POST['id_carteira'] ?? '');
+        $id_ruler = sanitize_text_field($_POST['id_ruler'] ?? '');
         $descricao = sanitize_textarea_field($_POST['descricao'] ?? '');
 
         if (!$id || empty($nome) || empty($id_carteira)) {
@@ -6134,10 +6215,11 @@ class Painel_Campanhas
             [
                 'nome' => $nome,
                 'id_carteira' => $id_carteira,
+                'id_ruler' => $id_ruler,
                 'descricao' => $descricao
             ],
             ['id' => $id],
-            ['%s', '%s', '%s'],
+            ['%s', '%s', '%s', '%s'],
             ['%d']
         );
 
@@ -7695,19 +7777,24 @@ class Painel_Campanhas
 
             if (is_array($templates_data)) {
                 // Se o retorno for um array com chave 'data', como na Ótima, ajustamos
-                $tpls = isset($templates_data['data']) ? $templates_data['data'] : $templates_data;
+                $envs = isset($templates_data['data']) ? $templates_data['data'] : $templates_data;
 
-                if (is_array($tpls)) {
-                    foreach ($tpls as $tpl) {
-                        $all_templates[] = [
-                            'id' => $tpl['id'] ?? '',
-                            'name' => $tpl['name'] ?? '',
-                            'status' => $tpl['status'] ?? '',
-                            'category' => $tpl['category'] ?? '',
-                            'language' => $tpl['language'] ?? '',
-                            'components' => $tpl['components'] ?? [],
-                            'env_id' => $env_id
-                        ];
+                if (is_array($envs)) {
+                    foreach ($envs as $env) {
+                        // O novo formato da Gosac retorna os templates dentro da chave 'templates' de cada ambiente
+                        $tpls = isset($env['templates']) && is_array($env['templates']) ? $env['templates'] : [];
+
+                        foreach ($tpls as $tpl) {
+                            $all_templates[] = [
+                                'id' => $tpl['id'] ?? '',
+                                'name' => $tpl['name'] ?? '',
+                                'status' => $tpl['status'] ?? '',
+                                'category' => $tpl['category'] ?? '',
+                                'language' => $tpl['language'] ?? '',
+                                'components' => $tpl['components'] ?? [],
+                                'env_id' => $env_id
+                            ];
+                        }
                     }
                 }
             }
@@ -7724,15 +7811,35 @@ class Painel_Campanhas
         }
 
         check_ajax_referer('pc_nonce', 'nonce');
-
         global $wpdb;
         $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
         $carteiras = $wpdb->get_results("SELECT id, nome, id_carteira FROM $table_carteiras WHERE ativo = 1", ARRAY_A);
 
         $credentials = get_option('acm_provider_credentials', []);
 
+        // Inject static GOSAC OFICIAL credentials
+        $static_creds = get_option('acm_static_credentials', []);
+        $gosac_url = $static_creds['gosac_oficial_url'] ?? '';
+        $gosac_token = $static_creds['gosac_oficial_token'] ?? '';
+
+        if (!empty($gosac_url) && !empty($gosac_token)) {
+            if (!isset($credentials['gosac_oficial'])) {
+                $credentials['gosac_oficial'] = [];
+            }
+            foreach ($carteiras as $wallet) {
+                $id_amb = trim($wallet['id_carteira']);
+                if (!empty($id_amb) && !isset($credentials['gosac_oficial'][$id_amb])) {
+                    $credentials['gosac_oficial'][$id_amb] = [
+                        'url' => $gosac_url,
+                        'token' => $gosac_token
+                    ];
+                }
+            }
+        }
+
         $all_health_data = [];
         $fetched_envs = []; // Cache para evitar requisições duplicadas para o mesmo ambiente
+        $debug_info = []; // Debug: collect external request details
 
         foreach ($carteiras as $wallet) {
             $id_ambient = trim($wallet['id_carteira']);
@@ -7750,35 +7857,81 @@ class Painel_Campanhas
                     $provider_conns = [];
                     if ($provider === 'gosac_oficial') {
                         $data = $envs[$id_ambient];
-                        $url = rtrim($data['url'], '/') . '/connections/official';
+                        $url = rtrim($data['url'], '/') . '/connections/official?idAmbient=' . urlencode($id_ambient);
                         $token = $data['token'] ?? '';
+                        if (stripos($token, 'Bearer ') !== 0) {
+                            $token = 'Bearer ' . $token;
+                        }
 
                         if (!empty($url) && !empty($token)) {
+                            $request_headers = [
+                                'Authorization' => $token,
+                                'Content-Type' => 'application/json',
+                                'Accept' => 'application/json',
+                            ];
+
                             $response = wp_remote_get($url, [
-                                'headers' => [
-                                    'Authorization' => $token,
+                                'headers' => $request_headers,
+                                'timeout' => 45,
+                            ]);
+
+                            $http_code = is_wp_error($response) ? 'WP_ERROR' : wp_remote_retrieve_response_code($response);
+                            $raw_body = is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_body($response);
+
+                            // Collect debug info for this call (mask token partially)
+                            $token_masked = substr($token, 0, 14) . '...' . substr($token, -6);
+                            $debug_info[] = [
+                                'external_url' => $url,
+                                'method' => 'GET',
+                                'headers_sent' => [
+                                    'Authorization' => $token_masked,
                                     'Content-Type' => 'application/json',
                                     'Accept' => 'application/json',
                                 ],
-                                'timeout' => 15,
-                            ]);
+                                'http_status' => $http_code,
+                                'raw_response' => $raw_body,
+                                'id_ambient' => $id_ambient,
+                                'provider' => 'gosac_oficial',
+                            ];
 
                             if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
-                                $body = wp_remote_retrieve_body($response);
+                                $body = $raw_body;
                                 $connections_data = json_decode($body, true);
-                                $conns = isset($connections_data['data']) ? $connections_data['data'] : $connections_data;
+                                $env_items = isset($connections_data['data']) ? $connections_data['data'] : $connections_data;
 
-                                if (is_array($conns)) {
-                                    foreach ($conns as $conn) {
-                                        $provider_conns[] = [
-                                            'id' => $conn['id'] ?? '',
-                                            'name' => $conn['name'] ?? '',
-                                            'status' => $conn['status'] ?? '',
-                                            'messagingLimit' => $conn['messagingLimit'] ?? '',
-                                            'accountRestriction' => $conn['accountRestriction'] ?? '',
-                                            'provider' => 'Gosac Oficial',
-                                            'id_ambient' => $id_ambient
-                                        ];
+                                if (is_array($env_items)) {
+                                    foreach ($env_items as $env_item) {
+                                        // Skip only when connections is empty/missing (ignore error field — some items may have both error text AND connections)
+                                        if (!is_array($env_item) || empty($env_item['connections'])) {
+                                            continue;
+                                        }
+
+                                        $conns = $env_item['connections'];
+                                        if (!is_array($conns))
+                                            continue;
+
+                                        foreach ($conns as $conn) {
+                                            // Parse stringified accountRestriction JSON
+                                            $account_restriction = $conn['accountRestriction'] ?? '';
+                                            if (is_string($account_restriction) && !empty($account_restriction)) {
+                                                $parsed = json_decode($account_restriction, true);
+                                                if (json_last_error() === JSON_ERROR_NONE) {
+                                                    $account_restriction = $parsed;
+                                                }
+                                            }
+
+                                            $provider_conns[] = [
+                                                'id' => $conn['id'] ?? '',
+                                                'name' => $conn['name'] ?? '',
+                                                'status' => $conn['status'] ?? '',
+                                                'type' => $conn['type'] ?? '',
+                                                'messagingLimit' => $conn['messagingLimit'] ?? '',
+                                                'accountRestriction' => $account_restriction,
+                                                'provider' => 'Gosac Oficial',
+                                                'id_ambient' => $id_ambient,
+                                                'idRuler' => $env_item['idRuler'] ?? ''
+                                            ];
+                                        }
                                     }
                                 }
                             }
@@ -7796,7 +7949,10 @@ class Painel_Campanhas
             }
         }
 
-        wp_send_json_success($all_health_data);
+        wp_send_json_success([
+            'connections' => $all_health_data,
+            'debug_info' => $debug_info,
+        ]);
     }
 
     public function handle_get_templates_by_wallet()
@@ -7825,6 +7981,24 @@ class Painel_Campanhas
 
         $id_ambient = trim($wallet['id_carteira']);
         $credentials = get_option('acm_provider_credentials', []);
+
+        // Inject static GOSAC OFICIAL credentials
+        $static_creds = get_option('acm_static_credentials', []);
+        $gosac_url = $static_creds['gosac_oficial_url'] ?? '';
+        $gosac_token = $static_creds['gosac_oficial_token'] ?? '';
+
+        if (!empty($gosac_url) && !empty($gosac_token)) {
+            if (!isset($credentials['gosac_oficial'])) {
+                $credentials['gosac_oficial'] = [];
+            }
+            if (!isset($credentials['gosac_oficial'][$id_ambient])) {
+                $credentials['gosac_oficial'][$id_ambient] = [
+                    'url' => $gosac_url,
+                    'token' => $gosac_token
+                ];
+            }
+        }
+
         $all_templates = [];
 
         foreach ($credentials as $provider => $envs) {
@@ -7834,8 +8008,11 @@ class Painel_Campanhas
             $data = $envs[$id_ambient];
 
             if ($provider === 'gosac_oficial') {
-                $url = rtrim($data['url'], '/') . '/templates/waba';
+                $url = rtrim($data['url'], '/') . '/templates/waba?idAmbient=' . urlencode($id_ambient);
                 $token = $data['token'] ?? '';
+                if (stripos($token, 'Bearer ') !== 0) {
+                    $token = 'Bearer ' . $token;
+                }
 
                 if (!empty($url) && !empty($token)) {
                     $response = wp_remote_get($url, [
@@ -7850,20 +8027,32 @@ class Painel_Campanhas
                     if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
                         $body = wp_remote_retrieve_body($response);
                         $templates_data = json_decode($body, true);
-                        $temps = isset($templates_data['data']) ? $templates_data['data'] : $templates_data;
+                        $env_items = isset($templates_data['data']) ? $templates_data['data'] : $templates_data;
 
-                        if (is_array($temps)) {
-                            foreach ($temps as $template) {
-                                $all_templates[] = [
-                                    'id' => $template['id'] ?? $template['name'],
-                                    'name' => $template['name'] ?? '',
-                                    'content' => $template['content'] ?? '',
-                                    'category' => $template['category'] ?? '',
-                                    'language' => $template['language'] ?? '',
-                                    'status' => $template['status'] ?? '',
-                                    'provider' => 'Gosac Oficial',
-                                    'id_ambient' => $id_ambient
-                                ];
+                        if (is_array($env_items)) {
+                            foreach ($env_items as $env_item) {
+                                // Skip errored environments (ECONNREFUSED, timeout, etc.)
+                                if (!is_array($env_item) || isset($env_item['error']) || empty($env_item['templates'])) {
+                                    continue;
+                                }
+
+                                $temps = $env_item['templates'];
+                                if (!is_array($temps))
+                                    continue;
+
+                                foreach ($temps as $template) {
+                                    $all_templates[] = [
+                                        'id' => $template['id'] ?? $template['name'] ?? '',
+                                        'name' => $template['name'] ?? '',
+                                        'content' => $template['content'] ?? '',
+                                        'category' => $template['category'] ?? '',
+                                        'language' => $template['language'] ?? '',
+                                        'status' => $template['status'] ?? '',
+                                        'provider' => 'Gosac Oficial',
+                                        'id_ambient' => $id_ambient,
+                                        'idRuler' => $env_item['idRuler'] ?? ''
+                                    ];
+                                }
                             }
                         }
                     }
@@ -8101,7 +8290,344 @@ class Painel_Campanhas
 
         wp_send_json_success($templates);
     }
+
+    /**
+     * AJAX: Manually trigger the Salesforce ingestion.
+     * Wraps everything in try/catch(Throwable) so any fatal returns clean JSON.
+     */
+    public function handle_run_salesforce_import()
+    {
+        // ── FATAL ERROR INTERCEPTOR ─────────────────────────────────────────
+        // Captures compilation errors, memory leaks, and other uncatchable fatals.
+        register_shutdown_function(function () {
+            $err = error_get_last();
+            if ($err && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR, E_RECOVERABLE_ERROR])) {
+                $log_msg = date('Y-m-d H:i:s') . " - SF FATAL ERROR: " . print_r($err, true) . "\n";
+                @file_put_contents(WP_CONTENT_DIR . '/sf_fatal.log', $log_msg, FILE_APPEND);
+                if (!headers_sent()) {
+                    header('Content-Type: application/json; charset=UTF-8');
+                    echo json_encode([
+                        'success' => false,
+                        'data' => ['error' => 'Uncatchable Fatal Error', 'details' => $err]
+                    ]);
+                }
+            }
+        });
+
+        $tracer_file = __DIR__ . '/sf_ajax_trace.log';
+        @file_put_contents($tracer_file, "--- NEW AJAX RUN ---\n");
+        $trace = function ($msg) use ($tracer_file) {
+            @file_put_contents($tracer_file, date('H:i:s') . ' - ' . $msg . "\n", FILE_APPEND);
+        };
+
+        $trace('Salesforce Import Step 1: Handler started.');
+        error_log('Salesforce Import Step 1: Handler started.');
+
+        // Soft nonce check — wp_verify_nonce returns 0 on failure (never wp_die)
+        $nonce = isset($_POST['nonce']) ? sanitize_text_field(wp_unslash($_POST['nonce'])) : '';
+        if (!wp_verify_nonce($nonce, 'pc_nonce')) {
+            $trace('Salesforce Import: Nonce validation failed.');
+            wp_send_json_error(['error' => 'Nonce invalido ou expirado. Recarregue a pagina e tente novamente.']);
+            return;
+        }
+
+        if (!current_user_can('manage_options')) {
+            $trace('Salesforce Import: Permission denied (not manage_options).');
+            wp_send_json_error(['error' => 'Acesso negado: permissao manage_options necessaria.']);
+            return;
+        }
+
+        @set_time_limit(0);
+        @ini_set('memory_limit', '512M');
+
+        try {
+            global $wpdb;
+            error_log('Salesforce Import Step 2: Config variables initialized.');
+
+            // ── Config ──────────────────────────────────────────────────────────
+            $sf_auth_url = 'https://mchdb47kwgw19dh5mmnsw0fvhv2m.auth.marketingcloudapis.com';
+            $sf_rest_url = 'https://mchdb47kwgw19dh5mmnsw0fvhv2m.rest.marketingcloudapis.com';
+            $sf_client_id = 'bv53kgt3ocyggeua4synj2v0';
+            $sf_client_secret = 'VqfpNASD3Q8bEyD4ktXqQhKJ';
+            $sf_account_id = '536007880';
+            $sf_de_key = 'Tracking_WhatsApp_Importado_FINAL';
+            $page_size = 200;
+            $table_name = 'salesforce_returns';
+
+            $errors = array();
+            $total_inserted = 0;
+            $pages_processed = 0;
+
+            // Soft Timeout Tracker
+            $start_time = microtime(true);
+            $max_execution = 20; // Safe limit before server force-kills PHP (30s max)
+
+            error_log('Salesforce Import Step 3: Ensuring table exists (dbDelta).');
+            // ── Ensure table exists ─────────────────────────────────────────────
+            require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+            $charset_collate = $wpdb->get_charset_collate();
+            $sql_create = "CREATE TABLE IF NOT EXISTS {$table_name} (
+                id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+                uniqueid text NOT NULL,
+                uniqueid_hash varchar(64) NOT NULL,
+                trackingtype varchar(100) DEFAULT '',
+                sendtype varchar(100) DEFAULT '',
+                mid varchar(100) DEFAULT '',
+                eid varchar(200) DEFAULT '',
+                contactkey varchar(200) DEFAULT '',
+                mobilenumber varchar(50) DEFAULT '',
+                eventdateutc datetime DEFAULT NULL,
+                appid varchar(100) DEFAULT '',
+                channelid varchar(100) DEFAULT '',
+                channeltype varchar(50) DEFAULT '',
+                conversationtype varchar(50) DEFAULT '',
+                activityname varchar(150) DEFAULT '',
+                channelname varchar(150) DEFAULT '',
+                status varchar(100) DEFAULT '',
+                reason text,
+                jbdefinitionid varchar(200) DEFAULT '',
+                sendidentifier varchar(200) DEFAULT '',
+                assetid varchar(100) DEFAULT '',
+                messagetypeid varchar(100) DEFAULT '',
+                operacao__c varchar(100) DEFAULT '',
+                cpf_cnpj__c varchar(50) DEFAULT '',
+                name varchar(255) DEFAULT '',
+                criado_em datetime DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                UNIQUE KEY uniqueid_hash (uniqueid_hash)
+            ) {$charset_collate};";
+
+            $wpdb->query($sql_create);
+
+            error_log('Salesforce Import Step 4: Requesting OAuth2 Token... URL: ' . $sf_auth_url . '/v2/token');
+            // ── OAuth2 Token ────────────────────────────────────────────────────
+            $token_response = wp_remote_post($sf_auth_url . '/v2/token', array(
+                'body' => wp_json_encode(array(
+                    'grant_type' => 'client_credentials',
+                    'client_id' => $sf_client_id,
+                    'client_secret' => $sf_client_secret,
+                    'account_id' => $sf_account_id,
+                )),
+                'headers' => array('Content-Type' => 'application/json'),
+                'timeout' => 30,
+            ));
+
+            if (is_wp_error($token_response)) {
+                $err_msg = $token_response->get_error_message();
+                error_log('Salesforce Import Token Error: ' . $err_msg);
+                wp_send_json_error(array('error' => 'Token request failed: ' . $err_msg));
+                return;
+            }
+
+            $token_http = wp_remote_retrieve_response_code($token_response);
+            $token_body = json_decode(wp_remote_retrieve_body($token_response), true);
+            $access_token = isset($token_body['access_token']) ? $token_body['access_token'] : '';
+
+            if (empty($access_token)) {
+                error_log('Salesforce Import Token Empty. HTTP Code: ' . $token_http);
+                wp_send_json_error(array(
+                    'error' => 'Token Salesforce nao retornado (HTTP ' . $token_http . ')',
+                    'details' => wp_remote_retrieve_body($token_response),
+                ));
+                return;
+            }
+
+            error_log('Salesforce Import Step 5: Token retrieved successfully. Access Token starts with: ' . substr($access_token, 0, 10) . '...');
+
+            // ── Helper: normalize dates ─────────────────────────────────────────
+            $normalize_date = function ($value) {
+                if (empty($value))
+                    return null;
+                $str = trim(preg_replace('/\s+/', ' ', $value));
+                if (strpos($str, 'T') !== false && strpos($str, 'Z') !== false) {
+                    $str = str_replace('Z', '+00:00', $str);
+                    $t = strtotime($str);
+                    if ($t !== false)
+                        return date('Y-m-d H:i:s', $t);
+                }
+                $t = strtotime($str);
+                if ($t !== false)
+                    return date('Y-m-d H:i:s', $t);
+                $pm = array();
+                if (preg_match('/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(.+))?$/', $str, $pm)) {
+                    $a = (int) $pm[1];
+                    $b = (int) $pm[2];
+                    $y = (int) $pm[3];
+                    $tail = isset($pm[4]) ? trim($pm[4]) : '';
+                    $m = $a > 12 ? $b : $a;
+                    $d = $a > 12 ? $a : $b;
+                    $t = strtotime($y . '-' . $m . '-' . $d . ' ' . $tail);
+                    if ($t)
+                        return date('Y-m-d H:i:s', $t);
+                }
+                return null;
+            };
+
+            // ── Paginated Fetch & Insert ────────────────────────────────────────
+            $page = 1;
+            error_log('Salesforce Import Step 6: Starting pagination loop.');
+            while (true) {
+                $url = $sf_rest_url . '/data/v1/customobjectdata/key/' . $sf_de_key . '/rowset'
+                    . '?$page=' . $page . '&$pageSize=' . $page_size;
+
+                error_log("Salesforce Import: Requesting Page {$page}... URL: {$url}");
+
+                $data_response = wp_remote_get($url, array(
+                    'headers' => array('Authorization' => 'Bearer ' . $access_token),
+                    'timeout' => 60,
+                ));
+
+                if (is_wp_error($data_response)) {
+                    error_log("Salesforce Import Page {$page} Error: " . $data_response->get_error_message());
+                    $errors[] = 'Pagina ' . $page . ': ' . $data_response->get_error_message();
+                    break;
+                }
+
+                $http_code = wp_remote_retrieve_response_code($data_response);
+                error_log("Salesforce Import Page {$page} HTTP Code: {$http_code}");
+
+                if ($http_code === 401 || $http_code === 403) {
+                    $errors[] = 'Token expirado ou acesso negado (HTTP ' . $http_code . ') na pagina ' . $page . '.';
+                    break;
+                }
+
+                if ($http_code !== 200) {
+                    $errors[] = 'HTTP ' . $http_code . ' na pagina ' . $page . ': ' . wp_remote_retrieve_body($data_response);
+                    break;
+                }
+
+                $body = json_decode(wp_remote_retrieve_body($data_response), true);
+                if (!is_array($body)) {
+                    $errors[] = 'Resposta invalida (nao e JSON) na pagina ' . $page . '.';
+                    break;
+                }
+
+                $items = isset($body['items']) ? $body['items'] : array();
+                if (empty($items)) {
+                    error_log("Salesforce Import: No more items on page {$page}. Exiting loop.");
+                    break;
+                }
+
+                error_log("Salesforce Import Page {$page}: Processing " . count($items) . " items.");
+
+                foreach ($items as $item) {
+                    $row = array_merge(
+                        isset($item['keys']) && is_array($item['keys']) ? $item['keys'] : array(),
+                        isset($item['values']) && is_array($item['values']) ? $item['values'] : array()
+                    );
+
+                    $uniqueid = isset($row['uniqueid']) ? (string) $row['uniqueid'] : '';
+                    if (empty($uniqueid))
+                        continue;
+
+                    $uniqueid_hash = hash('sha256', $uniqueid);
+                    $raw_date = isset($row['eventdateutc']) ? $row['eventdateutc']
+                        : (isset($row['eventdateu']) ? $row['eventdateu'] : null);
+                    $eventdateutc = $normalize_date($raw_date);
+
+                    $trace("Item $uniqueid_hash - Preparing query");
+                    $raw_query = $wpdb->prepare(
+                        "INSERT INTO {$table_name}
+                                (uniqueid, uniqueid_hash, trackingtype, sendtype, mid, eid, contactkey, mobilenumber,
+                                 eventdateutc, appid, channelid, channeltype, conversationtype, activityname,
+                                 channelname, status, reason, jbdefinitionid, sendidentifier, assetid,
+                                 messagetypeid, operacao__c, cpf_cnpj__c, name)
+                             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                             ON DUPLICATE KEY UPDATE
+                                 trackingtype=VALUES(trackingtype), sendtype=VALUES(sendtype),
+                                 mid=VALUES(mid), eid=VALUES(eid), contactkey=VALUES(contactkey),
+                                 mobilenumber=VALUES(mobilenumber), eventdateutc=VALUES(eventdateutc),
+                                 appid=VALUES(appid), channelid=VALUES(channelid),
+                                 channeltype=VALUES(channeltype), conversationtype=VALUES(conversationtype),
+                                 activityname=VALUES(activityname), channelname=VALUES(channelname),
+                                 status=VALUES(status), reason=VALUES(reason),
+                                 jbdefinitionid=VALUES(jbdefinitionid), sendidentifier=VALUES(sendidentifier),
+                                 assetid=VALUES(assetid), messagetypeid=VALUES(messagetypeid),
+                                 operacao__c=VALUES(operacao__c), cpf_cnpj__c=VALUES(cpf_cnpj__c),
+                                 name=VALUES(name)",
+                        array(
+                            $uniqueid,
+                            $uniqueid_hash,
+                            isset($row['trackingtype']) ? (string) $row['trackingtype'] : '',
+                            isset($row['sendtype']) ? (string) $row['sendtype'] : '',
+                            isset($row['mid']) ? (string) $row['mid'] : '',
+                            isset($row['eid']) ? (string) $row['eid'] : '',
+                            isset($row['contactkey']) ? (string) $row['contactkey'] : '',
+                            isset($row['mobilenumber']) ? (string) $row['mobilenumber'] : '',
+                            $eventdateutc,
+                            isset($row['appid']) ? (string) $row['appid'] : '',
+                            isset($row['channelid']) ? (string) $row['channelid'] : '',
+                            isset($row['channeltype']) ? (string) $row['channeltype'] : '',
+                            isset($row['conversationtype']) ? (string) $row['conversationtype'] : '',
+                            isset($row['activityname']) ? (string) $row['activityname'] : '',
+                            isset($row['channelname']) ? (string) $row['channelname'] : '',
+                            isset($row['status']) ? (string) $row['status'] : '',
+                            isset($row['reason']) ? (string) $row['reason'] : '',
+                            isset($row['jbdefinitionid']) ? (string) $row['jbdefinitionid'] : '',
+                            isset($row['sendidentifier']) ? (string) $row['sendidentifier'] : '',
+                            isset($row['assetid']) ? (string) $row['assetid'] : '',
+                            isset($row['messagetypeid']) ? (string) $row['messagetypeid'] : '',
+                            isset($row['operacao__c']) ? (string) $row['operacao__c'] : '',
+                            isset($row['cpf_cnpj__c']) ? (string) $row['cpf_cnpj__c'] : '',
+                            isset($row['name']) ? (string) $row['name'] : ''
+                        )
+                    );
+
+                    $trace("Item $uniqueid_hash - Executing query");
+                    $result = $wpdb->query($raw_query);
+                    $trace("Item $uniqueid_hash - Query done");
+
+                    if ($result === false) {
+                        $errors[] = 'DB erro row uniqueid=' . substr($uniqueid, 0, 20) . ': ' . $wpdb->last_error;
+                    } else {
+                        $total_inserted++;
+                    }
+                }
+
+                $pages_processed++;
+
+                $has_next = isset($body['links']['next']) && !empty($body['links']['next']);
+                if (!$has_next) {
+                    $trace("Salesforce Import: Finished pagination at page {$page} (no next link).");
+                    break;
+                }
+
+
+                $page++;
+            }
+
+            $trace("Salesforce Import Complete. Rows inserted/updated: {$total_inserted}, Pages processed: {$pages_processed}, Errors: " . count($errors));
+            $trace("Calling wp_send_json_success() now.");
+
+            wp_send_json_success(array(
+                'rows_inserted' => $total_inserted,
+                'pages_processed' => $pages_processed,
+                'errors' => $errors,
+                // Include diagnostic info as requested by user
+                'diagnostic_info' => array(
+                    'auth_url' => $sf_auth_url . '/v2/token',
+                    'rest_base_url' => $sf_rest_url,
+                    'tested_url' => $sf_rest_url . '/data/v1/customobjectdata/key/' . $sf_de_key . '/rowset?$page=1&$pageSize=200',
+                    'token' => $access_token,
+                ),
+            ));
+
+            $trace("Returned from wp_send_json_success() OK - this should never be reached as it calls die()");
+
+        } catch (\Throwable $e) {
+            $trace("Salesforce Import Exception: " . $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine());
+            wp_send_json_error(array(
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => substr($e->getTraceAsString(), 0, 1000),
+            ));
+        }
+    }
 }
+
+
+
 
 // ========== CLASSES INTERNAS - Funcionalidades do Campaign Manager ==========
 
@@ -8615,18 +9141,15 @@ class PC_IDGIS_Mapper
 
         return $idgis_original;
     }
-
-
 }
 
-// Hook de ativação (precisa ser registrado fora da classe)
+
+
 register_activation_hook(__FILE__, function () {
     $instance = Painel_Campanhas::get_instance();
-    // Chama o método activate diretamente
-    if (method_exists($instance, 'activate')) {
-        $instance->activate();
-    }
+    $instance->activate();
 });
+
 
 // Inicializa o plugin
 function painel_campanhas()

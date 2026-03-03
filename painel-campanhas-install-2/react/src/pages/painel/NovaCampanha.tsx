@@ -33,6 +33,7 @@ import {
   getBasesCarteira,
   checkBaseUpdate,
   getTemplatesByWallet,
+  getOtimaTemplates,
   getIscas,
   saveRecurring,
 } from "@/lib/api";
@@ -70,7 +71,9 @@ export default function NovaCampanha() {
     providers: [] as string[],
     record_limit: 0,
     exclude_recent_phones: true,
+    exclude_recent_hours: 48,
     include_baits: false,
+    test_only: false,
     throttling_type: 'none',
     throttling_config: {} as any,
     is_recurring: false,
@@ -153,11 +156,18 @@ export default function NovaCampanha() {
     queryFn: getIscas,
   });
 
-  // Buscar templates externos por carteira
+  // Buscar templates externos por carteira (GOSAC direto)
   const { data: externalTemplatesData = [], isLoading: externalTemplatesLoading } = useQuery({
     queryKey: ['external-templates', formData.carteira],
     queryFn: () => getTemplatesByWallet(formData.carteira),
     enabled: !!formData.carteira,
+  });
+
+  // Buscar templates Ótima (WPP + RCS)
+  const { data: otimaTemplatesData = [], isLoading: otimaTemplatesLoading } = useQuery({
+    queryKey: ['otima-templates'],
+    queryFn: getOtimaTemplates,
+    staleTime: 5 * 60 * 1000,
   });
 
   // Processar e mesclar templates
@@ -167,34 +177,74 @@ export default function NovaCampanha() {
       id: String(t.id),
       name: t.title || '',
       source: t.source || 'local',
+      provider: null,
       templateCode: t.template_code || t.template_id || '',
       walletId: null,
       walletName: null,
       imageUrl: null,
     }));
 
-    // Templates Externos (já filtrados por carteira pelo backend)
-    const external = Array.isArray(externalTemplatesData) ? externalTemplatesData.map((t: any) => ({
-      id: `${t.provider}_${t.id}_${t.id_ambient}`,
-      name: t.name || t.id || '',
-      source: t.provider === 'Gosac Oficial' ? 'gosac_oficial' : (t.source || 'external'),
-      templateCode: t.name || '',
-      walletId: t.id_ambient,
-      walletName: t.wallet_name || `${t.provider} (${t.id_ambient})`,
-      imageUrl: t.image_url,
+    // Templates Ótima (WPP + RCS)
+    const otima = (Array.isArray(otimaTemplatesData) ? otimaTemplatesData : []).map((t: any) => ({
+      id: String(t.id),
+      name: t.name || '',
+      source: t.source || 'external',
+      provider: t.source === 'otima_rcs' ? 'Ótima RCS' : 'Ótima WPP',
+      templateCode: t.template_code || '',
+      walletId: null,
+      walletName: t.wallet_name || null,
+      imageUrl: t.image_url || null,
       content: t.content || '',
-      language: t.language,
-      category: t.category,
-      components: t.components,
-    })) : [];
+    }));
 
-    console.log('📋 [NovaCampanha] Templates locais:', local.length);
-    console.log('📋 [NovaCampanha] Templates externos:', external.length);
+    // Templates Externos GOSAC (já filtrados por carteira)
+    const external = Array.isArray(externalTemplatesData) ? externalTemplatesData.map((t: any) => {
+      const isGosac = t.provider === 'Gosac Oficial';
+      return {
+        id: `${t.provider}_${t.id}_${t.id_ambient}`,
+        name: t.name || t.id || '',
+        source: isGosac ? 'gosac_oficial' : (t.source || 'external'),
+        provider: t.provider || null,
+        templateCode: t.name || '',
+        walletId: t.id_ambient,
+        walletName: t.wallet_name || `${t.provider} (${t.id_ambient})`,
+        imageUrl: t.image_url,
+        content: t.content || '',
+        language: t.language,
+        category: t.category,
+        components: t.components,
+      };
+    }) : [];
 
-    return [...local, ...external];
-  }, [localTemplatesData, externalTemplatesData]);
+    console.log('📋 [NovaCampanha] Templates locais:', local.length, 'Ótima:', otima.length, 'GOSAC:', external.length);
 
-  const templatesLoading = localTemplatesLoading || externalTemplatesLoading;
+    return [...local, ...otima, ...external];
+  }, [localTemplatesData, otimaTemplatesData, externalTemplatesData]);
+
+  // Map provider IDs (from step 3 formData.providers) to template sources
+  const PROVIDER_TO_SOURCE_MAP: Record<string, string[]> = {
+    'GOSAC_OFICIAL': ['gosac_oficial'],
+    'OTIMA_WPP': ['otima_wpp'],
+    'OTIMA_RCS': ['otima_rcs'],
+    'SALESFORCE': [],
+    'CDA': [],
+    'CDA_RCS': [],
+    'NOAH': [],
+    'NOAH_OFICIAL': [],
+    'TECH_IA': [],
+  };
+
+  // Filter templates: always show local, show external only matching selected providers
+  const filteredTemplates = useMemo(() => {
+    const selectedSources = formData.providers.flatMap(p => PROVIDER_TO_SOURCE_MAP[p] ?? []);
+    return templates.filter(t => {
+      if (t.source === 'local') return true; // local always shown
+      if (selectedSources.length === 0) return true; // no providers selected yet = show all
+      return selectedSources.includes(t.source);
+    });
+  }, [templates, formData.providers]);
+
+  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading;
 
   // Buscar filtros quando base for selecionada
   const { data: availableFilters = [], isLoading: filtersLoading } = useQuery({
@@ -427,6 +477,7 @@ export default function NovaCampanha() {
         filters: formattedFilters,
         record_limit: formData.record_limit || 0,
         exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
+        exclude_recent_hours: formData.exclude_recent_hours || 48,
         include_baits: formData.include_baits ? 1 : 0,
         throttling_type: formData.throttling_type || 'none',
         throttling_config: formData.throttling_config || {},
@@ -442,6 +493,7 @@ export default function NovaCampanha() {
         template_source: formData.templateSource || 'local',
         record_limit: formData.record_limit || 0,
         exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
+        exclude_recent_hours: formData.exclude_recent_hours || 48,
         include_baits: formData.include_baits ? 1 : 0,
         throttling_type: formData.throttling_type || 'none',
         throttling_config: formData.throttling_config || {},
@@ -462,7 +514,7 @@ export default function NovaCampanha() {
       case 2:
         return true; // Filtros são opcionais
       case 3:
-        return boolean(formData.template && formData.message.trim());
+        return formData.providers.length > 0;
       case 4:
         // Configuração de envio (sempre válido, pois tem defaults)
         if (formData.throttling_type === 'linear') {
@@ -473,7 +525,7 @@ export default function NovaCampanha() {
         }
         return true;
       case 5:
-        return formData.providers.length > 0;
+        return boolean(formData.template && formData.message.trim());
       default:
         return false;
     }
@@ -658,7 +710,7 @@ export default function NovaCampanha() {
                   <div className="space-y-0.5">
                     <Label className="text-base font-semibold">Enviar para acionados</Label>
                     <p className="text-sm text-muted-foreground mr-6">
-                      Se ativado, envia para todos. Se desmarcado, remove clientes que já receberam campanhas nas últimas 24h.
+                      Se ativado, envia para todos. Se desmarcado, remove clientes que já receberam campanhas recentemente.
                     </p>
                   </div>
                   <div className="flex items-center space-x-3">
@@ -672,6 +724,26 @@ export default function NovaCampanha() {
                     />
                   </div>
                 </div>
+
+                {formData.exclude_recent_phones && (
+                  <div className="flex items-center justify-between border rounded-lg p-4 bg-card animate-in fade-in slide-in-from-top-2">
+                    <div className="space-y-0.5">
+                      <Label className="text-base font-semibold">Horas de Bloqueio</Label>
+                      <p className="text-sm text-muted-foreground mr-6">
+                        Tempo em horas que um cliente não pode receber novas campanhas após um disparo (padrão: 48h).
+                      </p>
+                    </div>
+                    <div className="flex items-center space-x-3 w-32">
+                      <Input
+                        type="number"
+                        min="1"
+                        max="720"
+                        value={formData.exclude_recent_hours}
+                        onChange={(e) => setFormData({ ...formData, exclude_recent_hours: parseInt(e.target.value) || 48 })}
+                      />
+                    </div>
+                  </div>
+                )}
 
                 <div className="rounded-lg bg-muted/50 p-4 space-y-2">
                   <div className="flex items-center justify-between text-sm">
@@ -708,7 +780,7 @@ export default function NovaCampanha() {
           </>
         )}
 
-        {step === 3 && (
+        {step === 5 && (
           <>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -750,19 +822,28 @@ export default function NovaCampanha() {
                     <SelectValue placeholder={templatesLoading ? "Carregando templates..." : "Selecione um template"} />
                   </SelectTrigger>
                   <SelectContent>
-                    {templates.map((t, idx) => (
-                      <SelectItem key={`template-${t.id || idx}`} value={t.id}>
-                        <div className="flex items-center gap-2">
-                          <span>{t.name}</span>
-                          {t.source === 'otima_wpp' && (
-                            <Badge variant="outline" className="text-xs">Ótima WPP</Badge>
-                          )}
-                          {t.source === 'otima_rcs' && (
-                            <Badge variant="outline" className="text-xs">Ótima RCS</Badge>
-                          )}
-                        </div>
-                      </SelectItem>
-                    ))}
+                    {filteredTemplates.length === 0 && !templatesLoading && (
+                      <div className="py-2 px-3 text-xs text-muted-foreground italic">
+                        Nenhum template encontrado para os fornecedores selecionados.
+                      </div>
+                    )}
+                    {filteredTemplates.map((t: any, idx: number) => {
+                      const providerLabel = t.provider || (t.source === 'local' ? null : t.source?.replace(/_/g, ' ').replace('GOSAC OFICIAL', 'GOSAC').toUpperCase());
+                      const channelLabel = t.source?.toLowerCase().includes('rcs') ? 'RCS' : (providerLabel ? 'WPP' : null);
+                      return (
+                        <SelectItem key={`template-${t.id || idx}`} value={t.id}>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {channelLabel && (
+                              <Badge className="text-[10px] py-0 px-1 bg-blue-500 text-white shrink-0">{channelLabel}</Badge>
+                            )}
+                            {providerLabel && (
+                              <Badge variant="outline" className="text-[10px] py-0 px-1 shrink-0">{providerLabel}</Badge>
+                            )}
+                            <span>{t.name}</span>
+                          </div>
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
               </div>
@@ -859,10 +940,10 @@ export default function NovaCampanha() {
                       <Input
                         type="number"
                         min="1"
-                        value={formData.throttling_config?.qtd_msgs || 100}
+                        value={formData.throttling_config?.qtd_msgs ?? 100}
                         onChange={(e) => setFormData(prev => ({
                           ...prev,
-                          throttling_config: { ...prev.throttling_config, qtd_msgs: parseInt(e.target.value) || 0 }
+                          throttling_config: { ...prev.throttling_config, qtd_msgs: e.target.value === '' ? '' : (parseInt(e.target.value) || 0) }
                         }))}
                       />
                     </div>
@@ -871,10 +952,10 @@ export default function NovaCampanha() {
                       <Input
                         type="number"
                         min="1"
-                        value={formData.throttling_config?.intervalo_minutos || 60}
+                        value={formData.throttling_config?.intervalo_minutos ?? 60}
                         onChange={(e) => setFormData(prev => ({
                           ...prev,
-                          throttling_config: { ...prev.throttling_config, intervalo_minutos: parseInt(e.target.value) || 0 }
+                          throttling_config: { ...prev.throttling_config, intervalo_minutos: e.target.value === '' ? '' : (parseInt(e.target.value) || 0) }
                         }))}
                       />
                     </div>
@@ -896,10 +977,10 @@ export default function NovaCampanha() {
                           min="1"
                           max="99"
                           className="w-24"
-                          value={formData.throttling_config?.fase1_percent || 70}
+                          value={formData.throttling_config?.fase1_percent ?? 70}
                           onChange={(e) => setFormData(prev => ({
                             ...prev,
-                            throttling_config: { ...prev.throttling_config, fase1_percent: parseInt(e.target.value) || 0 }
+                            throttling_config: { ...prev.throttling_config, fase1_percent: e.target.value === '' ? '' : (parseInt(e.target.value) || 0) }
                           }))}
                         />
                         <span className="text-sm text-muted-foreground">% do total</span>
@@ -913,10 +994,10 @@ export default function NovaCampanha() {
                           type="number"
                           min="0.1"
                           step="0.1"
-                          value={formData.throttling_config?.fase1_horas || 2}
+                          value={formData.throttling_config?.fase1_horas ?? 2}
                           onChange={(e) => setFormData(prev => ({
                             ...prev,
-                            throttling_config: { ...prev.throttling_config, fase1_horas: parseFloat(e.target.value) || 0 }
+                            throttling_config: { ...prev.throttling_config, fase1_horas: e.target.value === '' ? '' : (parseFloat(e.target.value) || 0) }
                           }))}
                         />
                       </div>
@@ -926,10 +1007,10 @@ export default function NovaCampanha() {
                           type="number"
                           min="0.1"
                           step="0.1"
-                          value={formData.throttling_config?.fase2_horas || 4}
+                          value={formData.throttling_config?.fase2_horas ?? 4}
                           onChange={(e) => setFormData(prev => ({
                             ...prev,
-                            throttling_config: { ...prev.throttling_config, fase2_horas: parseFloat(e.target.value) || 0 }
+                            throttling_config: { ...prev.throttling_config, fase2_horas: e.target.value === '' ? '' : (parseFloat(e.target.value) || 0) }
                           }))}
                         />
                       </div>
@@ -945,7 +1026,7 @@ export default function NovaCampanha() {
           </>
         )}
 
-        {step === 5 && (
+        {step === 3 && (
           <>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -1024,6 +1105,26 @@ export default function NovaCampanha() {
                 {formData.include_baits && baitsData.length === 0 && !baitsLoading && (
                   <div className="mt-4 p-3 bg-destructive/10 text-destructive rounded-md text-sm border border-destructive/20">
                     <p>Você não possui enables ativas cadastradas no sistema. Nenhuma isca será enviada.</p>
+                  </div>
+                )}
+                {/* Disparo de Teste Exclusivo (Apenas Iscas) - Exibe apenas se Incluir Iscas estiver marcado */}
+                {formData.include_baits && (
+                  <div className="mt-4 rounded-lg bg-purple-50 dark:bg-purple-900/10 border border-purple-200 dark:border-purple-800 p-4 animate-in fade-in slide-in-from-top-2">
+                    <div className="flex items-center gap-3">
+                      <Switch
+                        id="test-only-baits"
+                        checked={formData.test_only}
+                        onCheckedChange={(checked) => setFormData({ ...formData, test_only: !!checked })}
+                      />
+                      <div className="flex-1">
+                        <label htmlFor="test-only-baits" className="font-semibold text-purple-700 dark:text-purple-300 cursor-pointer">
+                          Disparo de Teste (APENAS Iscas)
+                        </label>
+                        <p className="text-xs text-purple-600/80 dark:text-purple-300/80 mt-1">
+                          Se ativado, bloqueia o envio para a base de clientes. A campanha será enviada <strong className="font-bold underline">exclusivamente</strong> para as iscas cadastradas. Útil para testar formatação da mensagem e disponibilidade dos fornecedores.
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>

@@ -38,6 +38,7 @@ interface Template {
   createdAt: string;
   usageCount?: number;
   source?: string;
+  provider?: string;
   templateCode?: string;
   walletName?: string;
   imageUrl?: string;
@@ -82,6 +83,7 @@ export default function Mensagens() {
     createdAt: msg.date ? new Date(msg.date).toLocaleDateString('pt-BR') : '-',
     usageCount: 0,
     source: msg.source,
+    provider: msg.provider || null,
     templateCode: msg.template_code,
     walletName: msg.wallet_name,
     imageUrl: msg.image_url,
@@ -256,11 +258,22 @@ export default function Mensagens() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <CardTitle className="text-base truncate" title={template.name}>{template.name}</CardTitle>
-                        {template.source === 'otima_wpp' && (
+                        {/* Channel badge */}
+                        {(template.source === 'otima_wpp' || template.source === 'gosac_oficial') && (
                           <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200">WPP</Badge>
                         )}
                         {template.source === 'otima_rcs' && (
                           <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200">RCS</Badge>
+                        )}
+                        {/* Provider badge */}
+                        {template.source === 'otima_wpp' && (
+                          <Badge variant="outline" className="text-xs bg-purple-50 text-purple-700 border-purple-200">Ótima</Badge>
+                        )}
+                        {template.source === 'otima_rcs' && (
+                          <Badge variant="outline" className="text-xs bg-purple-50 text-purple-700 border-purple-200">Ótima</Badge>
+                        )}
+                        {(template.source === 'gosac_oficial' || template.provider === 'Gosac Oficial') && (
+                          <Badge variant="outline" className="text-xs bg-orange-50 text-orange-700 border-orange-200">GOSAC</Badge>
                         )}
                       </div>
 

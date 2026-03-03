@@ -156,7 +156,9 @@ export const scheduleCampaign = (data: Record<string, any>) => {
     template_id: data.template_id || data.template,
     record_limit: data.record_limit || 0,
     exclude_recent_phones: data.exclude_recent_phones !== undefined ? data.exclude_recent_phones : 1,
+    exclude_recent_hours: data.exclude_recent_hours !== undefined ? data.exclude_recent_hours : 48,
     include_baits: data.include_baits !== undefined ? data.include_baits : 0,
+    test_only: data.test_only !== undefined ? data.test_only : 0,
     throttling_type: data.throttling_type || 'none',
     throttling_config: JSON.stringify(data.throttling_config || {}),
   };
@@ -203,6 +205,7 @@ export const getCountDetailed = (data: Record<string, any>) => {
     table_name: data.table_name || data.base,
     filters: data.filters || [],
     exclude_recent: data.exclude_recent,
+    exclude_recent_hours: data.exclude_recent_hours || 48,
   }, 'cmNonce');
 };
 
@@ -312,6 +315,7 @@ export const saveRecurring = (data: Record<string, any>) => {
       : JSON.stringify(data.filters || []),
     record_limit: data.record_limit || 0,
     exclude_recent_phones: data.exclude_recent_phones !== undefined ? data.exclude_recent_phones : 1,
+    exclude_recent_hours: data.exclude_recent_hours !== undefined ? data.exclude_recent_hours : 48,
     include_baits: data.include_baits !== undefined ? data.include_baits : 0,
     throttling_type: data.throttling_type || 'none',
     throttling_config: typeof data.throttling_config === 'string'
@@ -579,12 +583,175 @@ export const deleteCustomProvider = (providerKey: string) => {
   return wpAjax('pc_delete_custom_provider', { provider_key: providerKey });
 };
 
-// Generalized Health and Templates
-export const getWalletsHealth = () => {
-  return wpAjax('pc_get_all_connections_health', {});
+// Salesforce Manual Import Trigger
+export const runSalesforceImport = () => {
+  return wpAjax('pc_run_salesforce_import', {});
 };
 
-export const getTemplatesByWallet = (walletId: number | string) => {
-  return wpAjax('pc_get_templates_by_wallet', { wallet_id: walletId });
+
+// ─── Direct External Provider API Calls ─────────────────────────────────────
+// These functions bypass the WordPress PHP proxy and call provider APIs directly.
+
+const ensureBearer = (token: string | undefined): string => {
+  if (!token) return '';
+  const t = String(token).trim();
+  return t.toLowerCase().startsWith('bearer ') ? t : `Bearer ${t}`;
 };
 
+interface DebugEntry {
+  external_url: string;
+  method: string;
+  headers_sent: Record<string, string>;
+  http_status: number | string;
+  raw_response: string;
+  id_ambient: string;
+  provider: string;
+}
+
+/** Fetch Line Health directly from GOSAC middleware - no PHP proxy */
+export const getWalletsHealth = async (): Promise<{ connections: any[]; debug_info: DebugEntry[] }> => {
+  // 1. Load credentials from WordPress (one lightweight AJAX call)
+  const creds = await getStaticCredentials();
+  const gosacUrl = String(creds?.gosac_oficial_url || '').trim().replace(/\/$/, '');
+  const gosacToken = ensureBearer(creds?.gosac_oficial_token);
+
+  if (!gosacUrl || !gosacToken) {
+    console.warn('⚠️ [LineHealth] GOSAC credentials not configured');
+    return { connections: [], debug_info: [] };
+  }
+
+  // 2. Load wallet list from local WP DB to get unique idAmbient values
+  const carteiras: any[] = await wpAjax('pc_get_carteiras', {});
+  const uniqueAmbients = [...new Set(
+    (carteiras || []).map((w: any) => String(w.id_carteira || '').trim()).filter(Boolean)
+  )];
+
+  const allConnections: any[] = [];
+  const debugInfo: DebugEntry[] = [];
+
+  // 3. Call GOSAC directly for each unique ambient
+  for (const idAmbient of uniqueAmbients) {
+    const url = `${gosacUrl}/connections/official?idAmbient=${encodeURIComponent(idAmbient)}`;
+    const headers: Record<string, string> = {
+      Authorization: gosacToken,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+
+    let httpStatus: number | string = 'NETWORK_ERROR';
+    let rawBody = '';
+
+    try {
+      console.log(`🔵 [LineHealth] Calling GOSAC directly: GET ${url}`);
+      const res = await fetch(url, { method: 'GET', headers });
+      httpStatus = res.status;
+      rawBody = await res.text();
+
+      if (res.ok) {
+        const json = JSON.parse(rawBody);
+        const envItems: any[] = json.data ?? json;
+
+        if (Array.isArray(envItems)) {
+          for (const envItem of envItems) {
+            if (!envItem?.connections?.length) continue;
+            for (const conn of envItem.connections) {
+              let restriction = conn.accountRestriction ?? null;
+              if (typeof restriction === 'string' && restriction) {
+                try { restriction = JSON.parse(restriction); } catch { /* keep as string */ }
+              }
+              // Map wallet name from local carteiras
+              const wallet = (carteiras || []).find((w: any) => String(w.id_carteira) === idAmbient);
+              allConnections.push({
+                id: conn.id ?? '',
+                name: conn.name ?? '',
+                status: conn.status ?? '',
+                type: conn.type ?? '',
+                messagingLimit: conn.messagingLimit ?? '',
+                accountRestriction: restriction,
+                provider: 'Gosac Oficial',
+                id_ambient: idAmbient,
+                idRuler: envItem.idRuler ?? '',
+                wallet_name: wallet?.nome ?? idAmbient,
+              });
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      httpStatus = 'NETWORK_ERROR';
+      rawBody = String(err?.message || err);
+      console.error(`🔴 [LineHealth] GOSAC fetch error for idAmbient ${idAmbient}:`, err);
+    }
+
+    // Mask token for debug display
+    const tokenMasked = gosacToken.substring(0, 14) + '...' + gosacToken.slice(-6);
+    debugInfo.push({
+      external_url: url,
+      method: 'GET',
+      headers_sent: { Authorization: tokenMasked, 'Content-Type': 'application/json', Accept: 'application/json' },
+      http_status: httpStatus,
+      raw_response: rawBody,
+      id_ambient: idAmbient,
+      provider: 'gosac_oficial',
+    });
+  }
+
+  return { connections: allConnections, debug_info: debugInfo };
+};
+
+/** Fetch Templates directly from GOSAC middleware for a given wallet/ambient ID */
+export const getTemplatesByWallet = async (walletId: number | string): Promise<any[]> => {
+  const creds = await getStaticCredentials();
+  const gosacUrl = String(creds?.gosac_oficial_url || '').trim().replace(/\/$/, '');
+  const gosacToken = ensureBearer(creds?.gosac_oficial_token);
+
+  if (!gosacUrl || !gosacToken || !walletId) return [];
+
+  // Get the id_carteira for this wallet
+  const carteiras: any[] = await wpAjax('pc_get_carteiras', {});
+  const wallet = (carteiras || []).find((w: any) => String(w.id) === String(walletId));
+  const idAmbient = wallet?.id_carteira ? String(wallet.id_carteira).trim() : String(walletId);
+
+  if (!idAmbient) return [];
+
+  const url = `${gosacUrl}/templates/waba?idAmbient=${encodeURIComponent(idAmbient)}`;
+  console.log(`🔵 [Templates] Calling GOSAC directly: GET ${url}`);
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: gosacToken, 'Content-Type': 'application/json', Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      console.error(`🔴 [Templates] GOSAC responded ${res.status}`);
+      return [];
+    }
+    const json = await res.json();
+    const envItems: any[] = json.data ?? json;
+    const allTemplates: any[] = [];
+
+    if (Array.isArray(envItems)) {
+      for (const envItem of envItems) {
+        if (!envItem?.templates?.length) continue;
+        for (const t of envItem.templates) {
+          allTemplates.push({
+            id: t.id ?? t.name ?? '',
+            name: t.name ?? '',
+            content: t.content ?? '',
+            category: t.category ?? '',
+            language: t.language ?? '',
+            status: t.status ?? '',
+            provider: 'Gosac Oficial',
+            source: 'gosac_oficial',
+            id_ambient: idAmbient,
+            idRuler: envItem.idRuler ?? '',
+          });
+        }
+      }
+    }
+    return allTemplates;
+  } catch (err) {
+    console.error('🔴 [Templates] GOSAC fetch error:', err);
+    return [];
+  }
+};

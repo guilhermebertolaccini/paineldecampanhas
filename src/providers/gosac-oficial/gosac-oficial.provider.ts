@@ -82,7 +82,7 @@ export class GosacOficialProvider extends BaseProvider {
         const now = new Date();
         const campanha = `campanha_oficial_${now.getTime()}`;
 
-        const payload = {
+        const payload: any = {
             name: `${campanha}_${now.toISOString().replace(/[:.]/g, '-')}`,
             kind: 'whats',
             connectionId: null, // Pode ser expandido se necessário
@@ -93,6 +93,10 @@ export class GosacOficialProvider extends BaseProvider {
             speed: 'low',
             templateId: templateId,
         };
+
+        if ((credentials as any).idRuler) {
+            payload.idRuler = (credentials as any).idRuler;
+        }
 
         try {
             const createResponse = await this.executeWithRetry(

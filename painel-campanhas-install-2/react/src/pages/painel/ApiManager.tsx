@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Key, Eye, EyeOff, Save, Plus, Trash2, Link2, Loader2, Server } from "lucide-react";
+import { Key, Eye, EyeOff, Save, Plus, Trash2, Link2, Loader2, Server, Play, CheckCircle2, XCircle } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,6 +28,7 @@ import {
   getCustomProvider,
   updateCustomProvider,
   deleteCustomProvider,
+  runSalesforceImport,
 } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -201,6 +202,38 @@ export default function ApiManager() {
     },
   });
 
+  const [sfImportResult, setSfImportResult] = useState<{ rows_inserted: number; pages_processed: number; errors: string[] } | null>(null);
+
+  const sfImportMutation = useMutation({
+    mutationFn: runSalesforceImport,
+    onSuccess: (data: any) => {
+      console.log('🔵 [ApiManager] Salesforce Import Data received:', data);
+      setSfImportResult(data);
+      if (data?.errors?.length > 0) {
+        toast({
+          title: `Importação concluída com avisos`,
+          description: `${data.rows_inserted ?? 0} registros inseridos/atualizados em ${data.pages_processed ?? 0} páginas. ${data.errors.length} erro(s).`,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Importação Salesforce concluída!",
+          description: `${data.rows_inserted ?? 0} registros inseridos/atualizados em ${data.pages_processed ?? 0} página(s).`,
+        });
+      }
+    },
+    onError: (error: any) => {
+      console.error('🔴 [ApiManager] Error in Salesforce Import:', error);
+      setSfImportResult(null);
+      toast({
+        title: "Erro na importação Salesforce",
+        description: error.message || "Erro desconhecido",
+        variant: "destructive",
+      });
+    },
+  });
+
+
   const toggleKeyVisibility = (id: string) => {
     setVisibleKeys((prev) =>
       prev.includes(id) ? prev.filter((k) => k !== id) : [...prev, id]
@@ -321,8 +354,68 @@ export default function ApiManager() {
         description="Gerencie chaves de API e integrações"
       />
 
+      {/* ── Salesforce Manual Import ───────────────────────────────────────── */}
+      <Card className="border-emerald-300 bg-emerald-50/40 dark:bg-emerald-900/10">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400">
+            <Server className="h-5 w-5" />
+            Importação Manual Salesforce
+          </CardTitle>
+          <CardDescription>
+            Executa o mesmo processo do cron diário (11h00 São Paulo) para ingerir dados do Salesforce Marketing Cloud na tabela <code>salesforce_returns</code>.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-4">
+            <Button
+              onClick={() => { setSfImportResult(null); sfImportMutation.mutate(); }}
+              disabled={sfImportMutation.isPending}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2"
+            >
+              {sfImportMutation.isPending ? (
+                <><Loader2 className="h-4 w-4 animate-spin" /> Importando...</>
+              ) : (
+                <><Play className="h-4 w-4" /> Executar Importação Agora</>
+              )}
+            </Button>
+            {sfImportMutation.isPending && (
+              <span className="text-sm text-muted-foreground animate-pulse">
+                Buscando dados no Salesforce e gravando no banco... Aguarde (pode levar 1-2 minutos).
+              </span>
+            )}
+          </div>
+
+          {sfImportResult && (
+            <div className={`rounded-lg border p-4 space-y-2 text-sm ${sfImportResult.errors.length > 0 ? 'border-amber-300 bg-amber-50 dark:bg-amber-900/20' : 'border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20'}`}>
+              <div className="flex items-center gap-2 font-semibold">
+                {sfImportResult.errors.length > 0
+                  ? <XCircle className="h-4 w-4 text-amber-600" />
+                  : <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                }
+                Resultado da Última Importação
+              </div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                <span className="text-muted-foreground">Registros inseridos/atualizados:</span>
+                <span className="font-bold tabular-nums">{sfImportResult.rows_inserted.toLocaleString('pt-BR')}</span>
+                <span className="text-muted-foreground">Páginas processadas:</span>
+                <span className="font-bold tabular-nums">{sfImportResult.pages_processed}</span>
+              </div>
+              {sfImportResult.errors.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-amber-700">Erros:</p>
+                  {sfImportResult.errors.map((e, i) => (
+                    <p key={i} className="text-xs text-amber-800 font-mono bg-amber-100 dark:bg-amber-900/40 rounded px-2 py-1">{e}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Master API Key */}
       <Card className="border-primary/30 bg-primary/5">
+
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Key className="h-5 w-5 text-primary" />

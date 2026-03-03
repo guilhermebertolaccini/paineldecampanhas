@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Shield, Info, AlertCircle, CheckCircle2, Clock, Wallet } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -15,26 +16,60 @@ import {
 import { getWalletsHealth } from "@/lib/api";
 
 export default function LineHealth() {
-    const { data: connections = [], isLoading } = useQuery({
+    const [connections, setConnections] = useState<any[]>([]);
+
+    const { data: rawData, isLoading, isError } = useQuery({
         queryKey: ['wallets-health'],
         queryFn: getWalletsHealth,
     });
 
-    const getStatusBadge = (status: string) => {
-        switch (status?.toUpperCase()) {
+    useEffect(() => {
+        if (rawData === undefined) return;
+        if (rawData && typeof rawData === 'object' && !Array.isArray(rawData) && rawData.connections) {
+            setConnections(Array.isArray(rawData.connections) ? rawData.connections : []);
+        } else if (Array.isArray(rawData)) {
+            setConnections(rawData);
+        } else {
+            setConnections([]);
+        }
+    }, [rawData]);
+
+    const getStatusBadge = (conn: any) => {
+        const status = conn.status;
+        const type = conn.type;
+        if (!status && type) {
+            return <Badge className="bg-blue-500 font-medium whitespace-nowrap"><CheckCircle2 className="w-3 h-3 mr-1" /> {String(type).toUpperCase()}</Badge>;
+        }
+        switch (String(status || '').toUpperCase()) {
             case 'CONNECTED':
                 return <Badge className="bg-green-500 font-medium whitespace-nowrap"><CheckCircle2 className="w-3 h-3 mr-1" /> Conectado</Badge>;
             case 'DISCONNECTED':
                 return <Badge variant="destructive" className="font-medium whitespace-nowrap"><AlertCircle className="w-3 h-3 mr-1" /> Desconectado</Badge>;
             default:
-                return <Badge variant="secondary" className="font-medium whitespace-nowrap"><Clock className="w-3 h-3 mr-1" /> {status || 'Desconhecido'}</Badge>;
+                return <Badge variant="secondary" className="font-medium whitespace-nowrap"><Clock className="w-3 h-3 mr-1" /> {status ? String(status) : 'Ativo'}</Badge>;
         }
     };
 
-    const getLimitBadge = (limit: string) => {
+    const getRestrictionDisplay = (restriction: any) => {
+        if (!restriction || restriction === 'NONE') {
+            return <span className="text-green-600 text-xs font-bold uppercase tracking-tight">Normal</span>;
+        }
+        if (typeof restriction === 'object' && restriction !== null && Array.isArray(restriction.restriction_info)) {
+            const types = restriction.restriction_info
+                .map((r: any) => String(r.restriction_type || '').replace('RESTRICTED_', ''))
+                .join(', ');
+            return <Badge variant="destructive" className="font-bold text-[10px] max-w-[140px] truncate" title={types}>{types}</Badge>;
+        }
+        return <Badge variant="destructive" className="font-bold text-[10px]">{String(restriction)}</Badge>;
+    };
+
+    const getLimitBadge = (limit: any) => {
         if (!limit) return <Badge variant="outline">N/A</Badge>;
-        const color = limit.includes('1k') ? 'bg-blue-500' : limit.includes('10k') ? 'bg-purple-500' : 'bg-emerald-500';
-        return <Badge className={`${color} font-medium`}>{limit}</Badge>;
+        const s = String(limit);
+        const color = s.includes('1K') || s.includes('1k') ? 'bg-blue-500'
+            : s.includes('10K') || s.includes('10k') ? 'bg-purple-500'
+            : 'bg-emerald-500';
+        return <Badge className={`${color} font-medium`}>{s}</Badge>;
     };
 
     return (
@@ -62,7 +97,7 @@ export default function LineHealth() {
                     </CardHeader>
                     <CardContent>
                         <div className="text-2xl font-bold">
-                            {connections.filter((c: any) => c.status === 'CONNECTED').length}
+                            {connections.filter((c: any) => c.status === 'CONNECTED' || (!c.status && c.type)).length}
                         </div>
                     </CardContent>
                 </Card>
@@ -74,7 +109,7 @@ export default function LineHealth() {
                     </CardHeader>
                     <CardContent>
                         <div className="text-2xl font-bold">
-                            {connections.filter((c: any) => c.accountRestriction !== 'NONE' && c.accountRestriction).length}
+                            {connections.filter((c: any) => c.accountRestriction && c.accountRestriction !== 'NONE').length}
                         </div>
                     </CardContent>
                 </Card>
@@ -116,27 +151,23 @@ export default function LineHealth() {
                                     {connections.map((conn: any, index: number) => (
                                         <TableRow key={`${conn.id}-${index}`}>
                                             <TableCell className="font-medium">
-                                                <div className="font-bold">{conn.name}</div>
-                                                <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-mono">{conn.id}</div>
+                                                <div className="font-bold">{String(conn.name ?? '')}</div>
+                                                <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-mono">{String(conn.id ?? '')}</div>
                                             </TableCell>
                                             <TableCell>
                                                 <div className="flex items-center text-xs font-semibold">
                                                     <Wallet className="w-3 h-3 mr-1 text-muted-foreground" />
-                                                    {conn.wallet_name}
+                                                    {String(conn.wallet_name ?? '—')}
                                                 </div>
-                                                <div className="text-[10px] text-muted-foreground font-mono">ID: {conn.id_ambient}</div>
+                                                <div className="text-[10px] text-muted-foreground font-mono">ID: {String(conn.id_ambient ?? '')}</div>
                                             </TableCell>
                                             <TableCell className="text-center">
-                                                <Badge variant="secondary" className="text-[10px] uppercase">{conn.provider}</Badge>
+                                                <Badge variant="secondary" className="text-[10px] uppercase">{String(conn.provider ?? '')}</Badge>
                                             </TableCell>
-                                            <TableCell className="text-center">{getStatusBadge(conn.status)}</TableCell>
+                                            <TableCell className="text-center">{getStatusBadge(conn)}</TableCell>
                                             <TableCell className="text-center">{getLimitBadge(conn.messagingLimit)}</TableCell>
                                             <TableCell className="text-center">
-                                                {conn.accountRestriction === 'NONE' || !conn.accountRestriction ? (
-                                                    <span className="text-green-600 text-xs font-bold uppercase tracking-tight">Normal</span>
-                                                ) : (
-                                                    <Badge variant="destructive" className="font-bold text-[10px]">{conn.accountRestriction}</Badge>
-                                                )}
+                                                {getRestrictionDisplay(conn.accountRestriction)}
                                             </TableCell>
                                         </TableRow>
                                     ))}

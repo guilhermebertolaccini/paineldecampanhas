@@ -45,6 +45,7 @@ interface Carteira {
   id: string;
   nome: string;
   id_carteira: string;
+  id_ruler?: string;
   descricao?: string;
   ativo: number;
   criado_em?: string;
@@ -60,6 +61,7 @@ export default function Configuracoes() {
   const [formData, setFormData] = useState({
     nome: "",
     id_carteira: "",
+    id_ruler: "",
     descricao: ""
   });
   const [selectedBases, setSelectedBases] = useState<string[]>([]);
@@ -157,7 +159,7 @@ export default function Configuracoes() {
       queryClient.invalidateQueries({ queryKey: ['carteiras'] });
       queryClient.invalidateQueries({ queryKey: ['bases-carteira-list'] });
       setIsDialogOpen(false);
-      setFormData({ nome: "", id_carteira: "", descricao: "" });
+      setFormData({ nome: "", id_carteira: "", id_ruler: "", descricao: "" });
       setEditingCarteira(null);
     },
     onError: (error: any) => {
@@ -176,7 +178,7 @@ export default function Configuracoes() {
       queryClient.invalidateQueries({ queryKey: ['carteiras'] });
       queryClient.invalidateQueries({ queryKey: ['bases-carteira-list'] });
       setIsDialogOpen(false);
-      setFormData({ nome: "", id_carteira: "", descricao: "" });
+      setFormData({ nome: "", id_carteira: "", id_ruler: "", descricao: "" });
       setEditingCarteira(null);
     },
     onError: (error: any) => {
@@ -345,6 +347,7 @@ export default function Configuracoes() {
       setFormData({
         nome: data.nome || "",
         id_carteira: data.id_carteira || "",
+        id_ruler: data.id_ruler || "",
         descricao: data.descricao || "",
       });
       setIsDialogOpen(true);
@@ -359,7 +362,7 @@ export default function Configuracoes() {
 
   const openNew = () => {
     setEditingCarteira(null);
-    setFormData({ nome: "", id_carteira: "", descricao: "" });
+    setFormData({ nome: "", id_carteira: "", id_ruler: "", descricao: "" });
     setIsDialogOpen(true);
   };
 
@@ -419,6 +422,11 @@ export default function Configuracoes() {
                       <CardTitle className="text-lg">{carteira.nome}</CardTitle>
                       <CardDescription className="flex items-center gap-2 mt-1 flex-wrap">
                         <Badge variant="secondary">ID: {carteira.id_carteira}</Badge>
+                        {carteira.id_ruler && (
+                          <Badge variant="outline" className="border-blue-500 text-blue-600 bg-blue-50/50">
+                            Ruler: {carteira.id_ruler}
+                          </Badge>
+                        )}
                         {carteira.ativo ? (
                           <Badge variant="default">Ativa</Badge>
                         ) : (
@@ -526,6 +534,18 @@ export default function Configuracoes() {
               />
               <p className="text-xs text-muted-foreground">
                 Este ID será enviado ao provider no lugar de idgis_ambiente
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="id_ruler">ID Ruler (Opcional - GOSAC Oficial)</Label>
+              <Input
+                id="id_ruler"
+                placeholder="Ex: 2021"
+                value={formData.id_ruler}
+                onChange={(e) => setFormData({ ...formData, id_ruler: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">
+                Necessário para envios via GOSAC Oficial
               </p>
             </div>
             <div className="space-y-2">
