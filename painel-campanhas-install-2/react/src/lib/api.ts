@@ -170,6 +170,12 @@ export const scheduleCampaign = (data: Record<string, any>) => {
   if (data.template_source) {
     payload.template_source = data.template_source;
   }
+  if (data.broker_code) {
+    payload.broker_code = data.broker_code;
+  }
+  if (data.customer_code) {
+    payload.customer_code = data.customer_code;
+  }
 
   return wpAjax('cm_schedule_campaign', payload, 'cmNonce');
 };
@@ -329,6 +335,12 @@ export const saveRecurring = (data: Record<string, any>) => {
   }
   if (data.template_source) {
     payload.template_source = data.template_source;
+  }
+  if (data.broker_code) {
+    payload.broker_code = data.broker_code;
+  }
+  if (data.customer_code) {
+    payload.customer_code = data.customer_code;
   }
 
   return wpAjax('cm_save_recurring', payload, 'cmNonce');

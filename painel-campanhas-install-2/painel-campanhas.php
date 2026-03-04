@@ -8299,7 +8299,7 @@ class Painel_Campanhas
                             'content' => $content,
                             'date' => date('Y-m-d H:i:s'),
                             'source' => 'otima_rcs',
-                            'template_code' => $tpl['template_id'] ?? '', // No RCS usamos o template_id para envio
+                            'template_code' => $tpl['code'] ?? $tpl['template_id'] ?? '', // No RCS usamos o 'code' (apelido) para envio via Bulk API
                             'wallet_id' => $customer_code,
                             'wallet_name' => $carteira_nome,
                             'broker_code' => $tpl['broker_code'] ?? $tpl['brokerCode'] ?? '',
