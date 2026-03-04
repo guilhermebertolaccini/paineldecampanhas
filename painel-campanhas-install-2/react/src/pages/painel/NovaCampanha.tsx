@@ -67,6 +67,8 @@ export default function NovaCampanha() {
     template: "",
     templateCode: "",
     templateSource: "",
+    brokerCode: "",
+    customerCode: "",
     message: "",
     providers: [] as string[],
     record_limit: 0,
@@ -191,6 +193,8 @@ export default function NovaCampanha() {
       source: t.source || 'external',
       provider: t.source === 'otima_rcs' ? 'Ótima RCS' : 'Ótima WPP',
       templateCode: t.template_code || '',
+      brokerCode: t.broker_code || '',
+      customerCode: t.customer_code || '',
       walletId: null,
       walletName: t.wallet_name || null,
       imageUrl: t.image_url || null,
@@ -473,12 +477,15 @@ export default function NovaCampanha() {
         template_id: formData.templateSource === 'local' ? parseInt(formData.template) : null,
         template_code: formData.templateCode || null,
         template_source: formData.templateSource || 'local',
+        broker_code: formData.brokerCode || null,
+        customer_code: formData.customerCode || null,
         providers_config: providersConfig,
         filters: formattedFilters,
         record_limit: formData.record_limit || 0,
         exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
         exclude_recent_hours: formData.exclude_recent_hours || 48,
         include_baits: formData.include_baits ? 1 : 0,
+        test_only: formData.test_only ? 1 : 0,
         throttling_type: formData.throttling_type || 'none',
         throttling_config: formData.throttling_config || {},
       };
@@ -491,10 +498,13 @@ export default function NovaCampanha() {
         template_id: formData.templateSource === 'local' ? parseInt(formData.template) : null,
         template_code: formData.templateCode || null,
         template_source: formData.templateSource || 'local',
+        broker_code: formData.brokerCode || null,
+        customer_code: formData.customerCode || null,
         record_limit: formData.record_limit || 0,
         exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
         exclude_recent_hours: formData.exclude_recent_hours || 48,
         include_baits: formData.include_baits ? 1 : 0,
+        test_only: formData.test_only ? 1 : 0,
         throttling_type: formData.throttling_type || 'none',
         throttling_config: formData.throttling_config || {},
       };
@@ -798,14 +808,16 @@ export default function NovaCampanha() {
                   onValueChange={(v) => {
                     console.log('📝 [Template Select] Valor selecionado:', v, 'Tipo:', typeof v);
 
-                    const selectedTemplate = templates.find(t => t.id === v);
+                    const selectedTemplate = templates.find(t => t.id === v) as any;
                     console.log('📝 [Template Select] Template encontrado:', selectedTemplate);
 
                     setFormData({
                       ...formData,
                       template: v,
                       templateCode: selectedTemplate?.templateCode || '',
-                      templateSource: selectedTemplate?.source || ''
+                      templateSource: selectedTemplate?.source || '',
+                      brokerCode: selectedTemplate?.brokerCode || '',
+                      customerCode: selectedTemplate?.customerCode || '',
                     });
 
                     // Só busca conteúdo se for template local

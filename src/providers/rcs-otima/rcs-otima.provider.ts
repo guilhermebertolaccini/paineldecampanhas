@@ -23,6 +23,8 @@ interface RCSTemplateMessage {
 }
 
 interface RCSOtimaPayload {
+  broker_code: string;
+  customer_code: string;
   messages: RCSTemplateMessage[];
 }
 
@@ -46,6 +48,28 @@ export class RcsOtimaProvider extends BaseProvider {
     }
 
     const token = credentials.token || credentials.authorization;
+    let broker_code = credentials.broker_code || '';
+    let customer_code = credentials.customer_code || '';
+
+    // Extrai broker_code e customer_code do JSON da mensagem (prioridade sobre credenciais estáticas)
+    // O PHP salva como JSON: {"template_code":"...", "broker_code":"...", "customer_code":"...", ...}
+    if (data.length > 0 && data[0].mensagem && typeof data[0].mensagem === 'string') {
+      try {
+        if (data[0].mensagem.trim().startsWith('{')) {
+          const parsed = JSON.parse(data[0].mensagem);
+          if (parsed.broker_code) {
+            broker_code = parsed.broker_code;
+            this.logger.log(`🏢 [RCS Ótima] broker_code extraído da campanha: ${broker_code}`);
+          }
+          if (parsed.customer_code) {
+            customer_code = parsed.customer_code;
+            this.logger.log(`👤 [RCS Ótima] customer_code extraído da campanha: ${customer_code}`);
+          }
+        }
+      } catch (e) {
+        this.logger.warn(`⚠️ [RCS Ótima] Falha ao parsear mensagem JSON: ${e.message}`);
+      }
+    }
 
     // Formata mensagens para o formato da API Ótima
     const messages: RCSTemplateMessage[] = data.map((item) => {
@@ -80,10 +104,13 @@ export class RcsOtimaProvider extends BaseProvider {
     });
 
     const payload: RCSOtimaPayload = {
+      broker_code,
+      customer_code,
       messages,
     };
 
     this.logger.log(`📦 [RCS Ótima] Payload preparado com ${messages.length} mensagens`);
+    this.logger.log(`🏢 [RCS Ótima] Broker: ${broker_code}, Customer: ${customer_code}`);
     this.logger.debug(`📋 [RCS Ótima] Payload: ${JSON.stringify(payload, null, 2)}`);
 
     // Executa requisição com retry

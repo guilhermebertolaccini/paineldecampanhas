@@ -49,15 +49,15 @@ export class WhatsappOtimaProvider extends BaseProvider {
     }
 
     const token = credentials.token || credentials.authorization;
-    const broker_code = credentials.broker_code || '';
-    const customer_code = credentials.customer_code || '';
+    let broker_code = credentials.broker_code || '';
+    let customer_code = credentials.customer_code || '';
     const template_code = credentials.template_code || 'default'; // Pode ser configurado depois
 
     // LOGICA DE EXTRAÇÃO DE TEMPLATE CORRIGIDA
     let final_template_code = template_code;
 
-    // Tenta extrair template_code dos dados (prioridade sobre credenciais)
-    // O PHP salva como JSON: {"template_code":"...", "template_source":"otima_wpp", ...}
+    // Tenta extrair template_code, broker_code e customer_code dos dados (prioridade sobre credenciais)
+    // O PHP salva como JSON: {"template_code":"...", "template_source":"otima_wpp", "broker_code":"...", "customer_code":"..."}
     if (data.length > 0 && data[0].mensagem && typeof data[0].mensagem === 'string') {
       try {
         if (data[0].mensagem.trim().startsWith('{')) {
@@ -65,6 +65,14 @@ export class WhatsappOtimaProvider extends BaseProvider {
           if (parsed.template_code) {
             final_template_code = parsed.template_code;
             this.logger.log(`📝 [WhatsApp Ótima] Usando template selecionado na campanha: ${final_template_code}`);
+          }
+          if (parsed.broker_code) {
+            broker_code = parsed.broker_code;
+            this.logger.log(`🏢 [WhatsApp Ótima] broker_code extraído da campanha: ${broker_code}`);
+          }
+          if (parsed.customer_code) {
+            customer_code = parsed.customer_code;
+            this.logger.log(`👤 [WhatsApp Ótima] customer_code extraído da campanha: ${customer_code}`);
           }
         }
       } catch (e) {

@@ -2600,6 +2600,8 @@ class Painel_Campanhas
         $template_id = intval($_POST['template_id'] ?? 0);
         $template_code = sanitize_text_field($_POST['template_code'] ?? '');
         $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
+        $broker_code = sanitize_text_field($_POST['broker_code'] ?? '');
+        $customer_code = sanitize_text_field($_POST['customer_code'] ?? '');
         $record_limit = intval($_POST['record_limit'] ?? 0);
         $exclude_recent_phones = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
         $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
@@ -2785,10 +2787,12 @@ class Painel_Campanhas
                 // Para templates da Ótima, armazena template_code no campo mensagem
                 $mensagem_para_armazenar = $mensagem_final;
                 if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code)) {
-                    // Armazena JSON com template_code e informações necessárias
+                    // Armazena JSON com template_code, broker_code, customer_code e informações necessárias
                     $mensagem_para_armazenar = json_encode([
                         'template_code' => $template_code,
                         'template_source' => $template_source,
+                        'broker_code' => $broker_code,
+                        'customer_code' => $customer_code,
                         'original_message' => $mensagem_final
                     ]);
                 }
@@ -5417,8 +5421,8 @@ class Painel_Campanhas
                 ];
             } elseif ((stripos($provider, 'OTIMA') !== false && (stripos($provider, 'WPP') !== false || stripos($provider, 'WHATSAPP') !== false))) {
                 $token = $static_credentials['otima_wpp_token'] ?? '';
-                $broker_code = $static_credentials['otima_wpp_broker_code'] ?? '';
-                $customer_code = $static_credentials['otima_wpp_customer_code'] ?? '';
+                // As credenciais dinâmicas do broker e customer code virão injetadas via formData original
+                // Então apenas enviamos o token principal por enquanto.
 
                 if (empty($token)) {
                     $error_message = 'Credenciais Ótima WhatsApp incompletas. Configure o Token no API Manager. Acesse /painel/api-manager e preencha o campo "Token de Autenticação" na seção "Static Provider Credentials" > "Ótima WhatsApp".';
@@ -5438,8 +5442,6 @@ class Painel_Campanhas
 
                 $credentials = [
                     'token' => $token,
-                    'broker_code' => $broker_code,
-                    'customer_code' => $customer_code,
                     'api_url' => 'https://services.otima.digital/v1/whatsapp',
                 ];
 
@@ -5448,8 +5450,8 @@ class Painel_Campanhas
                 $token = $static_credentials['otima_rcs_token'] ?? '';
 
                 if (empty($token)) {
-                    $error_message = 'Credenciais Ótima RCS incompletas. Configure o Token no API Manager. Acesse /painel/api-manager e preencha o campo "Token de Autenticação" na seção "Static Provider Credentials" > "Ótima RCS".';
-                    error_log('🔴 [REST API] Credenciais Ótima RCS incompletas. Faltando: token');
+                    $error_message = 'Credenciais Ótima RCS incompletas. Configure o Token no API Manager. Acesse /painel/api-manager e preencha os campos na seção "Static Provider Credentials" > "Ótima RCS".';
+                    error_log('🔴 [REST API] Credenciais Ótima RCS incompletas. Faltando token');
 
                     return new WP_Error(
                         'invalid_credentials',
@@ -5457,7 +5459,6 @@ class Painel_Campanhas
                         [
                             'status' => 400,
                             'code' => 'INCOMPLETE_OTIMA_RCS_CREDENTIALS',
-                            'missing_fields' => ['token'],
                             'provider' => 'OTIMA RCS'
                         ]
                     );
@@ -5473,12 +5474,24 @@ class Painel_Campanhas
                 global $wpdb;
                 $carteiras_table = $wpdb->prefix . 'pc_carteiras_v2';
                 $id_ruler = '';
-                
+
                 if (!empty($env_id)) {
-                    $carteira = $wpdb->get_row($wpdb->prepare(
-                        "SELECT id_ruler FROM $carteiras_table WHERE id_carteira = %s AND ativo = 1 LIMIT 1",
-                        $env_id
-                    ), ARRAY_A);
+                    // Try exact match by numeric id first
+                    if (is_numeric($env_id)) {
+                        $carteira = $wpdb->get_row($wpdb->prepare(
+                            "SELECT id_ruler FROM $carteiras_table WHERE id = %d AND ativo = 1 LIMIT 1",
+                            intval($env_id)
+                        ), ARRAY_A);
+                    }
+
+                    // Fallback to id_carteira text match for backward compatibility
+                    if (empty($carteira)) {
+                        $carteira = $wpdb->get_row($wpdb->prepare(
+                            "SELECT id_ruler FROM $carteiras_table WHERE id_carteira = %s AND ativo = 1 LIMIT 1",
+                            $env_id
+                        ), ARRAY_A);
+                    }
+
                     if ($carteira && !empty($carteira['id_ruler'])) {
                         $id_ruler = $carteira['id_ruler'];
                     }
@@ -5503,12 +5516,24 @@ class Painel_Campanhas
             global $wpdb;
             $table = $wpdb->prefix . 'api_consumer_credentials';
 
-            $query = $wpdb->prepare("
-                SELECT credentials
-                FROM {$table}
-                WHERE provider = %s AND env_id = %s
-                LIMIT 1
-            ", $provider, $env_id);
+            $query = "";
+            if (is_numeric($env_id)) {
+                // Tenta buscar no wp_api_consumer_credentials pelo numero primeiro se for numerico
+                // Ou pela string pura.
+                $query = $wpdb->prepare("
+                    SELECT credentials
+                    FROM {$table}
+                    WHERE provider = %s AND (env_id = %s OR env_id = %d)
+                    LIMIT 1
+                ", $provider, $env_id, intval($env_id));
+            } else {
+                $query = $wpdb->prepare("
+                    SELECT credentials
+                    FROM {$table}
+                    WHERE provider = %s AND env_id = %s
+                    LIMIT 1
+                ", $provider, $env_id);
+            }
 
             $result = $wpdb->get_var($query);
 
@@ -6109,14 +6134,16 @@ class Painel_Campanhas
 
         $table = $wpdb->prefix . 'pc_carteiras_v2';
 
-        // Verifica se ID já existe (apenas entre carteiras ativas)
+        // Verifica se ID já existe combinado com o id_ruler (apenas entre carteiras ativas)
+        // Se id_ruler for vazio, deve ser único para id_ruler vazio.
         $exists = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $table WHERE id_carteira = %s AND ativo = 1",
-            $id_carteira
+            "SELECT id FROM $table WHERE id_carteira = %s AND id_ruler = %s AND ativo = 1",
+            $id_carteira,
+            $id_ruler
         ));
 
         if ($exists) {
-            wp_send_json_error('ID da carteira já existe');
+            wp_send_json_error('ID da carteira com este ID Ruler já existe');
         }
 
         $result = $wpdb->insert(
@@ -6199,15 +6226,16 @@ class Painel_Campanhas
 
         $table = $wpdb->prefix . 'pc_carteiras_v2';
 
-        // Verifica se outro registro ativo já usa esse ID
+        // Verifica se outro registro ativo já usa essa exata combinação de id_carteira e id_ruler
         $exists = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $table WHERE id_carteira = %s AND id != %d AND ativo = 1",
+            "SELECT id FROM $table WHERE id_carteira = %s AND id_ruler = %s AND id != %d AND ativo = 1",
             $id_carteira,
+            $id_ruler,
             $id
         ));
 
         if ($exists) {
-            wp_send_json_error('ID da carteira já está em uso');
+            wp_send_json_error('ID da carteira com este ID Ruler já está em uso por outra carteira ativa');
         }
 
         $result = $wpdb->update(
@@ -7036,7 +7064,7 @@ class Painel_Campanhas
         $carteiras_bases_table = $wpdb->prefix . 'pc_carteiras_bases_v2';
 
         $carteira = $wpdb->get_row($wpdb->prepare(
-            "SELECT c.id_carteira 
+            "SELECT c.id 
              FROM $carteiras_table c
              INNER JOIN $carteiras_bases_table cb ON c.id = cb.carteira_id
              WHERE cb.nome_base = %s AND c.ativo = 1
@@ -7044,8 +7072,8 @@ class Painel_Campanhas
             $table_name
         ), ARRAY_A);
 
-        if ($carteira && !empty($carteira['id_carteira'])) {
-            return $carteira['id_carteira'];
+        if ($carteira && !empty($carteira['id'])) {
+            return (string) $carteira['id'];
         }
 
         return '';
@@ -7069,15 +7097,15 @@ class Painel_Campanhas
 
         // Pega a primeira carteira ativa encontrada
         $carteira = $wpdb->get_row(
-            "SELECT c.id_carteira 
+            "SELECT c.id 
              FROM $carteiras_table c
              WHERE c.ativo = 1
              LIMIT 1",
             ARRAY_A
         );
 
-        if ($carteira && !empty($carteira['id_carteira'])) {
-            return $carteira['id_carteira'];
+        if ($carteira && !empty($carteira['id'])) {
+            return (string) $carteira['id'];
         }
 
         return '';
@@ -8255,6 +8283,8 @@ class Painel_Campanhas
                             'template_code' => $tpl['template_id'] ?? '', // No RCS usamos o template_id para envio
                             'wallet_id' => $customer_code,
                             'wallet_name' => $carteira_nome,
+                            'broker_code' => $tpl['broker_code'] ?? $tpl['brokerCode'] ?? '',
+                            'customer_code' => $customer_code,
                             'image_url' => $image_url,
                             'raw_data' => $tpl
                         ];
@@ -8280,8 +8310,11 @@ class Painel_Campanhas
                             'status' => $tpl['status'] ?? '',
                             'wallet_id' => $customer_code,
                             'wallet_name' => $carteira_nome,
+                            'broker_code' => $tpl['broker_code'] ?? $tpl['brokerCode'] ?? '',
+                            'customer_code' => $customer_code,
                             'status_desc' => $tpl['status_description'] ?? '',
-                            'category' => $tpl['category'] ?? ''
+                            'category' => $tpl['category'] ?? '',
+                            'raw_data' => $tpl
                         ];
                     }
                 }
