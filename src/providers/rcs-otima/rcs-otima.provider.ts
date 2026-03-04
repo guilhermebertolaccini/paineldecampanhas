@@ -25,6 +25,7 @@ interface RCSTemplateMessage {
 interface RCSOtimaPayload {
   broker_code: string;
   customer_code: string;
+  template_code: string;
   messages: RCSTemplateMessage[];
 }
 
@@ -50,9 +51,10 @@ export class RcsOtimaProvider extends BaseProvider {
     const token = credentials.token || credentials.authorization;
     let broker_code = credentials.broker_code || '';
     let customer_code = credentials.customer_code || '';
+    let template_code = credentials.template_code || '';
 
-    // Extrai broker_code e customer_code do JSON da mensagem (prioridade sobre credenciais estáticas)
-    // O PHP salva como JSON: {"template_code":"...", "broker_code":"...", "customer_code":"...", ...}
+    // Extrai broker_code, customer_code e template_code do JSON da mensagem (prioridade sobre credenciais)
+    // O PHP salva como JSON: {"template_code":"311", "broker_code":"rcs_concilig_single", "customer_code":"311", ...}
     if (data.length > 0 && data[0].mensagem && typeof data[0].mensagem === 'string') {
       try {
         if (data[0].mensagem.trim().startsWith('{')) {
@@ -64,6 +66,10 @@ export class RcsOtimaProvider extends BaseProvider {
           if (parsed.customer_code) {
             customer_code = parsed.customer_code;
             this.logger.log(`👤 [RCS Ótima] customer_code extraído da campanha: ${customer_code}`);
+          }
+          if (parsed.template_code) {
+            template_code = parsed.template_code;
+            this.logger.log(`📝 [RCS Ótima] template_code extraído da campanha: ${template_code}`);
           }
         }
       } catch (e) {
@@ -106,8 +112,11 @@ export class RcsOtimaProvider extends BaseProvider {
     const payload: RCSOtimaPayload = {
       broker_code,
       customer_code,
+      template_code,
       messages,
     };
+
+    this.logger.log(`🔖 [RCS Ótima] template_code: ${template_code}`);
 
     this.logger.log(`📦 [RCS Ótima] Payload preparado com ${messages.length} mensagens`);
     this.logger.log(`🏢 [RCS Ótima] Broker: ${broker_code}, Customer: ${customer_code}`);
