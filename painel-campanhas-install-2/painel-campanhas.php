@@ -5130,6 +5130,8 @@ class Painel_Campanhas
             ) {
                 $payload['otima_rcs_credentials'] = [
                     'token' => $static_credentials['otima_rcs_token'] ?? '',
+                    'broker_code' => '', // Será sobrescrito pelo JSON da mensagem abaixo
+                    'customer_code' => '', // Será sobrescrito pelo JSON da mensagem abaixo
                     'api_url' => 'https://services.otima.digital/v1/rcs',
                 ];
                 error_log('🔵 [Aprovar Campanha] Credenciais do Ótima RCS incluídas no payload');
@@ -5154,6 +5156,23 @@ class Painel_Campanhas
                 $payload['template_code'] = $message_data['template_code'];
                 $payload['template_source'] = $message_data['template_source'];
                 error_log('🔵 [Aprovar Campanha] Template da Ótima detectado: ' . $message_data['template_code'] . ' (' . $message_data['template_source'] . ')');
+
+                // Injeta broker_code e customer_code nas credenciais correspondentes
+                $msg_broker = $message_data['broker_code'] ?? '';
+                $msg_customer = $message_data['customer_code'] ?? '';
+
+                if (!empty($msg_broker) || !empty($msg_customer)) {
+                    $source = $message_data['template_source'] ?? '';
+                    if ($source === 'otima_rcs' && isset($payload['otima_rcs_credentials'])) {
+                        $payload['otima_rcs_credentials']['broker_code'] = $msg_broker;
+                        $payload['otima_rcs_credentials']['customer_code'] = $msg_customer;
+                        error_log('🔵 [Aprovar Campanha] broker_code/customer_code RCS injetados: ' . $msg_broker . ' / ' . $msg_customer);
+                    } elseif ($source === 'otima_wpp' && isset($payload['otima_wpp_credentials'])) {
+                        $payload['otima_wpp_credentials']['broker_code'] = $msg_broker;
+                        $payload['otima_wpp_credentials']['customer_code'] = $msg_customer;
+                        error_log('🔵 [Aprovar Campanha] broker_code/customer_code WPP injetados: ' . $msg_broker . ' / ' . $msg_customer);
+                    }
+                }
             }
         }
 
