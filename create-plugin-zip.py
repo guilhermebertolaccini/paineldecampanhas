@@ -59,7 +59,7 @@ def create_plugin_zip():
     with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for root, dirs, files in os.walk(source_dir):
             rel_path_from_source = os.path.relpath(root, source_dir)
-            arcname_root = os.path.join('painel-campanhas', rel_path_from_source)
+            arcname_root = os.path.join('painel-campanhas-install-2', rel_path_from_source)
 
             # Check exclusions on the directory itself (optimization)
             # We check rel_path_from_source because our exclusion patterns are relative to the plugin root (e.g. react/node_modules)

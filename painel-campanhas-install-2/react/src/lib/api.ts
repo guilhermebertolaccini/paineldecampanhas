@@ -244,6 +244,10 @@ export const getOtimaTemplates = () => {
   return wpAjax('pc_get_otima_templates', {});
 };
 
+export const getOtimaBrokers = () => {
+  return wpAjax('pc_get_otima_brokers', {});
+};
+
 export const getGosacOficialTemplates = () => {
   return wpAjax('pc_get_gosac_oficial_templates', {});
 };

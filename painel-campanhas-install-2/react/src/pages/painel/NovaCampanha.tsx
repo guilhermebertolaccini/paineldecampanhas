@@ -34,6 +34,7 @@ import {
   checkBaseUpdate,
   getTemplatesByWallet,
   getOtimaTemplates,
+  getOtimaBrokers,
   getIscas,
   saveRecurring,
 } from "@/lib/api";
@@ -172,6 +173,13 @@ export default function NovaCampanha() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // Buscar brokers Ótima (WPP + RCS)
+  const { data: otimaBrokersData = [], isLoading: otimaBrokersLoading } = useQuery({
+    queryKey: ['otima-brokers'],
+    queryFn: getOtimaBrokers,
+    staleTime: 5 * 60 * 1000,
+  });
+
   // Processar e mesclar templates
   const templates = useMemo(() => {
     // Templates Locais
@@ -248,7 +256,7 @@ export default function NovaCampanha() {
     });
   }, [templates, formData.providers]);
 
-  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading;
+  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading || otimaBrokersLoading;
 
   // Buscar filtros quando base for selecionada
   const { data: availableFilters = [], isLoading: filtersLoading } = useQuery({
@@ -440,6 +448,15 @@ export default function NovaCampanha() {
       return;
     }
 
+    if ((formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp') && !formData.brokerCode) {
+      toast({
+        title: "Broker obrigatório",
+        description: "Por favor, selecione um broker da Ótima",
+        variant: "destructive",
+      });
+      return;
+    }
+
     if (formData.providers.length === 0) {
       toast({
         title: "Fornecedor obrigatório",
@@ -535,7 +552,8 @@ export default function NovaCampanha() {
         }
         return true;
       case 5:
-        return boolean(formData.template && formData.message.trim());
+        const isOtima = formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp';
+        return boolean(formData.template && formData.message.trim() && (!isOtima || formData.brokerCode));
       default:
         return false;
     }
@@ -859,6 +877,47 @@ export default function NovaCampanha() {
                   </SelectContent>
                 </Select>
               </div>
+
+              {(formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp') && (
+                <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
+                  <Label>Broker Ótima <span className="text-red-500">*</span></Label>
+                  <Select
+                    disabled={otimaBrokersLoading}
+                    value={formData.brokerCode}
+                    onValueChange={(v) => {
+                      setFormData({ ...formData, brokerCode: v });
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={otimaBrokersLoading ? "Carregando brokers..." : "Selecione o broker para envio"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.isArray(otimaBrokersData) && otimaBrokersData.length === 0 && !otimaBrokersLoading && (
+                        <div className="py-2 px-3 text-xs text-muted-foreground italic">
+                          Nenhum broker encontrado. Verifique as credenciais.
+                        </div>
+                      )}
+                      {Array.isArray(otimaBrokersData) && otimaBrokersData.map((b: any, idx: number) => {
+                        const isRcs = String(b.name).toLowerCase().includes('rcs');
+                        const isWpp = String(b.name).toLowerCase().includes('wpp') || String(b.name).toLowerCase().includes('whatsapp');
+                        return (
+                          <SelectItem key={`broker-${b.code || idx}`} value={b.code}>
+                            <div className="flex items-center gap-1.5">
+                              {isRcs && <Badge className="text-[10px] py-0 px-1 bg-blue-500 text-white shrink-0">RCS</Badge>}
+                              {isWpp && <Badge variant="outline" className="text-[10px] py-0 px-1 shrink-0">WPP</Badge>}
+                              <span>{b.name} ({b.code})</span>
+                            </div>
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Selecione qual canal/broker da Ótima será usado para o envio desta campanha.
+                  </p>
+                </div>
+              )}
+
               <div className="space-y-2">
                 <Label>Pré-visualização do Template</Label>
                 <div className="rounded-md border bg-gray-50 p-4 min-h-[120px]">

@@ -28,6 +28,7 @@ import {
   getBasesCarteira,
   checkBaseUpdate,
   getOtimaTemplates,
+  getOtimaBrokers,
 } from "@/lib/api";
 
 const providers = [
@@ -49,6 +50,7 @@ export default function CampanhaArquivo() {
   const [matchField, setMatchField] = useState<"cpf" | "telefone">("cpf");
   const [recordCount, setRecordCount] = useState(0);
   const [template, setTemplate] = useState("");
+  const [brokerCode, setBrokerCode] = useState("");
   const [provider, setProvider] = useState("");
   const [carteira, setCarteira] = useState("");
   const [tableName, setTableName] = useState("");
@@ -74,6 +76,13 @@ export default function CampanhaArquivo() {
     queryFn: getOtimaTemplates,
   });
 
+  // Buscar brokers Ótima (WPP + RCS)
+  const { data: otimaBrokersData = [], isLoading: otimaBrokersLoading } = useQuery({
+    queryKey: ['otima-brokers'],
+    queryFn: getOtimaBrokers,
+    staleTime: 5 * 60 * 1000,
+  });
+
   // Processar e mesclar templates
   const templates = useMemo(() => {
     // Templates Locais
@@ -92,6 +101,8 @@ export default function CampanhaArquivo() {
       name: t.name || t.template_code || '',
       source: t.source || 'otima',
       templateCode: t.template_code || '',
+      brokerCode: t.broker_code || '',
+      customerCode: t.customer_code || '',
       walletId: t.wallet_id,
       walletName: t.wallet_name,
     })) : [];
@@ -120,7 +131,7 @@ export default function CampanhaArquivo() {
     return local;
   }, [localTemplatesData, otimaTemplatesData, carteira, carteiras]);
 
-  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading;
+  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || otimaBrokersLoading;
 
   // Buscar bases da carteira selecionada
   const { data: basesCarteira = [] } = useQuery({
@@ -257,6 +268,17 @@ export default function CampanhaArquivo() {
       return;
     }
 
+    const selectedTemplate = templates.find((t) => t.id === template);
+
+    if ((selectedTemplate?.source === 'otima_rcs' || selectedTemplate?.source === 'otima_wpp') && !brokerCode) {
+      toast({
+        title: "Broker obrigatório",
+        description: "Por favor, selecione um broker da Ótima",
+        variant: "destructive",
+      });
+      return;
+    }
+
     if (!provider) {
       toast({
         title: "Fornecedor obrigatório",
@@ -293,14 +315,14 @@ export default function CampanhaArquivo() {
       return;
     }
 
-    const selectedTemplate = templates.find((t) => t.id === template);
-
     createMutation.mutate({
       temp_id: tempId,
       table_name: tableName,
       template_id: selectedTemplate?.source === 'local' ? parseInt(template) : null,
       template_code: selectedTemplate?.templateCode || null,
       template_source: selectedTemplate?.source || 'local',
+      broker_code: brokerCode || selectedTemplate?.brokerCode || null,
+      customer_code: selectedTemplate?.customerCode || null,
       provider: provider.toUpperCase(),
       match_field: matchField,
       include_baits: includeBaits ? 1 : 0,
@@ -513,7 +535,13 @@ export default function CampanhaArquivo() {
               {templatesLoading ? (
                 <div className="h-10 bg-muted animate-pulse rounded" />
               ) : (
-                <Select value={template} onValueChange={setTemplate}>
+                <Select value={template} onValueChange={(v) => {
+                  setTemplate(v);
+                  const selectedTpl = templates.find((t) => t.id === v);
+                  if (selectedTpl && selectedTpl.brokerCode) {
+                    setBrokerCode(selectedTpl.brokerCode);
+                  }
+                }}>
                   <SelectTrigger>
                     <SelectValue placeholder="Selecione um template" />
                   </SelectTrigger>
@@ -535,6 +563,51 @@ export default function CampanhaArquivo() {
                 </Select>
               )}
             </div>
+
+            {(() => {
+              const selectedTpl = templates.find((t) => t.id === template);
+              const isOtima = selectedTpl?.source === 'otima_rcs' || selectedTpl?.source === 'otima_wpp';
+              if (isOtima) {
+                return (
+                  <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
+                    <Label>Broker Ótima <span className="text-red-500">*</span></Label>
+                    <Select
+                      disabled={otimaBrokersLoading}
+                      value={brokerCode}
+                      onValueChange={setBrokerCode}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={otimaBrokersLoading ? "Carregando brokers..." : "Selecione o broker para envio"} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {Array.isArray(otimaBrokersData) && otimaBrokersData.length === 0 && !otimaBrokersLoading && (
+                          <div className="py-2 px-3 text-xs text-muted-foreground italic">
+                            Nenhum broker encontrado. Verifique as credenciais.
+                          </div>
+                        )}
+                        {Array.isArray(otimaBrokersData) && otimaBrokersData.map((b: any, idx: number) => {
+                          const isRcs = String(b.name).toLowerCase().includes('rcs');
+                          const isWpp = String(b.name).toLowerCase().includes('wpp') || String(b.name).toLowerCase().includes('whatsapp');
+                          return (
+                            <SelectItem key={`broker-${b.code || idx}`} value={b.code}>
+                              <div className="flex items-center gap-1.5">
+                                {isRcs && <Badge className="text-[10px] py-0 px-1 bg-blue-500 text-white shrink-0">RCS</Badge>}
+                                {isWpp && <Badge variant="outline" className="text-[10px] py-0 px-1 shrink-0">WPP</Badge>}
+                                <span>{b.name} ({b.code})</span>
+                              </div>
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Selecione qual canal/broker da Ótima será usado para o envio desta campanha.
+                    </p>
+                  </div>
+                );
+              }
+              return null;
+            })()}
 
             <div className="space-y-2">
               <Label>Fornecedor <span className="text-red-500">*</span></Label>

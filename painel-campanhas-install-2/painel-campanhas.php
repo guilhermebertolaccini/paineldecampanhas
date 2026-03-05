@@ -156,6 +156,7 @@ class Painel_Campanhas
 
         // AJAX Otima Templates
         add_action('wp_ajax_pc_get_otima_templates', [$this, 'handle_get_otima_templates']);
+        add_action('wp_ajax_pc_get_otima_brokers', [$this, 'handle_get_otima_brokers']);
         add_action('wp_ajax_pc_get_gosac_oficial_templates', [$this, 'handle_get_gosac_oficial_templates']);
         add_action('wp_ajax_pc_get_gosac_oficial_connections', [$this, 'handle_get_gosac_oficial_connections']);
         add_action('wp_ajax_pc_get_all_connections_health', [$this, 'handle_get_all_connections_health']);
@@ -8265,12 +8266,8 @@ class Painel_Campanhas
 
                 if ($rcs_data && is_array($rcs_data)) {
                     foreach ($rcs_data as $tpl) {
-                        // FILTRO: Apenas se o campo 'code' for igual ao ID da carteira (como solicitado)
-                        $tpl_code = trim($tpl['code'] ?? '');
-                        if ($tpl_code !== (string) $customer_code) {
-                            continue;
-                        }
-
+                        // FILTRO REMOVIDO: A Ótima nem sempre retorna o ID da carteira no campo 'code' exato.
+                        // Permitindo que o template carregue normalmente.
                         // Nome do template: Prioriza 'description', depois 'title' do rich card
                         $tpl_name = $tpl['description'] ?? '';
                         if (empty($tpl_name) && isset($tpl['rich_card']['title'])) {
@@ -8341,6 +8338,107 @@ class Painel_Campanhas
         }
 
         wp_send_json_success($templates);
+    }
+
+    public function handle_get_otima_brokers()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        // Busca tokens globais (igual no templates)
+        $static_credentials = get_option('acm_static_credentials', []);
+        $token_rcs = trim($static_credentials['otima_rcs_token'] ?? '');
+        $token_wpp = trim($static_credentials['otima_wpp_token'] ?? '');
+
+        // Remove 'Bearer ' da string do token se o usuário salvou com ele, e limpa quebras de linha invisíveis (HTTP 400)
+        $token_rcs = preg_replace('/^Bearer\s+/i', '', trim($token_rcs));
+        $token_wpp = preg_replace('/^Bearer\s+/i', '', trim($token_wpp));
+        // Remove caracteres de controle (muito comum dar erro 400 em \r\n ocultos no banco)
+        $token_rcs = preg_replace('/[\r\n\t]/', '', $token_rcs);
+        $token_wpp = preg_replace('/[\r\n\t]/', '', $token_wpp);
+
+        $brokers = [];
+        $seen = [];
+        $debug_log = [];
+
+        $fetch_brokers = function ($url, $token) use (&$debug_log) {
+            if (empty($token)) {
+                $debug_log[] = "Token está vazio.";
+                return null;
+            }
+
+            $response = wp_remote_get($url, [
+                'headers' => [
+                    'Authorization' => $token,
+                    'Accept' => 'application/json',
+                ],
+                'timeout' => 15,
+                'sslverify' => false,
+                'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            ]);
+
+            if (is_wp_error($response)) {
+                $debug_log[] = "WP Error: " . $response->get_error_message();
+                return null;
+            }
+
+            $status_code = wp_remote_retrieve_response_code($response);
+            $body = wp_remote_retrieve_body($response);
+
+            if ($status_code !== 200) {
+                $debug_log[] = "HTTP $status_code: " . substr($body, 0, 150);
+                return null;
+            }
+
+            $data = json_decode($body, true);
+
+            if (isset($data['data']) && is_array($data['data']))
+                return $data['data'];
+            if (is_array($data))
+                return $data;
+
+            $debug_log[] = "JSON Invalido: " . substr($body, 0, 100);
+            return [];
+        };
+
+        // Otima RCS Credential Endpoint
+        if (empty($token_rcs)) {
+            $debug_log[] = "Token RCS não configurado no painel.";
+        } else {
+            $url_rcs = "https://services.otima.digital/v1/rcs/credential";
+            $rcs_creds = $fetch_brokers($url_rcs, $token_rcs);
+            if ($rcs_creds && is_array($rcs_creds)) {
+                foreach ($rcs_creds as $cred) {
+                    $code = $cred['code'] ?? '';
+                    if (!empty($code) && !isset($seen[$code])) {
+                        $seen[$code] = true;
+                        $nome = $cred['name'] ?? $code;
+                        $brokers[] = [
+                            'code' => $code,
+                            'name' => "RCS - " . $nome,
+                            'raw' => $cred
+                        ];
+                    }
+                }
+            }
+        }
+
+        if (empty($brokers) && !empty($debug_log)) {
+            // Se não encontrou nenhum, e tem erro no log, joga na tela pro dev ver
+            foreach ($debug_log as $idx => $msg) {
+                $brokers[] = [
+                    'code' => "error_$idx",
+                    'name' => "ERRO: " . $msg,
+                    'raw' => []
+                ];
+            }
+        }
+
+        wp_send_json_success($brokers);
     }
 
     /**

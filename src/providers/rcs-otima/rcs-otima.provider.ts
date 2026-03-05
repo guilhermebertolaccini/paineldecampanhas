@@ -81,15 +81,8 @@ export class RcsOtimaProvider extends BaseProvider {
     const messages: RCSTemplateMessage[] = data.map((item) => {
       const phone = this.normalizePhoneNumber(item.telefone);
 
-      // Remove o prefixo +55 se houver, pois a API Ótima espera sem prefixo
-      const phoneWithoutPrefix = phone.startsWith('+55')
-        ? phone.substring(3)
-        : phone.startsWith('55')
-          ? phone.substring(2)
-          : phone;
-
       const message: RCSTemplateMessage = {
-        phone: phoneWithoutPrefix,
+        phone: phone,
         document: item.cpf_cnpj?.replace(/\D/g, ''), // Remove caracteres não numéricos
         extra_fields: {
           nome: item.nome,
