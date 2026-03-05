@@ -53,8 +53,8 @@ export class RcsOtimaProvider extends BaseProvider {
     let customer_code = credentials.customer_code || '';
     let template_code = credentials.template_code || '';
 
-    // Extrai broker_code, customer_code e template_code do JSON da mensagem (prioridade sobre credenciais)
-    // O PHP salva como JSON: {"template_code":"311", "broker_code":"rcs_concilig_single", "customer_code":"311", ...}
+    // Parse variables_map from campaign JSON (set by the frontend variable mapper)
+    let variables_map: Record<string, { type: 'field' | 'text'; value: string }> | null = null;
     if (data.length > 0 && data[0].mensagem && typeof data[0].mensagem === 'string') {
       try {
         if (data[0].mensagem.trim().startsWith('{')) {
@@ -71,6 +71,10 @@ export class RcsOtimaProvider extends BaseProvider {
             template_code = parsed.template_code;
             this.logger.log(`📝 [RCS Ótima] template_code extraído da campanha: ${template_code}`);
           }
+          if (parsed.variables_map && typeof parsed.variables_map === 'object') {
+            variables_map = parsed.variables_map;
+            this.logger.log(`🗺️ [RCS Ótima] variables_map encontrado: ${JSON.stringify(variables_map)}`);
+          }
         }
       } catch (e) {
         this.logger.warn(`⚠️ [RCS Ótima] Falha ao parsear mensagem JSON: ${e.message}`);
@@ -81,6 +85,23 @@ export class RcsOtimaProvider extends BaseProvider {
     const messages: RCSTemplateMessage[] = data.map((item) => {
       const phone = this.normalizePhoneNumber(item.telefone);
 
+      // Resolve variables dynamically from the variables_map
+      const resolvedVariables: Record<string, string> = {};
+      if (variables_map) {
+        for (const [varName, mapping] of Object.entries(variables_map)) {
+          if (mapping.type === 'field') {
+            resolvedVariables[varName] = (item as any)[mapping.value] ?? '';
+          } else {
+            resolvedVariables[varName] = mapping.value ?? '';
+          }
+        }
+      } else {
+        // Legacy fallback: map nome -> var1 (backward-compatible)
+        resolvedVariables['var1'] = item.nome ?? '';
+      }
+
+      this.logger.debug(`📋 [RCS Ótima] Variables for ${phone}: ${JSON.stringify(resolvedVariables)}`);
+
       const message: RCSTemplateMessage = {
         phone: phone,
         document: item.cpf_cnpj?.replace(/\D/g, ''), // Remove caracteres não numéricos
@@ -89,9 +110,7 @@ export class RcsOtimaProvider extends BaseProvider {
           id_carteira: item.idgis_ambiente,
           idcob_contrato: item.idcob_contrato,
         },
-        variables: {
-          nome: item.nome,
-        },
+        variables: resolvedVariables,
       };
 
       // Adiciona data de agendamento se fornecida

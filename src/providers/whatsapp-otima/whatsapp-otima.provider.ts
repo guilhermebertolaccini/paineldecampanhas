@@ -56,8 +56,8 @@ export class WhatsappOtimaProvider extends BaseProvider {
     // LOGICA DE EXTRAÇÃO DE TEMPLATE CORRIGIDA
     let final_template_code = template_code;
 
-    // Tenta extrair template_code, broker_code e customer_code dos dados (prioridade sobre credenciais)
-    // O PHP salva como JSON: {"template_code":"...", "template_source":"otima_wpp", "broker_code":"...", "customer_code":"..."}
+    // Tenta extrair template_code, broker_code, customer_code e variables_map dos dados
+    let variables_map: Record<string, { type: 'field' | 'text'; value: string }> | null = null;
     if (data.length > 0 && data[0].mensagem && typeof data[0].mensagem === 'string') {
       try {
         if (data[0].mensagem.trim().startsWith('{')) {
@@ -74,9 +74,12 @@ export class WhatsappOtimaProvider extends BaseProvider {
             customer_code = parsed.customer_code;
             this.logger.log(`👤 [WhatsApp Ótima] customer_code extraído da campanha: ${customer_code}`);
           }
+          if (parsed.variables_map && typeof parsed.variables_map === 'object') {
+            variables_map = parsed.variables_map;
+            this.logger.log(`🗺️ [WhatsApp Ótima] variables_map encontrado: ${JSON.stringify(variables_map)}`);
+          }
         }
       } catch (e) {
-        // Ignora erro de parse, usa valor default
         this.logger.warn(`⚠️ [WhatsApp Ótima] Falha ao parsear mensagem JSON para extrair template: ${e.message}`);
       }
     }
@@ -84,6 +87,23 @@ export class WhatsappOtimaProvider extends BaseProvider {
     // Formata mensagens para o formato da API Ótima
     const messages: HsmMessage[] = data.map((item) => {
       const phone = this.normalizePhoneNumber(item.telefone);
+
+      // Resolve variables dynamically from the variables_map
+      const resolvedVariables: Record<string, string> = {};
+      if (variables_map) {
+        for (const [varName, mapping] of Object.entries(variables_map)) {
+          if (mapping.type === 'field') {
+            resolvedVariables[varName] = (item as any)[mapping.value] ?? '';
+          } else {
+            resolvedVariables[varName] = mapping.value ?? '';
+          }
+        }
+      } else {
+        // Legacy fallback
+        resolvedVariables['var1'] = item.nome ?? '';
+      }
+
+      this.logger.debug(`📋 [WhatsApp Ótima] Variables for ${phone}: ${JSON.stringify(resolvedVariables)}`);
 
       const message: HsmMessage = {
         phone: phone,
@@ -93,9 +113,7 @@ export class WhatsappOtimaProvider extends BaseProvider {
           id_carteira: item.idgis_ambiente,
           idcob_contrato: item.idcob_contrato,
         },
-        variables: {
-          nome: item.nome,
-        },
+        variables: resolvedVariables,
       };
 
       // Adiciona data de agendamento se fornecida
