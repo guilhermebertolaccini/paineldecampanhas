@@ -92,15 +92,16 @@ export class WhatsappOtimaProvider extends BaseProvider {
       const resolvedVariables: Record<string, string> = {};
       if (variables_map) {
         for (const [varName, mapping] of Object.entries(variables_map)) {
+          const hyphenatedVarName = `-${varName}-`;
           if (mapping.type === 'field') {
-            resolvedVariables[varName] = (item as any)[mapping.value] ?? '';
+            resolvedVariables[hyphenatedVarName] = (item as any)[mapping.value] ?? '';
           } else {
-            resolvedVariables[varName] = mapping.value ?? '';
+            resolvedVariables[hyphenatedVarName] = mapping.value ?? '';
           }
         }
       } else {
-        // Legacy fallback
-        resolvedVariables['var1'] = item.nome ?? '';
+        // Legacy fallback: map nome -> -var1-
+        resolvedVariables['-var1-'] = item.nome ?? '';
       }
 
       this.logger.debug(`📋 [WhatsApp Ótima] Variables for ${phone}: ${JSON.stringify(resolvedVariables)}`);

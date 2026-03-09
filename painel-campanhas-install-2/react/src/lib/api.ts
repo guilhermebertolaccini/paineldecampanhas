@@ -403,14 +403,37 @@ export const previewCount = (data: Record<string, any>) => {
 };
 
 export const createCpfCampaign = (data: Record<string, any>) => {
-  // O handler espera: temp_id, table_name, template_id, provider, match_field
-  return wpAjax('cpf_cm_create_campaign', {
+  const payload: Record<string, any> = {
     temp_id: data.temp_id,
     table_name: data.table_name,
     template_id: data.template_id,
+    template_code: data.template_code,
+    template_source: data.template_source,
+    broker_code: data.broker_code,
+    customer_code: data.customer_code,
     provider: data.provider,
     match_field: data.match_field || 'cpf',
-  });
+    include_baits: data.include_baits || 0,
+    show_already_sent: data.show_already_sent || 0,
+  };
+
+  if (data.variables_map) {
+    payload.variables_map = JSON.stringify(data.variables_map);
+  }
+
+  // O handler PHP exige o 'providers_config'
+  if (!data.providers_config) {
+    payload.providers_config = JSON.stringify({
+      mode: 'split',
+      providers: [
+        { id: data.provider, weight: 100 }
+      ]
+    });
+  } else {
+    payload.providers_config = JSON.stringify(data.providers_config);
+  }
+
+  return wpAjax('cpf_cm_create_campaign', payload);
 };
 
 // Controle de custos

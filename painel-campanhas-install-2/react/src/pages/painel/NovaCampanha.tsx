@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Database, Filter, MessageSquare, Truck, Send, Loader2, AlertCircle } from "lucide-react";
+import { Database, Filter, MessageSquare, Truck, Send, Loader2, AlertCircle, Check, ChevronsUpDown } from "lucide-react";
+import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables } from "@/components/campaign/TemplateVariableMapper";
+import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +17,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -81,6 +86,9 @@ export default function NovaCampanha() {
     throttling_config: {} as any,
     is_recurring: false,
   });
+  const [templateVariables, setTemplateVariables] = useState<Record<string, VarMapping>>({});
+  const [selectedTemplateObj, setSelectedTemplateObj] = useState<any>(null);
+  const [openTemplateDropdown, setOpenTemplateDropdown] = useState(false);
 
   // Buscar carteiras
   const { data: carteiras = [] } = useQuery({
@@ -195,7 +203,7 @@ export default function NovaCampanha() {
     }));
 
     // Templates Ótima (WPP + RCS)
-    const otima = (Array.isArray(otimaTemplatesData) ? otimaTemplatesData : []).map((t: any) => ({
+    let otima = (Array.isArray(otimaTemplatesData) ? otimaTemplatesData : []).map((t: any) => ({
       id: String(t.id),
       name: t.name || '',
       source: t.source || 'external',
@@ -203,11 +211,20 @@ export default function NovaCampanha() {
       templateCode: t.template_code || '',
       brokerCode: t.broker_code || '',
       customerCode: t.customer_code || '',
-      walletId: null,
+      walletId: t.wallet_id,
       walletName: t.wallet_name || null,
       imageUrl: t.image_url || null,
       content: t.content || '',
+      raw_data: t.raw_data || t,
     }));
+
+    if (formData.carteira) {
+      const selectedWallet = carteiras.find((c: any) => String(c.id) === String(formData.carteira));
+      const walletCode = selectedWallet?.id_carteira ? String(selectedWallet.id_carteira) : null;
+      if (walletCode) {
+        otima = otima.filter((t: any) => String(t.walletId) === walletCode || String(t.customerCode) === walletCode);
+      }
+    }
 
     // Templates Externos GOSAC (já filtrados por carteira)
     const external = Array.isArray(externalTemplatesData) ? externalTemplatesData.map((t: any) => {
@@ -231,7 +248,7 @@ export default function NovaCampanha() {
     console.log('📋 [NovaCampanha] Templates locais:', local.length, 'Ótima:', otima.length, 'GOSAC:', external.length);
 
     return [...local, ...otima, ...external];
-  }, [localTemplatesData, otimaTemplatesData, externalTemplatesData]);
+  }, [localTemplatesData, otimaTemplatesData, externalTemplatesData, formData.carteira, carteiras]);
 
   // Map provider IDs (from step 3 formData.providers) to template sources
   const PROVIDER_TO_SOURCE_MAP: Record<string, string[]> = {
@@ -496,6 +513,7 @@ export default function NovaCampanha() {
         template_source: formData.templateSource || 'local',
         broker_code: formData.brokerCode || null,
         customer_code: formData.customerCode || null,
+        variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
         providers_config: providersConfig,
         filters: formattedFilters,
         record_limit: formData.record_limit || 0,
@@ -517,6 +535,7 @@ export default function NovaCampanha() {
         template_source: formData.templateSource || 'local',
         broker_code: formData.brokerCode || null,
         customer_code: formData.customerCode || null,
+        variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
         record_limit: formData.record_limit || 0,
         exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
         exclude_recent_hours: formData.exclude_recent_hours || 48,
@@ -818,64 +837,121 @@ export default function NovaCampanha() {
               <CardDescription>Selecione ou crie a mensagem da campanha</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* Assuming useState and imports are handled elsewhere in the component */}
+              {/* const [openTemplateDropdown, setOpenTemplateDropdown] = React.useState(false); */}
+              {/* import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover"; */}
+              {/* import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command"; */}
+              {/* import { ChevronsUpDown, Check } from "lucide-react"; */}
+              {/* import { cn } from "@/lib/utils"; */}
               <div className="space-y-2">
                 <Label>Template</Label>
-                <Select
-                  disabled={templatesLoading}
-                  value={formData.template}
-                  onValueChange={(v) => {
-                    console.log('📝 [Template Select] Valor selecionado:', v, 'Tipo:', typeof v);
+                <Popover open={openTemplateDropdown} onOpenChange={setOpenTemplateDropdown}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={openTemplateDropdown}
+                      className="w-full justify-between mt-1 text-left font-normal"
+                      disabled={templatesLoading}
+                    >
+                      {formData.template
+                        ? filteredTemplates.find(t => t.id === formData.template)?.name || "Template Selecionado"
+                        : templatesLoading ? "Carregando templates..." : "Selecione um template..."}
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Buscar template pelo nome..." />
+                      <CommandList>
+                        <CommandEmpty>Nenhum template encontrado.</CommandEmpty>
+                        <CommandGroup>
+                          {filteredTemplates.map((t: any, idx: number) => {
+                            const providerLabel = t.provider || (t.source === 'local' ? null : t.source?.replace(/_/g, ' ').replace('GOSAC OFICIAL', 'GOSAC').toUpperCase());
+                            const channelLabel = t.source?.toLowerCase().includes('rcs') ? 'RCS' : (providerLabel ? 'WPP' : null);
 
-                    const selectedTemplate = templates.find(t => t.id === v) as any;
-                    console.log('📝 [Template Select] Template encontrado:', selectedTemplate);
+                            return (
+                              <CommandItem
+                                key={`template-${t.id || idx}`}
+                                value={t.name}
+                                onSelect={() => {
+                                  const v = t.id;
+                                  console.log('📝 [Template Select] Valor selecionado:', v, 'Tipo:', typeof v);
 
-                    setFormData({
-                      ...formData,
-                      template: v,
-                      templateCode: selectedTemplate?.templateCode || '',
-                      templateSource: selectedTemplate?.source || '',
-                      brokerCode: selectedTemplate?.brokerCode || '',
-                      customerCode: selectedTemplate?.customerCode || '',
-                    });
+                                  const selectedTemplate = templates.find(t2 => t2.id === v) as any;
+                                  console.log('📝 [Template Select] Template encontrado:', selectedTemplate);
 
-                    // Só busca conteúdo se for template local
-                    if (selectedTemplate?.source === 'local') {
-                      console.log('✅ [Template Select] Template local, buscando conteúdo...');
-                      refetchTemplate();
-                    } else {
-                      console.log('ℹ️ [Template Select] Template externo, usando conteúdo pré-carregado');
-                      setFormData(prev => ({ ...prev, message: selectedTemplate?.content || '' }));
-                    }
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={templatesLoading ? "Carregando templates..." : "Selecione um template"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {filteredTemplates.length === 0 && !templatesLoading && (
-                      <div className="py-2 px-3 text-xs text-muted-foreground italic">
-                        Nenhum template encontrado para os fornecedores selecionados.
-                      </div>
-                    )}
-                    {filteredTemplates.map((t: any, idx: number) => {
-                      const providerLabel = t.provider || (t.source === 'local' ? null : t.source?.replace(/_/g, ' ').replace('GOSAC OFICIAL', 'GOSAC').toUpperCase());
-                      const channelLabel = t.source?.toLowerCase().includes('rcs') ? 'RCS' : (providerLabel ? 'WPP' : null);
-                      return (
-                        <SelectItem key={`template-${t.id || idx}`} value={t.id}>
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            {channelLabel && (
-                              <Badge className="text-[10px] py-0 px-1 bg-blue-500 text-white shrink-0">{channelLabel}</Badge>
-                            )}
-                            {providerLabel && (
-                              <Badge variant="outline" className="text-[10px] py-0 px-1 shrink-0">{providerLabel}</Badge>
-                            )}
-                            <span>{t.name}</span>
-                          </div>
-                        </SelectItem>
-                      );
-                    })}
-                  </SelectContent>
-                </Select>
+                                  setFormData({
+                                    ...formData,
+                                    template: v,
+                                    templateCode: selectedTemplate?.templateCode || '',
+                                    templateSource: selectedTemplate?.source || '',
+                                    brokerCode: selectedTemplate?.brokerCode || '',
+                                    customerCode: selectedTemplate?.customerCode || '',
+                                  });
+
+                                  // Save template object for preview + variable extraction
+                                  setSelectedTemplateObj(selectedTemplate ?? null);
+
+                                  // Extract variables from template content
+                                  const rawData = selectedTemplate?.raw_data || {};
+                                  const rc = rawData.rich_card || rawData.richCard || {};
+                                  const rawContent = [
+                                    selectedTemplate?.content,
+                                    rawData.text,
+                                    rawData.description,
+                                    rc.title,
+                                    rc.description,
+                                    rc.text
+                                  ].filter(Boolean).join(' ');
+                                  const detectedVars = extractVariables(rawContent);
+                                  // Initialize each variable with default mapping (field: nome)
+                                  const initMap: Record<string, VarMapping> = {};
+                                  detectedVars.forEach((vVar: string) => { initMap[vVar] = { type: 'field', value: 'nome' }; });
+                                  setTemplateVariables(initMap);
+
+                                  // Só busca conteúdo se for template local
+                                  if (selectedTemplate?.source === 'local') {
+                                    console.log('✅ [Template Select] Template local, buscando conteúdo...');
+                                    // Assumes refetchTemplate comes from somewhere else in the code
+                                    refetchTemplate();
+                                  } else {
+                                    console.log('ℹ️ [Template Select] Template externo, usando conteúdo pré-carregado');
+                                    setFormData(prev => ({ ...prev, message: selectedTemplate?.content || '' }));
+                                  }
+
+                                  setOpenTemplateDropdown(false);
+                                }}
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 h-4 w-4",
+                                    formData.template === t.id ? "opacity-100" : "opacity-0"
+                                  )}
+                                />
+                                <div className="flex flex-col flex-1">
+                                  <span className="font-medium text-sm truncate pr-2 max-w-[400px]" title={t.name}>
+                                    {t.name}
+                                  </span>
+                                  {providerLabel && (
+                                    <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                      {providerLabel}
+                                      {channelLabel && (
+                                        <Badge variant="secondary" className="px-1 py-0 h-3 text-[8px] uppercase tracking-wider">
+                                          {channelLabel}
+                                        </Badge>
+                                      )}
+                                    </span>
+                                  )}
+                                </div>
+                              </CommandItem>
+                            );
+                          })}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
 
               {(formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp') && (
@@ -918,26 +994,67 @@ export default function NovaCampanha() {
                 </div>
               )}
 
-              <div className="space-y-2">
-                <Label>Pré-visualização do Template</Label>
-                <div className="rounded-md border bg-gray-50 p-4 min-h-[120px]">
-                  {formData.message ? (
-                    <p className="text-sm whitespace-pre-wrap text-gray-700">
-                      {formData.message}
+              {/* Variable Mapper — only for Ótima templates */}
+              {(formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp') && (
+                <TemplateVariableMapper
+                  variables={Object.keys(templateVariables)}
+                  mapping={templateVariables}
+                  onChange={setTemplateVariables}
+                />
+              )}
+
+              {/* RCS / WPP Message Preview */}
+              {(formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp') && selectedTemplateObj ? (
+                <div className="flex flex-col lg:flex-row gap-6 items-start">
+                  <div className="flex-1 space-y-2">
+                    <Label>Pré-visualização do Template</Label>
+                    <div className="rounded-md border bg-gray-50 p-4 min-h-[120px]">
+                      {formData.message ? (
+                        <p className="text-sm whitespace-pre-wrap text-gray-700">
+                          {formData.message}
+                        </p>
+                      ) : (
+                        <p className="text-sm text-gray-400 italic">
+                          Selecione um template acima para ver a pré-visualização
+                        </p>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      O template selecionado será enviado para os destinatários. Variáveis como {"{var1}"}, {"{var2}"} serão substituídas automaticamente.
                     </p>
-                  ) : (
-                    <p className="text-sm text-gray-400 italic">
-                      Selecione um template acima para ver a pré-visualização
-                    </p>
-                  )}
+                  </div>
+                  {/* Phone preview */}
+                  <div className="shrink-0">
+                    <RcsMessagePreview
+                      template={selectedTemplateObj}
+                      resolvedVariables={resolveVariables(templateVariables)}
+                      channel={formData.templateSource === 'otima_rcs' ? 'rcs' : 'wpp'}
+                    />
+                  </div>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  O template selecionado será enviado para os destinatários. Variáveis como {"{nome}"}, {"{cpf}"} serão substituídas automaticamente.
-                </p>
-              </div>
+              ) : (
+                <div className="space-y-2">
+                  <Label>Pré-visualização do Template</Label>
+                  <div className="rounded-md border bg-gray-50 p-4 min-h-[120px]">
+                    {formData.message ? (
+                      <p className="text-sm whitespace-pre-wrap text-gray-700">
+                        {formData.message}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-gray-400 italic">
+                        Selecione um template acima para ver a pré-visualização
+                      </p>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    O template selecionado será enviado para os destinatários. Variáveis como {"{nome}"}, {"{cpf}"} serão substituídas automaticamente.
+                  </p>
+                </div>
+              )}
             </CardContent>
           </>
         )}
+
 
         {step === 4 && (
           <>

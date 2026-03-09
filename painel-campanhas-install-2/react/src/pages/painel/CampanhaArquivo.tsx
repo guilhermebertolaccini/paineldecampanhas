@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Upload, FileText, CheckCircle, AlertCircle, Loader2, X } from "lucide-react";
+import { Upload, FileText, CheckCircle, AlertCircle, Loader2, X, Check, ChevronsUpDown } from "lucide-react";
+import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables } from "@/components/campaign/TemplateVariableMapper";
+import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,6 +16,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -57,6 +62,9 @@ export default function CampanhaArquivo() {
   const [includeBaits, setIncludeBaits] = useState(false);
   const [showAlreadySent, setShowAlreadySent] = useState(false);
   const [baseUpdateStatus, setBaseUpdateStatus] = useState<{ isUpdated: boolean; message: string } | null>(null);
+  const [templateVariables, setTemplateVariables] = useState<Record<string, VarMapping>>({});
+  const [selectedTemplateObj, setSelectedTemplateObj] = useState<any>(null);
+  const [openTemplateDropdown, setOpenTemplateDropdown] = useState(false);
 
   // Buscar carteiras (deve vir antes do useMemo que a usa)
   const { data: carteiras = [] } = useQuery({
@@ -105,6 +113,9 @@ export default function CampanhaArquivo() {
       customerCode: t.customer_code || '',
       walletId: t.wallet_id,
       walletName: t.wallet_name,
+      imageUrl: t.image_url || null,
+      content: t.content || '',
+      raw_data: t.raw_data || t,
     })) : [];
 
     console.log('📋 [CampanhaArquivo] Templates locais:', local.length);
@@ -121,7 +132,7 @@ export default function CampanhaArquivo() {
         return local;
       }
 
-      const otimaFiltrados = otima.filter(t => String(t.walletId) === walletCode);
+      const otimaFiltrados = otima.filter(t => String(t.walletId) === walletCode || String(t.customerCode) === walletCode);
       console.log('📋 [CampanhaArquivo] Templates Ótima filtrados:', otimaFiltrados.length);
 
       return [...local, ...otimaFiltrados];
@@ -323,6 +334,7 @@ export default function CampanhaArquivo() {
       template_source: selectedTemplate?.source || 'local',
       broker_code: brokerCode || selectedTemplate?.brokerCode || null,
       customer_code: selectedTemplate?.customerCode || null,
+      variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
       provider: provider.toUpperCase(),
       match_field: matchField,
       include_baits: includeBaits ? 1 : 0,
@@ -535,32 +547,85 @@ export default function CampanhaArquivo() {
               {templatesLoading ? (
                 <div className="h-10 bg-muted animate-pulse rounded" />
               ) : (
-                <Select value={template} onValueChange={(v) => {
-                  setTemplate(v);
-                  const selectedTpl = templates.find((t) => t.id === v);
-                  if (selectedTpl && selectedTpl.brokerCode) {
-                    setBrokerCode(selectedTpl.brokerCode);
-                  }
-                }}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecione um template" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {templates.map((t) => (
-                      <SelectItem key={t.id} value={t.id}>
-                        <div className="flex items-center gap-2">
-                          <span>{t.name}</span>
-                          {t.source === 'otima_wpp' && (
-                            <Badge variant="outline" className="text-xs">Ótima WPP</Badge>
-                          )}
-                          {t.source === 'otima_rcs' && (
-                            <Badge variant="outline" className="text-xs">Ótima RCS</Badge>
-                          )}
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={openTemplateDropdown} onOpenChange={setOpenTemplateDropdown}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={openTemplateDropdown}
+                      className="w-full justify-between font-normal"
+                      disabled={templatesLoading}
+                    >
+                      {template
+                        ? templates.find((t) => t.id === template)?.name || "Template Selecionado"
+                        : "Selecione um template..."}
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Buscar template..." />
+                      <CommandList>
+                        <CommandEmpty>Nenhum template encontrado.</CommandEmpty>
+                        <CommandGroup>
+                          {templates.map((t) => {
+                            const isOtima = t.source === 'otima_rcs' || t.source === 'otima_wpp';
+                            return (
+                              <CommandItem
+                                key={t.id}
+                                value={t.name}
+                                onSelect={() => {
+                                  setTemplate(t.id);
+                                  const selectedTpl = templates.find((tpl) => tpl.id === t.id) as any;
+                                  if (selectedTpl?.brokerCode) {
+                                    setBrokerCode(selectedTpl.brokerCode);
+                                  }
+                                  // Save for preview
+                                  setSelectedTemplateObj(selectedTpl ?? null);
+                                  // Extract variables from content
+                                  const rawData = selectedTpl?.raw_data || {};
+                                  const rc = rawData.rich_card || rawData.richCard || {};
+                                  const rawContent = [
+                                    selectedTpl?.content,
+                                    rawData.text,
+                                    rawData.description,
+                                    rc.title,
+                                    rc.description,
+                                    rc.text
+                                  ].filter(Boolean).join(' ');
+                                  const detectedVars = extractVariables(rawContent);
+                                  const initMap: Record<string, VarMapping> = {};
+                                  detectedVars.forEach(vVar => {
+                                    initMap[vVar] = { type: 'field', value: 'nome' };
+                                  });
+                                  setTemplateVariables(initMap);
+                                  setOpenTemplateDropdown(false);
+                                }}
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 h-4 w-4",
+                                    template === t.id ? "opacity-100" : "opacity-0"
+                                  )}
+                                />
+                                <div className="flex flex-col">
+                                  <span className="font-medium text-sm truncate max-w-[400px]" title={t.name}>
+                                    {t.name}
+                                  </span>
+                                  {isOtima && (
+                                    <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                      {t.source === 'otima_rcs' ? 'Ótima RCS' : 'Ótima WPP'}
+                                    </span>
+                                  )}
+                                </div>
+                              </CommandItem>
+                            );
+                          })}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               )}
             </div>
 
@@ -607,6 +672,20 @@ export default function CampanhaArquivo() {
                 );
               }
               return null;
+            })()}
+
+            {/* Variable Mapper — only for Ótima templates */}
+            {(() => {
+              const selectedTpl = templates.find((t) => t.id === template) as any;
+              const isOtima = selectedTpl?.source === 'otima_rcs' || selectedTpl?.source === 'otima_wpp';
+              if (!isOtima) return null;
+              return (
+                <TemplateVariableMapper
+                  variables={Object.keys(templateVariables)}
+                  mapping={templateVariables}
+                  onChange={setTemplateVariables}
+                />
+              );
             })()}
 
             <div className="space-y-2">
@@ -696,6 +775,22 @@ export default function CampanhaArquivo() {
           </CardContent>
         </Card>
       </div>
+
+      {/* RCS Preview — full width, only for Ótima templates */}
+      {selectedTemplateObj && (() => {
+        const selectedTpl = templates.find((t) => t.id === template) as any;
+        const isOtima = selectedTpl?.source === 'otima_rcs' || selectedTpl?.source === 'otima_wpp';
+        if (!isOtima) return null;
+        return (
+          <div className="flex justify-center py-4">
+            <RcsMessagePreview
+              template={selectedTemplateObj}
+              resolvedVariables={resolveVariables(templateVariables)}
+              channel={selectedTpl?.source === 'otima_rcs' ? 'rcs' : 'wpp'}
+            />
+          </div>
+        );
+      })()}
     </div>
   );
 }
