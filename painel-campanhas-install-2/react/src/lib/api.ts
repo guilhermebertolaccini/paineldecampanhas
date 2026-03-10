@@ -176,6 +176,9 @@ export const scheduleCampaign = (data: Record<string, any>) => {
   if (data.customer_code) {
     payload.customer_code = data.customer_code;
   }
+  if (data.midia_campanha) {
+    payload.midia_campanha = data.midia_campanha;
+  }
 
   return wpAjax('cm_schedule_campaign', payload, 'cmNonce');
 };
@@ -625,6 +628,77 @@ export const deleteCustomProvider = (providerKey: string) => {
 // Salesforce Manual Import Trigger
 export const runSalesforceImport = () => {
   return wpAjax('pc_run_salesforce_import', {});
+};
+
+// Tracking Salesforce
+export interface SalesforceTrackingParams {
+  page?: number;
+  per_page?: number;
+  search?: string;
+  status_filter?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+export interface SalesforceTrackingResponse {
+  records: SalesforceTrackingRecord[];
+  total_count: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+  statuses: string[];
+}
+
+export interface SalesforceTrackingRecord {
+  id: string;
+  mobilenumber: string;
+  name: string;
+  cpf_cnpj__c: string;
+  status: string;
+  trackingtype: string;
+  sendtype: string;
+  channeltype: string;
+  activityname: string;
+  channelname: string;
+  reason: string;
+  eventdateutc: string;
+  criado_em: string;
+  contactkey: string;
+  operacao__c: string;
+}
+
+export const getSalesforceTracking = (params: SalesforceTrackingParams = {}): Promise<SalesforceTrackingResponse> => {
+  return wpAjax('pc_get_salesforce_tracking', params);
+};
+
+export const downloadSalesforceCsv = (params: SalesforceTrackingParams & { max_rows?: number } = {}) => {
+  return wpAjax('pc_download_salesforce_csv', params);
+};
+
+// Upload de mídia de campanha (PNG/JPEG)
+export const uploadCampaignMedia = (file: File): Promise<{ attachment_id: number; url: string; filename: string }> => {
+  return wpAjax('pc_upload_campaign_media', { media_file: file });
+};
+
+// Relatórios Multi-Tabela
+export const getEnviosPendentes = (params: Record<string, any> = {}) => {
+  return wpAjax('pc_get_envios_pendentes', params);
+};
+
+export const getEventosEnvios = (params: Record<string, any> = {}) => {
+  return wpAjax('pc_get_eventos_envios', params);
+};
+
+export const getEventosIndicadores = (params: Record<string, any> = {}) => {
+  return wpAjax('pc_get_eventos_indicadores', params);
+};
+
+export const getEventosTempos = (params: Record<string, any> = {}) => {
+  return wpAjax('pc_get_eventos_tempos', params);
+};
+
+export const getReportSummary = (params: Record<string, any> = {}) => {
+  return wpAjax('pc_get_report_summary', params);
 };
 
 

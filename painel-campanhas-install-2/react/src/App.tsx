@@ -26,6 +26,8 @@ import ApiManager from "./pages/painel/ApiManager";
 import Iscas from "./pages/painel/Iscas";
 import Ranking from "./pages/painel/Ranking";
 import LineHealth from "./pages/painel/LineHealth";
+import TrackingSalesforce from "./pages/painel/TrackingSalesforce";
+import RelatoriosDetalhados from "./pages/painel/RelatoriosDetalhados";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -63,6 +65,8 @@ function RouterSync() {
         'iscas': '/#/painel/iscas',
         'ranking': '/#/painel/ranking',
         'saude-linhas': '/#/painel/saude-linhas',
+        'tracking-salesforce': '/#/painel/tracking-salesforce',
+        'relatorios-detalhados': '/#/painel/relatorios-detalhados',
       };
 
       const targetRoute = routeMap[currentPage];
@@ -106,6 +110,8 @@ const App = () => {
         'iscas': '/painel/iscas',
         'ranking': '/painel/ranking',
         'saude-linhas': '/painel/saude-linhas',
+        'tracking-salesforce': '/painel/tracking-salesforce',
+        'relatorios-detalhados': '/painel/relatorios-detalhados',
       };
       return routeMap[currentPage] || '/painel/home';
     }
@@ -146,6 +152,8 @@ const App = () => {
               <Route path="iscas" element={<Iscas />} />
               <Route path="ranking" element={<Ranking />} />
               <Route path="saude-linhas" element={<LineHealth />} />
+              <Route path="tracking-salesforce" element={<TrackingSalesforce />} />
+              <Route path="relatorios-detalhados" element={<RelatoriosDetalhados />} />
             </Route>
 
             {/* Catch-all */}

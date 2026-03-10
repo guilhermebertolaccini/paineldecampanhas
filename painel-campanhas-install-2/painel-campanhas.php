@@ -74,6 +74,12 @@ class Painel_Campanhas
         // register_activation_hook precisa ser chamado fora da classe para funcionar corretamente
         register_deactivation_hook(__FILE__, [$this, 'deactivate']);
 
+        // Salesforce MC import cron (every 6 hours)
+        add_action('pc_salesforce_import_cron', [$this, 'run_salesforce_import_cron']);
+        if (!wp_next_scheduled('pc_salesforce_import_cron')) {
+            wp_schedule_event(time(), 'twicedaily', 'pc_salesforce_import_cron');
+        }
+
         // Inicialização
         add_action('init', [$this, 'init']);
         add_action('wp_enqueue_scripts', [$this, 'enqueue_assets']);
@@ -87,8 +93,6 @@ class Painel_Campanhas
         add_filter('show_admin_bar', [$this, 'hide_admin_bar_on_plugin_pages']);
 
         // AJAX
-        add_action('wp_ajax_pc_test', [$this, 'handle_ajax_test']);
-        add_action('wp_ajax_nopriv_pc_test', [$this, 'handle_ajax_test']);
         add_action('wp_ajax_pc_login', [$this, 'handle_login']);
         add_action('wp_ajax_nopriv_pc_login', [$this, 'handle_login']);
         add_action('wp_ajax_pc_logout', [$this, 'handle_logout']);
@@ -133,6 +137,7 @@ class Painel_Campanhas
         // Download CSV
         add_action('admin_post_pc_download_csv_geral', [$this, 'handle_download_csv_geral']);
         add_action('admin_post_pc_download_csv_agendamento', [$this, 'handle_download_csv_agendamento']);
+        add_action('admin_post_pc_download_salesforce_csv_file', [$this, 'handle_download_salesforce_csv_file']);
 
         // AJAX para API Manager
         add_action('wp_ajax_pc_save_master_api_key', [$this, 'handle_save_master_api_key']);
@@ -202,6 +207,20 @@ class Painel_Campanhas
         // AJAX para Ranking
         add_action('wp_ajax_pc_get_ranking', [$this, 'handle_get_ranking']);
 
+        // AJAX para Tracking Salesforce
+        add_action('wp_ajax_pc_get_salesforce_tracking', [$this, 'handle_get_salesforce_tracking']);
+        add_action('wp_ajax_pc_download_salesforce_csv', [$this, 'handle_download_salesforce_csv']);
+
+        // AJAX para Relatórios Multi-Tabela
+        add_action('wp_ajax_pc_get_envios_pendentes', [$this, 'handle_get_envios_pendentes']);
+        add_action('wp_ajax_pc_get_eventos_envios', [$this, 'handle_get_eventos_envios']);
+        add_action('wp_ajax_pc_get_eventos_indicadores', [$this, 'handle_get_eventos_indicadores']);
+        add_action('wp_ajax_pc_get_eventos_tempos', [$this, 'handle_get_eventos_tempos']);
+        add_action('wp_ajax_pc_get_report_summary', [$this, 'handle_get_report_summary']);
+
+        // AJAX para upload de mídia de campanha
+        add_action('wp_ajax_pc_upload_campaign_media', [$this, 'handle_upload_campaign_media']);
+
         // AJAX para Campanha via Arquivo
         add_action('wp_ajax_pc_upload_campaign_file', [$this, 'handle_upload_campaign_file']);
         add_action('wp_ajax_pc_preview_campaign_file', [$this, 'handle_preview_campaign_file']);
@@ -227,6 +246,37 @@ class Painel_Campanhas
 
         // REST API para microserviço buscar dados
         add_action('rest_api_init', [$this, 'register_rest_routes']);
+    }
+
+    /**
+     * Validates that a table name exists in the database and matches allowed patterns.
+     * Prevents SQL injection via user-supplied table names.
+     */
+    private function validate_table_name(string $table_name): bool
+    {
+        if (empty($table_name)) return false;
+        if (!preg_match('/^[a-zA-Z0-9_]+$/', $table_name)) return false;
+
+        global $wpdb;
+        $exists = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $table_name));
+        return !empty($exists);
+    }
+
+    /**
+     * Sanitizes and validates table_name from user input.
+     * Returns validated name or sends JSON error and returns empty string.
+     */
+    private function get_safe_table_name(): string
+    {
+        $table_name = sanitize_text_field($_POST['table_name'] ?? '');
+        if (empty($table_name)) {
+            return '';
+        }
+        if (!$this->validate_table_name($table_name)) {
+            wp_send_json_error('Nome de tabela inválido ou não encontrado.');
+            return '';
+        }
+        return $table_name;
     }
 
     public function register_rest_routes()
@@ -321,6 +371,9 @@ class Painel_Campanhas
         if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'idcob_contrato'"))) {
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN idcob_contrato bigint(20) DEFAULT NULL");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'midia_campanha'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN midia_campanha text DEFAULT NULL");
+        }
 
         $query = $wpdb->prepare("
             SELECT 
@@ -331,7 +384,8 @@ class Painel_Campanhas
                 idcob_contrato,
                 COALESCE(cpf_cnpj, '') as cpf_cnpj,
                 data_cadastro as data_cadastro,
-                mensagem
+                mensagem,
+                COALESCE(midia_campanha, '') as midia_campanha
             FROM {$table}
             WHERE agendamento_id = %s
             AND status IN ('pendente_aprovacao', 'pendente')
@@ -364,12 +418,13 @@ class Painel_Campanhas
             $formatted_data[] = [
                 'telefone' => (string) $row['telefone'],
                 'nome' => (string) $row['nome'],
-                'id_carteira' => (string) $id_carteira, // Usa id_carteira ao invés de idgis_ambiente
-                'idgis_ambiente' => (string) $row['idgis_ambiente'], // Necessário para o NestJS buscar as credenciais
+                'id_carteira' => (string) $id_carteira,
+                'idgis_ambiente' => (string) $row['idgis_ambiente'],
                 'idcob_contrato' => (string) $row['idcob_contrato'],
                 'cpf_cnpj' => (string) $row['cpf_cnpj'],
                 'mensagem' => (string) $row['mensagem'],
                 'data_cadastro' => (string) ($row['data_cadastro'] ?: date('Y-m-d H:i:s')),
+                'midia_campanha' => (string) ($row['midia_campanha'] ?? ''),
             ];
         }
 
@@ -611,11 +666,45 @@ class Painel_Campanhas
             UNIQUE KEY uniqueid_hash (uniqueid_hash)
         ) {$charset_collate};";
         dbDelta($sql);
+
+        // Tabelas eventos_indicadores e eventos_tempos já existem no banco.
+        // Não usar dbDelta aqui para não conflitar com o schema existente.
     }
 
     public function deactivate()
     {
         flush_rewrite_rules();
+        wp_clear_scheduled_hook('pc_salesforce_import_cron');
+    }
+
+    /**
+     * WP-Cron hook: runs Salesforce MC import automatically.
+     * Delegates to the standalone import_salesforce.php via include.
+     */
+    public function run_salesforce_import_cron()
+    {
+        $log_file = WP_CONTENT_DIR . '/sf_cron.log';
+        $start = microtime(true);
+        $timestamp = date('Y-m-d H:i:s');
+
+        @file_put_contents($log_file, "[{$timestamp}] Salesforce cron started\n", FILE_APPEND);
+
+        try {
+            $script = __DIR__ . '/import_salesforce.php';
+            if (!file_exists($script)) {
+                @file_put_contents($log_file, "[{$timestamp}] ERROR: import_salesforce.php not found\n", FILE_APPEND);
+                return;
+            }
+
+            ob_start();
+            include $script;
+            $output = ob_get_clean();
+
+            $elapsed = round(microtime(true) - $start, 2);
+            @file_put_contents($log_file, "[{$timestamp}] Completed in {$elapsed}s. Output: " . substr($output, 0, 500) . "\n", FILE_APPEND);
+        } catch (\Throwable $e) {
+            @file_put_contents($log_file, "[{$timestamp}] FATAL: " . $e->getMessage() . "\n", FILE_APPEND);
+        }
     }
 
     public function init()
@@ -851,8 +940,10 @@ class Painel_Campanhas
             // Localize script para nova campanha
             wp_localize_script('nova-campanha', 'pcAjax', [
                 'ajaxUrl' => admin_url('admin-ajax.php'),
-                'nonce' => wp_create_nonce('pc_nonce'), // Nonce para handlers CPF
-                'cmNonce' => wp_create_nonce('campaign-manager-nonce'), // Nonce para handlers de campanha normal
+                'nonce' => wp_create_nonce('pc_nonce'),
+                'cmNonce' => wp_create_nonce('campaign-manager-nonce'),
+                'csvNonce' => wp_create_nonce('pc_csv_download'),
+                'adminPostUrl' => admin_url('admin-post.php'),
                 'homeUrl' => home_url(),
             ]);
         }
@@ -862,6 +953,8 @@ class Painel_Campanhas
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('pc_nonce'),
             'cmNonce' => wp_create_nonce('campaign-manager-nonce'),
+            'csvNonce' => wp_create_nonce('pc_csv_download'),
+            'adminPostUrl' => admin_url('admin-post.php'),
             'homeUrl' => home_url(),
         ]);
     }
@@ -1043,6 +1136,10 @@ class Painel_Campanhas
                 'mkc_client_secret' => 'sanitize_text_field',
                 'mkc_token_url' => 'esc_url_raw',
                 'mkc_api_url' => 'esc_url_raw',
+                'mkc_auth_url' => 'esc_url_raw',
+                'mkc_rest_url' => 'esc_url_raw',
+                'mkc_account_id' => 'sanitize_text_field',
+                'mkc_de_key' => 'sanitize_text_field',
                 'rcs_chave_api' => 'sanitize_text_field',
                 'rcs_base_url' => 'esc_url_raw',
                 'rcs_token' => 'sanitize_text_field',
@@ -1068,7 +1165,6 @@ class Painel_Campanhas
                         } else {
                             $static_credentials[$field] = sanitize_text_field($raw_value);
                         }
-                        error_log("✅ [Save] Campo '$field' atualizado");
                     }
                     // Se está vazio, não faz nada (mantém o valor existente)
                 }
@@ -1175,16 +1271,6 @@ class Painel_Campanhas
             $static_credentials = [];
         }
 
-        // Log dos campos que têm valores ANTES de adicionar defaults
-        $campos_com_valor_antes = [];
-        foreach ($static_credentials as $key => $value) {
-            if (!empty($value)) {
-                $campos_com_valor_antes[] = $key . '=' . substr($value, 0, 10) . '...';
-            }
-        }
-        error_log('🟢 [Get Static Creds] Campos com valores (antes defaults): ' . implode(', ', $campos_com_valor_antes));
-        error_log('🟢 [Get Static Creds] Total de campos: ' . count($static_credentials));
-
         // Garante que todos os campos esperados existam (mesmo que vazios)
         $default_fields = [
             'cda_api_url',
@@ -1199,6 +1285,10 @@ class Painel_Campanhas
             'mkc_client_secret',
             'mkc_token_url',
             'mkc_api_url',
+            'mkc_auth_url',
+            'mkc_rest_url',
+            'mkc_account_id',
+            'mkc_de_key',
             'rcs_chave_api',
             'rcs_base_url',
             'rcs_token',
@@ -1217,16 +1307,6 @@ class Painel_Campanhas
                 $static_credentials[$field] = '';
             }
         }
-
-        // Log dos campos que têm valores DEPOIS de adicionar defaults
-        $campos_com_valor_depois = [];
-        foreach ($static_credentials as $key => $value) {
-            if (!empty($value)) {
-                $campos_com_valor_depois[] = $key;
-            }
-        }
-        error_log('🟢 [Get Static Creds] Campos com valores (depois defaults): ' . implode(', ', $campos_com_valor_depois));
-        error_log('🟢 [Get Static Creds] Total de campos com valores: ' . count($campos_com_valor_depois));
 
         wp_send_json_success($static_credentials);
     }
@@ -1855,10 +1935,10 @@ class Painel_Campanhas
     {
         check_ajax_referer('pc_nonce', 'nonce');
 
-        $table_name = sanitize_text_field($_POST['table_name'] ?? '');
-
+        $table_name = $this->get_safe_table_name();
         if (empty($table_name)) {
-            wp_send_json_error('Tabela não especificada');
+            wp_send_json_error('Tabela não especificada ou inválida');
+            return;
         }
 
         // Filtros permitidos
@@ -2203,6 +2283,7 @@ class Painel_Campanhas
     {
         try {
             check_ajax_referer('pc_nonce', 'nonce');
+            if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
 
             global $wpdb;
             $table_name = sanitize_text_field($_POST['table_name'] ?? '');
@@ -2527,10 +2608,12 @@ class Painel_Campanhas
     public function handle_save_recurring()
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
+        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $nome_campanha = sanitize_text_field($_POST['nome_campanha'] ?? '');
-        $table_name = sanitize_text_field($_POST['table_name'] ?? '');
+        $table_name = $this->get_safe_table_name();
+        if (empty($table_name)) { wp_send_json_error('Tabela inválida.'); return; }
         $filters_json = stripslashes($_POST['filters'] ?? '[]');
         $providers_config_json = stripslashes($_POST['providers_config'] ?? '{}');
         $template_id = intval($_POST['template_id'] ?? 0);
@@ -2632,13 +2715,12 @@ class Painel_Campanhas
 
     public function handle_schedule_campaign()
     {
-        error_log('🔵 Painel Campanhas - handle_schedule_campaign chamado');
-
-        // Caso contrário, implementa handler próprio
         check_ajax_referer('campaign-manager-nonce', 'nonce');
+        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
-        $table_name = sanitize_text_field($_POST['table_name'] ?? '');
+        $table_name = $this->get_safe_table_name();
+        if (empty($table_name)) { wp_send_json_error('Tabela inválida.'); return; }
         $filters_json = stripslashes($_POST['filters'] ?? '[]');
         $filters = json_decode($filters_json, true);
         $providers_config_json = stripslashes($_POST['providers_config'] ?? '{}');
@@ -2651,6 +2733,7 @@ class Painel_Campanhas
         $record_limit = intval($_POST['record_limit'] ?? 0);
         $exclude_recent_phones = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
         $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
+        $midia_campanha = esc_url_raw($_POST['midia_campanha'] ?? '');
 
         error_log('🔵 Dados recebidos: ' . json_encode([
             'table_name' => $table_name,
@@ -2659,6 +2742,7 @@ class Painel_Campanhas
             'template_source' => $template_source,
             'providers_config' => $providers_config,
             'filters_count' => count($filters ?? []),
+            'midia_campanha' => $midia_campanha,
             'exclude_recent_phones' => $exclude_recent_phones
         ]));
 
@@ -2846,11 +2930,12 @@ class Painel_Campanhas
                 $all_insert_data[] = [
                     'telefone' => $telefone,
                     'nome' => $record['nome'] ?? '',
-                    'idgis_ambiente' => $idgis_ambiente, // Mantém para compatibilidade
-                    'id_carteira' => $id_carteira, // Novo campo
+                    'idgis_ambiente' => $idgis_ambiente,
+                    'id_carteira' => $id_carteira,
                     'idcob_contrato' => intval($record['idcob_contrato'] ?? 0),
                     'cpf_cnpj' => $record['cpf_cnpj'] ?? '',
                     'mensagem' => $mensagem_para_armazenar,
+                    'midia_campanha' => $midia_campanha,
                     'fornecedor' => $provider,
                     'agendamento_id' => $agendamento_id,
                     'status' => 'pendente_aprovacao',
@@ -2947,10 +3032,10 @@ class Painel_Campanhas
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
 
-        $table_name = sanitize_text_field($_POST['table_name'] ?? '');
-
+        $table_name = $this->get_safe_table_name();
         if (empty($table_name)) {
-            wp_send_json_error('Nome da tabela não fornecido');
+            wp_send_json_error('Nome da tabela não fornecido ou inválido');
+            return;
         }
 
         $filters = PC_Campaign_Filters::get_filterable_columns($table_name);
@@ -2974,12 +3059,13 @@ class Painel_Campanhas
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
 
-        $table_name = sanitize_text_field($_POST['table_name'] ?? '');
+        $table_name = $this->get_safe_table_name();
         $filters_json = stripslashes($_POST['filters'] ?? '[]');
         $filters = json_decode($filters_json, true);
 
         if (empty($table_name)) {
-            wp_send_json_error('Nome da tabela não fornecido');
+            wp_send_json_error('Nome da tabela não fornecido ou inválido');
+            return;
         }
 
         $count = PC_Campaign_Filters::count_records($table_name, $filters);
@@ -2991,14 +3077,15 @@ class Painel_Campanhas
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
 
-        $table_name = sanitize_text_field($_POST['table_name'] ?? '');
+        $table_name = $this->get_safe_table_name();
         $filters_json = stripslashes($_POST['filters'] ?? '[]');
         $filters = json_decode($filters_json, true);
         $exclude_recent = isset($_POST['exclude_recent']) && $_POST['exclude_recent'] === 'true';
         $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
 
         if (empty($table_name)) {
-            wp_send_json_error('Nome da tabela não fornecido');
+            wp_send_json_error('Nome da tabela não fornecido ou inválido');
+            return;
         }
 
         global $wpdb;
@@ -3171,10 +3258,9 @@ class Painel_Campanhas
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
 
-        $table_name = sanitize_text_field($_POST['table_name'] ?? '');
-
+        $table_name = $this->get_safe_table_name();
         if (empty($table_name)) {
-            wp_send_json_error('Nome da tabela não fornecido.');
+            wp_send_json_error('Nome da tabela não fornecido ou inválido.');
             return;
         }
 
@@ -3864,19 +3950,6 @@ class Painel_Campanhas
         $status_list = $wpdb->get_col("SELECT DISTINCT status FROM {$envios_table} LIMIT 20");
         error_log('🔵 [RELATÓRIOS] Status únicos na tabela: ' . print_r($status_list, true));
 
-        // Debug: verifica alguns agendamentos específicos
-        $test_agendamentos = $wpdb->get_results(
-            "SELECT agendamento_id, status, COUNT(*) as cnt 
-             FROM {$envios_table} 
-             WHERE agendamento_id IN ('C20251208083300', 'C20251208084249', 'C20251208085135', 'S20251208082839') 
-             GROUP BY agendamento_id, status 
-             LIMIT 50"
-        );
-        error_log('🔵 [RELATÓRIOS] Status por agendamento (teste): ' . print_r($test_agendamentos, true));
-
-        error_log('🔵 [RELATÓRIOS] Query a ser executada: ' . $query);
-        error_log('🔵 [RELATÓRIOS] WHERE SQL: ' . $where_sql);
-
         $rows = $wpdb->get_results($query);
 
         // Debug: verifica resultado
@@ -3933,71 +4006,95 @@ class Painel_Campanhas
         if (!is_user_logged_in()) {
             wp_die('Acesso negado. Faça login para continuar.');
         }
+        if (!current_user_can('edit_posts')) {
+            wp_die('Permissão insuficiente.');
+        }
 
         if (!isset($_REQUEST['_wpnonce']) || !wp_verify_nonce($_REQUEST['_wpnonce'], 'pc_csv_download')) {
             wp_die('Requisição inválida.');
         }
 
-        global $wpdb;
-        $envios_table = $wpdb->prefix . 'envios_pendentes';
-        $users_table = $wpdb->prefix . 'users';
-        $ambiente_table = 'NOME_AMBIENTE';
+        try {
+            global $wpdb;
+            $envios_table = $wpdb->prefix . 'envios_pendentes';
+            $users_table = $wpdb->prefix . 'users';
+            $ambiente_table = 'NOME_AMBIENTE';
 
-        $filters = $this->collect_report_filters($_GET);
-        $where_sql = $this->build_report_where_sql($filters);
+            $filters = $this->collect_report_filters($_GET);
+            $where_sql = $this->build_report_where_sql($filters);
 
-        $query = "
-            SELECT
-                P.id,
-                CAST(P.data_cadastro AS DATE) AS data,
-                E.display_name AS usuario,
-                P.agendamento_id,
-                P.fornecedor,
-                T.NOME_AMBIENTE AS ambiente,
-                P.idgis_ambiente,
-                P.telefone,
-                P.nome AS nome_cliente,
-                P.status,
-                P.cpf_cnpj,
-                P.idcob_contrato,
-                P.data_disparo
-            FROM {$envios_table} P
-            LEFT JOIN {$users_table} E ON E.ID = P.current_user_id
-            LEFT JOIN {$ambiente_table} T ON T.IDGIS_AMBIENTE = P.idgis_ambiente
-            WHERE {$where_sql}
-            ORDER BY P.data_cadastro DESC
-        ";
+            $table_exists = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
+                DB_NAME, $ambiente_table
+            ));
+            $join_ambiente = $table_exists ? "LEFT JOIN {$ambiente_table} T ON T.IDGIS_AMBIENTE = P.idgis_ambiente" : "";
+            $select_ambiente = $table_exists ? "T.NOME_AMBIENTE AS ambiente," : "P.idgis_ambiente AS ambiente,";
 
-        $results = $wpdb->get_results($query, ARRAY_A);
+            $max_csv_rows = 100000;
+            $query = "
+                SELECT
+                    P.id,
+                    CAST(P.data_cadastro AS DATE) AS data,
+                    E.display_name AS usuario,
+                    P.agendamento_id,
+                    P.fornecedor,
+                    {$select_ambiente}
+                    P.idgis_ambiente,
+                    P.telefone,
+                    P.nome AS nome_cliente,
+                    P.status,
+                    P.cpf_cnpj,
+                    P.idcob_contrato,
+                    P.data_disparo
+                FROM {$envios_table} P
+                LEFT JOIN {$users_table} E ON E.ID = P.current_user_id
+                {$join_ambiente}
+                WHERE {$where_sql}
+                ORDER BY P.data_cadastro DESC
+                LIMIT {$max_csv_rows}
+            ";
 
-        if (empty($results)) {
-            wp_die('Nenhum registro encontrado com os filtros aplicados.');
+            $results = $wpdb->get_results($query, ARRAY_A);
+
+            if (empty($results)) {
+                wp_die('Nenhum registro encontrado com os filtros aplicados.');
+            }
+
+            nocache_headers();
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="relatorio_geral_' . date('Y-m-d_His') . '.csv"');
+            header('Pragma: no-cache');
+            header('Expires: 0');
+
+            $output = fopen('php://output', 'w');
+            fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
+
+            $headers = array_keys($results[0]);
+            fputcsv($output, $headers, ';');
+
+            foreach ($results as $row) {
+                fputcsv($output, $row, ';');
+            }
+
+            fclose($output);
+            exit;
+        } catch (\Throwable $e) {
+            error_log('[CSV Geral] Fatal: ' . $e->getMessage());
+            if (!headers_sent()) {
+                header('Content-Type: application/json; charset=UTF-8');
+                echo json_encode(['success' => false, 'data' => 'Erro ao gerar CSV: ' . $e->getMessage()]);
+            }
+            exit;
         }
-
-        nocache_headers();
-        header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename="relatorio_geral_' . date('Y-m-d_His') . '.csv"');
-        header('Pragma: no-cache');
-        header('Expires: 0');
-
-        $output = fopen('php://output', 'w');
-        fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
-
-        $headers = array_keys($results[0]);
-        fputcsv($output, $headers, ';');
-
-        foreach ($results as $row) {
-            fputcsv($output, $row, ';');
-        }
-
-        fclose($output);
-        exit;
     }
 
     public function handle_download_csv_agendamento()
     {
         if (!is_user_logged_in()) {
             wp_die('Acesso negado. Faça login para continuar.');
+        }
+        if (!current_user_can('edit_posts')) {
+            wp_die('Permissão insuficiente.');
         }
 
         if (!isset($_REQUEST['agendamento_id']) || empty($_REQUEST['agendamento_id'])) {
@@ -4008,38 +4105,47 @@ class Painel_Campanhas
             wp_die('Requisição inválida.');
         }
 
-        $agendamento_id = sanitize_text_field($_REQUEST['agendamento_id']);
+        try {
+            $agendamento_id = sanitize_text_field($_REQUEST['agendamento_id']);
 
-        global $wpdb;
-        $table_envios = $wpdb->prefix . 'envios_pendentes';
+            global $wpdb;
+            $table_envios = $wpdb->prefix . 'envios_pendentes';
 
-        $results = $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM {$table_envios} WHERE agendamento_id = %s ORDER BY id ASC",
-            $agendamento_id
-        ), ARRAY_A);
+            $results = $wpdb->get_results($wpdb->prepare(
+                "SELECT * FROM {$table_envios} WHERE agendamento_id = %s ORDER BY id ASC LIMIT 100000",
+                $agendamento_id
+            ), ARRAY_A);
 
-        if (empty($results)) {
-            wp_die('Nenhum registro encontrado para este agendamento.');
+            if (empty($results)) {
+                wp_die('Nenhum registro encontrado para este agendamento.');
+            }
+
+            nocache_headers();
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="agendamento_' . $agendamento_id . '_' . date('Y-m-d_His') . '.csv"');
+            header('Pragma: no-cache');
+            header('Expires: 0');
+
+            $output = fopen('php://output', 'w');
+            fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
+
+            $headers = array_keys($results[0]);
+            fputcsv($output, $headers, ';');
+
+            foreach ($results as $row) {
+                fputcsv($output, $row, ';');
+            }
+
+            fclose($output);
+            exit;
+        } catch (\Throwable $e) {
+            error_log('[CSV Agendamento] Fatal: ' . $e->getMessage());
+            if (!headers_sent()) {
+                header('Content-Type: application/json; charset=UTF-8');
+                echo json_encode(['success' => false, 'data' => 'Erro ao gerar CSV: ' . $e->getMessage()]);
+            }
+            exit;
         }
-
-        nocache_headers();
-        header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename="agendamento_' . $agendamento_id . '_' . date('Y-m-d_His') . '.csv"');
-        header('Pragma: no-cache');
-        header('Expires: 0');
-
-        $output = fopen('php://output', 'w');
-        fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
-
-        $headers = array_keys($results[0]);
-        fputcsv($output, $headers, ';');
-
-        foreach ($results as $row) {
-            fputcsv($output, $row, ';');
-        }
-
-        fclose($output);
-        exit;
     }
 
     /**
@@ -4177,11 +4283,40 @@ class Painel_Campanhas
         $table = $wpdb->prefix . 'cm_recurring_campaigns';
         $current_user_id = get_current_user_id();
 
-        // Busca apenas campanhas do usuário logado
         $campaigns = $wpdb->get_results($wpdb->prepare(
             "SELECT * FROM {$table} WHERE criado_por = %d ORDER BY criado_em DESC",
             $current_user_id
         ), ARRAY_A);
+
+        foreach ($campaigns as &$campaign) {
+            $filters = json_decode($campaign['filtros_json'] ?? '[]', true) ?: [];
+            $providers_config = json_decode($campaign['providers_config'] ?? '{}', true) ?: [];
+            $campaign['parsed_filters'] = $filters;
+
+            // Calcula contagem estimada
+            try {
+                $count_filters = $filters;
+                $exclude_recent = isset($providers_config['exclude_recent_phones'])
+                    ? intval($providers_config['exclude_recent_phones']) : 1;
+                if ($exclude_recent === 1) {
+                    $count_filters[] = [
+                        'field' => 'exclude_recent',
+                        'operator' => 'exclude_recent',
+                        'value' => 'true'
+                    ];
+                }
+                $count = PC_Campaign_Filters::count_records($campaign['tabela_origem'], $count_filters);
+                $record_limit = intval($campaign['record_limit'] ?? 0);
+                if ($record_limit > 0 && $count > $record_limit) {
+                    $count = $record_limit;
+                }
+                $campaign['estimated_count'] = $count;
+            } catch (\Exception $e) {
+                error_log('⚠️ [Recurring] Erro ao estimar contagem para campanha ' . $campaign['id'] . ': ' . $e->getMessage());
+                $campaign['estimated_count'] = -1;
+            }
+        }
+        unset($campaign);
 
         wp_send_json_success($campaigns);
     }
@@ -4189,6 +4324,7 @@ class Painel_Campanhas
     public function handle_delete_recurring()
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
+        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $id = intval($_POST['id'] ?? 0);
@@ -4305,6 +4441,7 @@ class Painel_Campanhas
     public function handle_execute_recurring_now()
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
+        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $id = intval($_POST['id'] ?? 0);
@@ -5828,6 +5965,7 @@ class Painel_Campanhas
     public function handle_save_custo_provider()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $provider = sanitize_text_field($_POST['provider'] ?? '');
@@ -5890,6 +6028,7 @@ class Painel_Campanhas
     public function handle_delete_custo_provider()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $id = intval($_POST['id'] ?? 0);
@@ -5916,6 +6055,7 @@ class Painel_Campanhas
     public function handle_save_orcamento_base()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $nome_base = sanitize_text_field($_POST['nome_base'] ?? '');
@@ -5995,6 +6135,7 @@ class Painel_Campanhas
     public function handle_delete_orcamento_base()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $id = intval($_POST['id'] ?? 0);
@@ -6283,6 +6424,7 @@ class Painel_Campanhas
     public function handle_create_carteira()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $nome = sanitize_text_field($_POST['nome'] ?? '');
@@ -6423,6 +6565,7 @@ class Painel_Campanhas
     public function handle_delete_carteira()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $id = intval($_POST['id'] ?? 0);
@@ -6457,6 +6600,7 @@ class Painel_Campanhas
     public function handle_vincular_base_carteira()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $carteira_id = intval($_POST['carteira_id'] ?? 0);
@@ -6662,6 +6806,7 @@ class Painel_Campanhas
     public function handle_limpar_vinculos_ruins()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $table = $wpdb->prefix . 'pc_carteiras_bases_v2';
@@ -6684,6 +6829,7 @@ class Painel_Campanhas
     public function handle_create_isca()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $nome = sanitize_text_field($_POST['nome'] ?? '');
@@ -6757,24 +6903,14 @@ class Painel_Campanhas
         $table_iscas = $wpdb->prefix . 'cm_baits';
         $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
 
-        // Busca todas as iscas ativas sem JOIN primeiro
         $iscas = $wpdb->get_results(
-            "SELECT * FROM $table_iscas WHERE ativo = 1 ORDER BY criado_em DESC",
+            "SELECT i.*, c.nome AS nome_carteira
+             FROM $table_iscas i
+             LEFT JOIN $table_carteiras c ON c.id = i.id_carteira AND c.ativo = 1
+             WHERE i.ativo = 1
+             ORDER BY i.criado_em DESC",
             ARRAY_A
         );
-
-        // Enriquece com nome da carteira se tiver
-        foreach ($iscas as &$isca) {
-            if (!empty($isca['id_carteira'])) {
-                $carteira = $wpdb->get_row($wpdb->prepare(
-                    "SELECT nome FROM $table_carteiras WHERE id = %d AND ativo = 1",
-                    $isca['id_carteira']
-                ), ARRAY_A);
-                $isca['nome_carteira'] = $carteira ? $carteira['nome'] : null;
-            } else {
-                $isca['nome_carteira'] = null;
-            }
-        }
 
         wp_send_json_success($iscas ?: []);
     }
@@ -6875,6 +7011,7 @@ class Painel_Campanhas
     public function handle_delete_isca()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $id = intval($_POST['id'] ?? 0);
@@ -6965,6 +7102,588 @@ class Painel_Campanhas
         wp_send_json_success([
             'ranking' => $ranking_usuarios,
             'total_usuarios' => count($ranking_usuarios),
+        ]);
+    }
+
+    // ========== HANDLERS PARA TRACKING SALESFORCE ==========
+
+    public function handle_get_salesforce_tracking()
+    {
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permissão negada.');
+            return;
+        }
+
+        try {
+        global $wpdb;
+        $table = 'salesforce_returns';
+
+        $table_check = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
+            DB_NAME, $table
+        ));
+        if (!$table_check) {
+            wp_send_json_success([
+                'records' => [], 'total_count' => 0, 'page' => 1,
+                'per_page' => 50, 'total_pages' => 0, 'statuses' => [],
+            ]);
+            return;
+        }
+
+        $page = max(1, intval($_POST['page'] ?? 1));
+        $per_page = min(100, max(10, intval($_POST['per_page'] ?? 50)));
+        $offset = ($page - 1) * $per_page;
+
+        $search = sanitize_text_field($_POST['search'] ?? '');
+        $status_filter = sanitize_text_field($_POST['status_filter'] ?? '');
+        $date_from = sanitize_text_field($_POST['date_from'] ?? '');
+        $date_to = sanitize_text_field($_POST['date_to'] ?? '');
+
+        $where_clauses = ['1=1'];
+        $where_values = [];
+
+        if (!empty($search)) {
+            $like = '%' . $wpdb->esc_like($search) . '%';
+            $where_clauses[] = '(mobilenumber LIKE %s OR uniqueid LIKE %s OR contactkey LIKE %s OR name LIKE %s OR cpf_cnpj__c LIKE %s)';
+            $where_values = array_merge($where_values, [$like, $like, $like, $like, $like]);
+        }
+
+        if (!empty($status_filter)) {
+            $where_clauses[] = 'status = %s';
+            $where_values[] = $status_filter;
+        }
+
+        if (!empty($date_from)) {
+            $where_clauses[] = 'eventdateutc >= %s';
+            $where_values[] = $date_from . ' 00:00:00';
+        }
+
+        if (!empty($date_to)) {
+            $where_clauses[] = 'eventdateutc <= %s';
+            $where_values[] = $date_to . ' 23:59:59';
+        }
+
+        $where_sql = implode(' AND ', $where_clauses);
+
+        // Total count
+        $count_query = "SELECT COUNT(*) FROM {$table} WHERE {$where_sql}";
+        if (!empty($where_values)) {
+            $count_query = $wpdb->prepare($count_query, ...$where_values);
+        }
+        $total_count = intval($wpdb->get_var($count_query));
+
+        // Paginated data
+        $data_query = "SELECT id, mobilenumber, name, cpf_cnpj__c, status, trackingtype, 
+                              sendtype, channeltype, activityname, channelname, reason,
+                              eventdateutc, criado_em, contactkey, operacao__c
+                       FROM {$table} WHERE {$where_sql}
+                       ORDER BY eventdateutc DESC
+                       LIMIT %d OFFSET %d";
+
+        $query_values = array_merge($where_values, [$per_page, $offset]);
+        $data_query = $wpdb->prepare($data_query, ...$query_values);
+
+        $results = $wpdb->get_results($data_query, ARRAY_A);
+
+        // Distinct statuses for filter dropdown
+        $statuses = $wpdb->get_col("SELECT DISTINCT status FROM {$table} WHERE status IS NOT NULL AND status != '' ORDER BY status ASC");
+
+        wp_send_json_success([
+            'records' => $results ?: [],
+            'total_count' => $total_count,
+            'page' => $page,
+            'per_page' => $per_page,
+            'total_pages' => ceil($total_count / $per_page),
+            'statuses' => $statuses ?: [],
+        ]);
+
+        } catch (\Throwable $e) {
+            error_log('[Tracking SF] Fatal: ' . $e->getMessage());
+            wp_send_json_error('Erro interno: ' . $e->getMessage());
+        }
+    }
+
+    public function handle_download_salesforce_csv()
+    {
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permissão negada.');
+            return;
+        }
+
+        try {
+        global $wpdb;
+        $table = 'salesforce_returns';
+
+        $table_check = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
+            DB_NAME, $table
+        ));
+        if (!$table_check) {
+            wp_send_json_error('Tabela salesforce_returns não encontrada. Execute a importação Salesforce primeiro.');
+            return;
+        }
+
+        $search = sanitize_text_field($_POST['search'] ?? '');
+        $status_filter = sanitize_text_field($_POST['status_filter'] ?? '');
+        $date_from = sanitize_text_field($_POST['date_from'] ?? '');
+        $date_to = sanitize_text_field($_POST['date_to'] ?? '');
+        $max_rows = min(50000, max(1, intval($_POST['max_rows'] ?? 10000)));
+
+        $where_clauses = ['1=1'];
+        $where_values = [];
+
+        if (!empty($search)) {
+            $like = '%' . $wpdb->esc_like($search) . '%';
+            $where_clauses[] = '(mobilenumber LIKE %s OR uniqueid LIKE %s OR contactkey LIKE %s OR name LIKE %s OR cpf_cnpj__c LIKE %s)';
+            $where_values = array_merge($where_values, [$like, $like, $like, $like, $like]);
+        }
+
+        if (!empty($status_filter)) {
+            $where_clauses[] = 'status = %s';
+            $where_values[] = $status_filter;
+        }
+
+        if (!empty($date_from)) {
+            $where_clauses[] = 'eventdateutc >= %s';
+            $where_values[] = $date_from . ' 00:00:00';
+        }
+
+        if (!empty($date_to)) {
+            $where_clauses[] = 'eventdateutc <= %s';
+            $where_values[] = $date_to . ' 23:59:59';
+        }
+
+        $where_sql = implode(' AND ', $where_clauses);
+
+        $data_query = "SELECT id, mobilenumber, name, cpf_cnpj__c, status, trackingtype,
+                              sendtype, channeltype, activityname, channelname, reason,
+                              eventdateutc, criado_em, contactkey, operacao__c
+                       FROM {$table} WHERE {$where_sql}
+                       ORDER BY eventdateutc DESC LIMIT %d";
+
+        $query_values = array_merge($where_values, [$max_rows]);
+        $data_query = $wpdb->prepare($data_query, ...$query_values);
+
+        $results = $wpdb->get_results($data_query, ARRAY_A);
+
+        if (empty($results)) {
+            wp_send_json_error('Nenhum registro encontrado para exportar.');
+            return;
+        }
+
+        $csv_lines = [];
+        $csv_lines[] = implode(';', array_keys($results[0]));
+        foreach ($results as $row) {
+            $csv_lines[] = implode(';', array_map(function ($v) {
+                $v = str_replace(['"', ';', "\n", "\r"], ['""', ',', ' ', ' '], $v ?? '');
+                return '"' . $v . '"';
+            }, array_values($row)));
+        }
+
+        wp_send_json_success([
+            'csv_content' => implode("\n", $csv_lines),
+            'filename' => 'salesforce_tracking_' . date('Y-m-d_His') . '.csv',
+            'total_rows' => count($results),
+        ]);
+
+        } catch (\Throwable $e) {
+            error_log('[CSV Salesforce] Fatal: ' . $e->getMessage());
+            wp_send_json_error('Erro interno ao gerar CSV: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Direct file download for Salesforce CSV (admin_post, streams to php://output).
+     */
+    public function handle_download_salesforce_csv_file()
+    {
+        if (!is_user_logged_in()) {
+            wp_die('Acesso negado.');
+        }
+        if (!current_user_can('manage_options')) {
+            wp_die('Permissão insuficiente.');
+        }
+        if (!isset($_REQUEST['_wpnonce']) || !wp_verify_nonce($_REQUEST['_wpnonce'], 'pc_csv_download')) {
+            wp_die('Requisição inválida.');
+        }
+
+        try {
+            global $wpdb;
+            $table = 'salesforce_returns';
+
+            $table_check = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
+                DB_NAME, $table
+            ));
+            if (!$table_check) {
+                wp_die('Tabela salesforce_returns não encontrada.');
+            }
+
+            $search = sanitize_text_field($_REQUEST['search'] ?? '');
+            $status_filter = sanitize_text_field($_REQUEST['status_filter'] ?? '');
+            $date_from = sanitize_text_field($_REQUEST['date_from'] ?? '');
+            $date_to = sanitize_text_field($_REQUEST['date_to'] ?? '');
+            $max_rows = min(50000, max(1, intval($_REQUEST['max_rows'] ?? 50000)));
+
+            $where_clauses = ['1=1'];
+            $where_values = [];
+
+            if (!empty($search)) {
+                $like = '%' . $wpdb->esc_like($search) . '%';
+                $where_clauses[] = '(mobilenumber LIKE %s OR uniqueid LIKE %s OR contactkey LIKE %s OR name LIKE %s OR cpf_cnpj__c LIKE %s)';
+                $where_values = array_merge($where_values, [$like, $like, $like, $like, $like]);
+            }
+            if (!empty($status_filter)) {
+                $where_clauses[] = 'status = %s';
+                $where_values[] = $status_filter;
+            }
+            if (!empty($date_from)) {
+                $where_clauses[] = 'eventdateutc >= %s';
+                $where_values[] = $date_from . ' 00:00:00';
+            }
+            if (!empty($date_to)) {
+                $where_clauses[] = 'eventdateutc <= %s';
+                $where_values[] = $date_to . ' 23:59:59';
+            }
+
+            $where_sql = implode(' AND ', $where_clauses);
+
+            $data_query = "SELECT id, mobilenumber, name, cpf_cnpj__c, status, trackingtype,
+                                  sendtype, channeltype, activityname, channelname, reason,
+                                  eventdateutc, criado_em, contactkey, operacao__c
+                           FROM {$table} WHERE {$where_sql}
+                           ORDER BY eventdateutc DESC LIMIT %d";
+
+            $query_values = array_merge($where_values, [$max_rows]);
+            $data_query = $wpdb->prepare($data_query, ...$query_values);
+
+            $results = $wpdb->get_results($data_query, ARRAY_A);
+
+            if (empty($results)) {
+                wp_die('Nenhum registro encontrado com os filtros aplicados.');
+            }
+
+            nocache_headers();
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="salesforce_tracking_' . date('Y-m-d_His') . '.csv"');
+            header('Pragma: no-cache');
+            header('Expires: 0');
+
+            $output = fopen('php://output', 'w');
+            fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
+
+            fputcsv($output, array_keys($results[0]), ';');
+
+            foreach ($results as $row) {
+                fputcsv($output, $row, ';');
+            }
+
+            fclose($output);
+            exit;
+        } catch (\Throwable $e) {
+            error_log('[CSV SF File] Fatal: ' . $e->getMessage());
+            if (!headers_sent()) {
+                wp_die('Erro ao gerar CSV: ' . esc_html($e->getMessage()));
+            }
+            exit;
+        }
+    }
+
+    // ========== HANDLERS PARA RELATÓRIOS MULTI-TABELA ==========
+
+    public function handle_get_envios_pendentes()
+    {
+        check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+
+        try {
+            global $wpdb;
+            $table = $wpdb->prefix . 'envios_pendentes';
+
+            $page = max(1, intval($_POST['page'] ?? 1));
+            $per_page = min(100, max(10, intval($_POST['per_page'] ?? 50)));
+            $offset = ($page - 1) * $per_page;
+
+            $search = sanitize_text_field($_POST['search'] ?? '');
+            $status_filter = sanitize_text_field($_POST['status_filter'] ?? '');
+            $fornecedor_filter = sanitize_text_field($_POST['fornecedor_filter'] ?? '');
+            $date_from = sanitize_text_field($_POST['date_from'] ?? '');
+            $date_to = sanitize_text_field($_POST['date_to'] ?? '');
+            $agendamento_filter = sanitize_text_field($_POST['agendamento_filter'] ?? '');
+
+            $where = ['1=1'];
+            $vals = [];
+
+            if ($search) {
+                $like = '%' . $wpdb->esc_like($search) . '%';
+                $where[] = '(telefone LIKE %s OR nome LIKE %s OR cpf_cnpj LIKE %s OR agendamento_id LIKE %s)';
+                array_push($vals, $like, $like, $like, $like);
+            }
+            if ($status_filter) { $where[] = 'status = %s'; $vals[] = $status_filter; }
+            if ($fornecedor_filter) { $where[] = 'fornecedor = %s'; $vals[] = $fornecedor_filter; }
+            if ($agendamento_filter) { $where[] = 'agendamento_id = %s'; $vals[] = $agendamento_filter; }
+            if ($date_from) { $where[] = 'data_cadastro >= %s'; $vals[] = $date_from . ' 00:00:00'; }
+            if ($date_to) { $where[] = 'data_cadastro <= %s'; $vals[] = $date_to . ' 23:59:59'; }
+
+            $where_sql = implode(' AND ', $where);
+
+            $count_q = "SELECT COUNT(*) FROM {$table} WHERE {$where_sql}";
+            $total = intval($wpdb->get_var(empty($vals) ? $count_q : $wpdb->prepare($count_q, ...$vals)));
+
+            $data_q = "SELECT id, telefone, nome, cpf_cnpj, status, fornecedor, agendamento_id,
+                               idgis_ambiente, data_cadastro, data_disparo, resposta_api
+                        FROM {$table} WHERE {$where_sql}
+                        ORDER BY data_cadastro DESC LIMIT %d OFFSET %d";
+            $all_vals = array_merge($vals, [$per_page, $offset]);
+            $rows = $wpdb->get_results($wpdb->prepare($data_q, ...$all_vals), ARRAY_A);
+
+            $statuses = $wpdb->get_col("SELECT DISTINCT status FROM {$table} WHERE status IS NOT NULL AND status != '' ORDER BY status");
+            $fornecedores = $wpdb->get_col("SELECT DISTINCT fornecedor FROM {$table} WHERE fornecedor IS NOT NULL AND fornecedor != '' ORDER BY fornecedor");
+
+            wp_send_json_success([
+                'records' => $rows ?: [],
+                'total_count' => $total,
+                'page' => $page,
+                'per_page' => $per_page,
+                'total_pages' => max(1, ceil($total / $per_page)),
+                'statuses' => $statuses ?: [],
+                'fornecedores' => $fornecedores ?: [],
+            ]);
+        } catch (\Throwable $e) {
+            wp_send_json_error('Erro: ' . $e->getMessage());
+        }
+    }
+
+    public function handle_get_eventos_envios()
+    {
+        global $wpdb;
+        $this->handle_generic_table_query($wpdb->prefix . 'eventos_envios');
+    }
+
+    /**
+     * Generic handler for dynamic tables — auto-discovers columns from the real DB schema.
+     */
+    private function handle_generic_table_query(string $table_name)
+    {
+        check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+
+        try {
+            global $wpdb;
+
+            $exists = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
+                DB_NAME, $table_name
+            ));
+            if (!$exists) {
+                wp_send_json_success([
+                    'records' => [], 'total_count' => 0, 'page' => 1,
+                    'per_page' => 50, 'total_pages' => 0, 'table_exists' => false,
+                    'columns' => [],
+                ]);
+                return;
+            }
+
+            $col_rows = $wpdb->get_results("SHOW COLUMNS FROM `{$table_name}`", ARRAY_A);
+            $all_columns = array_column($col_rows, 'Field');
+
+            $text_cols = [];
+            $date_cols = [];
+            $order_col = $all_columns[0] ?? 'id';
+            foreach ($col_rows as $c) {
+                $type = strtolower($c['Type']);
+                if (preg_match('/varchar|text|char/', $type)) {
+                    $text_cols[] = $c['Field'];
+                }
+                if (preg_match('/date|time/', $type)) {
+                    $date_cols[] = $c['Field'];
+                    $order_col = $c['Field'];
+                }
+            }
+            if (in_array('id', $all_columns)) {
+                $order_col = 'id';
+            }
+
+            $page = max(1, intval($_POST['page'] ?? 1));
+            $per_page = min(100, max(10, intval($_POST['per_page'] ?? 50)));
+            $offset = ($page - 1) * $per_page;
+
+            $search = sanitize_text_field($_POST['search'] ?? '');
+            $col_filter = sanitize_text_field($_POST['col_filter'] ?? '');
+            $col_filter_val = sanitize_text_field($_POST['col_filter_val'] ?? '');
+            $date_from = sanitize_text_field($_POST['date_from'] ?? '');
+            $date_to = sanitize_text_field($_POST['date_to'] ?? '');
+
+            $where = ['1=1'];
+            $vals = [];
+
+            if ($search && !empty($text_cols)) {
+                $like = '%' . $wpdb->esc_like($search) . '%';
+                $like_parts = [];
+                foreach ($text_cols as $tc) {
+                    $like_parts[] = "`{$tc}` LIKE %s";
+                    $vals[] = $like;
+                }
+                $where[] = '(' . implode(' OR ', $like_parts) . ')';
+            }
+
+            if ($col_filter && $col_filter_val && in_array($col_filter, $all_columns)) {
+                $where[] = "`{$col_filter}` = %s";
+                $vals[] = $col_filter_val;
+            }
+
+            $primary_date = $date_cols[0] ?? null;
+            if ($date_from && $primary_date) {
+                $where[] = "`{$primary_date}` >= %s";
+                $vals[] = $date_from . ' 00:00:00';
+            }
+            if ($date_to && $primary_date) {
+                $where[] = "`{$primary_date}` <= %s";
+                $vals[] = $date_to . ' 23:59:59';
+            }
+
+            $where_sql = implode(' AND ', $where);
+
+            $count_q = "SELECT COUNT(*) FROM `{$table_name}` WHERE {$where_sql}";
+            $total = intval($wpdb->get_var(empty($vals) ? $count_q : $wpdb->prepare($count_q, ...$vals)));
+
+            $data_q = "SELECT * FROM `{$table_name}` WHERE {$where_sql} ORDER BY `{$order_col}` DESC LIMIT %d OFFSET %d";
+            $all_vals = array_merge($vals, [$per_page, $offset]);
+            $rows = $wpdb->get_results($wpdb->prepare($data_q, ...$all_vals), ARRAY_A);
+
+            $filter_options = [];
+            foreach ($text_cols as $tc) {
+                $distinct = $wpdb->get_col("SELECT DISTINCT `{$tc}` FROM `{$table_name}` WHERE `{$tc}` IS NOT NULL AND `{$tc}` != '' ORDER BY `{$tc}` ASC LIMIT 100");
+                if (!empty($distinct)) {
+                    $filter_options[$tc] = $distinct;
+                }
+            }
+
+            wp_send_json_success([
+                'records' => $rows ?: [],
+                'total_count' => $total,
+                'page' => $page,
+                'per_page' => $per_page,
+                'total_pages' => max(1, ceil($total / $per_page)),
+                'table_exists' => true,
+                'columns' => $all_columns,
+                'text_columns' => $text_cols,
+                'date_columns' => $date_cols,
+                'filter_options' => $filter_options,
+            ]);
+        } catch (\Throwable $e) {
+            wp_send_json_error('Erro: ' . $e->getMessage());
+        }
+    }
+
+    public function handle_get_eventos_indicadores()
+    {
+        global $wpdb;
+        $this->handle_generic_table_query($wpdb->prefix . 'eventos_indicadores');
+    }
+
+    public function handle_get_eventos_tempos()
+    {
+        global $wpdb;
+        $this->handle_generic_table_query($wpdb->prefix . 'eventos_tempos');
+    }
+
+    public function handle_get_report_summary()
+    {
+        check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+
+        try {
+            global $wpdb;
+            $envios = $wpdb->prefix . 'envios_pendentes';
+
+            $date_from = sanitize_text_field($_POST['date_from'] ?? '');
+            $date_to = sanitize_text_field($_POST['date_to'] ?? '');
+
+            $where = ['1=1'];
+            $vals = [];
+            if ($date_from) { $where[] = 'data_cadastro >= %s'; $vals[] = $date_from . ' 00:00:00'; }
+            if ($date_to) { $where[] = 'data_cadastro <= %s'; $vals[] = $date_to . ' 23:59:59'; }
+            $w = implode(' AND ', $where);
+
+            $status_q = "SELECT status, COUNT(*) as total FROM {$envios} WHERE {$w} GROUP BY status ORDER BY total DESC";
+            $by_status = $wpdb->get_results(empty($vals) ? $status_q : $wpdb->prepare($status_q, ...$vals), ARRAY_A);
+
+            $provider_q = "SELECT fornecedor, COUNT(*) as total,
+                           SUM(CASE WHEN status = 'enviado' THEN 1 ELSE 0 END) as enviados,
+                           SUM(CASE WHEN status IN ('erro','erro_envio','erro_credenciais') THEN 1 ELSE 0 END) as erros
+                           FROM {$envios} WHERE {$w} GROUP BY fornecedor ORDER BY total DESC";
+            $by_provider = $wpdb->get_results(empty($vals) ? $provider_q : $wpdb->prepare($provider_q, ...$vals), ARRAY_A);
+
+            $daily_q = "SELECT DATE(data_cadastro) as dia, COUNT(*) as total,
+                        SUM(CASE WHEN status = 'enviado' THEN 1 ELSE 0 END) as enviados
+                        FROM {$envios} WHERE {$w} GROUP BY DATE(data_cadastro) ORDER BY dia DESC LIMIT 30";
+            $daily = $wpdb->get_results(empty($vals) ? $daily_q : $wpdb->prepare($daily_q, ...$vals), ARRAY_A);
+
+            $total_q = "SELECT COUNT(*) FROM {$envios} WHERE {$w}";
+            $total = intval($wpdb->get_var(empty($vals) ? $total_q : $wpdb->prepare($total_q, ...$vals)));
+
+            wp_send_json_success([
+                'total_records' => $total,
+                'by_status' => $by_status ?: [],
+                'by_provider' => $by_provider ?: [],
+                'daily' => $daily ?: [],
+            ]);
+        } catch (\Throwable $e) {
+            wp_send_json_error('Erro: ' . $e->getMessage());
+        }
+    }
+
+    // ========== HANDLER UPLOAD MÍDIA CAMPANHA ==========
+
+    public function handle_upload_campaign_media()
+    {
+        check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permissão negada.');
+            return;
+        }
+
+        if (empty($_FILES['media_file'])) {
+            wp_send_json_error('Nenhum arquivo enviado.');
+            return;
+        }
+
+        $file = $_FILES['media_file'];
+        $allowed_types = ['image/png', 'image/jpeg', 'image/jpg'];
+
+        if (!in_array($file['type'], $allowed_types)) {
+            wp_send_json_error('Tipo de arquivo não permitido. Aceitos: PNG, JPEG.');
+            return;
+        }
+
+        $max_size = 5 * 1024 * 1024; // 5MB
+        if ($file['size'] > $max_size) {
+            wp_send_json_error('Arquivo muito grande. Máximo: 5MB.');
+            return;
+        }
+
+        require_once(ABSPATH . 'wp-admin/includes/image.php');
+        require_once(ABSPATH . 'wp-admin/includes/file.php');
+        require_once(ABSPATH . 'wp-admin/includes/media.php');
+
+        $attachment_id = media_handle_upload('media_file', 0);
+
+        if (is_wp_error($attachment_id)) {
+            wp_send_json_error('Erro no upload: ' . $attachment_id->get_error_message());
+            return;
+        }
+
+        $url = wp_get_attachment_url($attachment_id);
+
+        wp_send_json_success([
+            'attachment_id' => $attachment_id,
+            'url' => $url,
+            'filename' => basename($url),
         ]);
     }
 
@@ -7115,6 +7834,7 @@ class Painel_Campanhas
     public function handle_create_campaign_from_file()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $file_data = isset($_POST['file_data']) ? json_decode(stripslashes($_POST['file_data']), true) : null;
@@ -7279,6 +7999,7 @@ class Painel_Campanhas
     public function handle_get_available_bases()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
 
         global $wpdb;
         $db_prefix = 'VW_BASE';
@@ -7781,6 +8502,7 @@ class Painel_Campanhas
     public function handle_add_to_blocklist()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $tipo = sanitize_text_field($_POST['tipo'] ?? '');
@@ -7835,6 +8557,7 @@ class Painel_Campanhas
     public function handle_remove_from_blocklist()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $id = intval($_POST['id'] ?? 0);
@@ -7902,23 +8625,14 @@ class Painel_Campanhas
         wp_send_json_success(['blocked' => $blocked]);
     }
     /**
-     * Endpoint de teste para verificar se AJAX está funcionando
+     * Endpoint de teste (apenas para debug interno, action removida do nopriv)
      */
     public function handle_ajax_test()
     {
-        error_log('🟢 [AJAX Test] Endpoint chamado com sucesso!');
-        error_log('🟢 [AJAX Test] POST data: ' . print_r($_POST, true));
-        error_log('🟢 [AJAX Test] User ID: ' . get_current_user_id());
-        error_log('🟢 [AJAX Test] Is user logged in: ' . (is_user_logged_in() ? 'YES' : 'NO'));
-
+        check_ajax_referer('pc_nonce', 'nonce');
         wp_send_json_success([
-            'message' => 'AJAX funcionando perfeitamente!',
+            'message' => 'AJAX OK',
             'timestamp' => current_time('mysql'),
-            'user_id' => get_current_user_id(),
-            'is_logged_in' => is_user_logged_in(),
-            'site_url' => get_site_url(),
-            'home_url' => home_url(),
-            'admin_url' => admin_url('admin-ajax.php'),
         ]);
     }
 
@@ -8636,13 +9350,22 @@ class Painel_Campanhas
             global $wpdb;
             error_log('Salesforce Import Step 2: Config variables initialized.');
 
-            // ── Config ──────────────────────────────────────────────────────────
-            $sf_auth_url = 'https://mchdb47kwgw19dh5mmnsw0fvhv2m.auth.marketingcloudapis.com';
-            $sf_rest_url = 'https://mchdb47kwgw19dh5mmnsw0fvhv2m.rest.marketingcloudapis.com';
-            $sf_client_id = 'bv53kgt3ocyggeua4synj2v0';
-            $sf_client_secret = 'VqfpNASD3Q8bEyD4ktXqQhKJ';
-            $sf_account_id = '536007880';
-            $sf_de_key = 'Tracking_WhatsApp_Importado_FINAL';
+            // ── Config (loaded from wp_options — never hardcode secrets) ────────
+            $mkc_creds = get_option('acm_static_credentials', []);
+            $sf_auth_url  = trim($mkc_creds['mkc_auth_url']  ?? '');
+            $sf_rest_url  = trim($mkc_creds['mkc_rest_url']  ?? '');
+            $sf_client_id     = trim($mkc_creds['mkc_client_id']     ?? '');
+            $sf_client_secret = trim($mkc_creds['mkc_client_secret'] ?? '');
+            $sf_account_id    = trim($mkc_creds['mkc_account_id']    ?? '');
+            $sf_de_key        = trim($mkc_creds['mkc_de_key']        ?? 'Tracking_WhatsApp_Importado_FINAL');
+
+            if (empty($sf_auth_url) || empty($sf_client_id) || empty($sf_client_secret) || empty($sf_account_id)) {
+                wp_send_json_error([
+                    'error' => 'Credenciais da Salesforce Marketing Cloud não configuradas. Acesse API Manager > Credenciais Estáticas para configurar mkc_auth_url, mkc_client_id, mkc_client_secret e mkc_account_id.',
+                ]);
+                return;
+            }
+
             $page_size = 200;
             $table_name = 'salesforce_returns';
 

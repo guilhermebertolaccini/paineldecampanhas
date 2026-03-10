@@ -117,15 +117,22 @@ export class RcsProvider extends BaseProvider {
     // codigo_equipe = idgis_ambiente (vem dos dados)
     // codigo_usuario = sempre '1' (igual ao CDA)
     // ativo = true para iniciar o envio assim que disparar
+    // midia_campanha: URL de imagem (PNG/JPEG) associada à campanha
+    const midia_campanha = data[0].midia_campanha || credentials.midia_campanha || '';
+
     const payload: any = {
       chave_api: credentials.chave_api,
       codigo_equipe: idgis_regua,
       codigo_usuario: '1',
       nome: `campanha_${idgis_regua}_${Date.now()}`,
-      ativo: true, // Inicia o envio assim que disparar
+      ativo: true,
       corpo_mensagem: mensagem_corpo,
       mensagens: mensagens,
     };
+
+    if (midia_campanha) {
+      payload.midia_campanha = midia_campanha;
+    }
 
     if (credentials.tag_numero_contrato) {
       payload.tag_numero_contrato = credentials.tag_numero_contrato;

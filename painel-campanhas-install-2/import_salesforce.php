@@ -76,14 +76,26 @@ $sql = "CREATE TABLE IF NOT EXISTS {$table_name} (
 require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
 dbDelta($sql);
 
-// Salesforce Config
-define('SF_AUTH_URL', 'https://mchdb47kwgw19dh5mmnsw0fvhv2m.auth.marketingcloudapis.com');
-define('SF_REST_URL', 'https://mchdb47kwgw19dh5mmnsw0fvhv2m.rest.marketingcloudapis.com');
-define('SF_CLIENT_ID', 'bv53kgt3ocyggeua4synj2v0');
-define('SF_CLIENT_SECRET', 'VqfpNASD3Q8bEyD4ktXqQhKJ');
-define('SF_ACCOUNT_ID', '536007880');
-define('SF_DE_KEY', 'Tracking_WhatsApp_Importado_FINAL');
-define('PAGE_SIZE', 500); // Set to 500 to keep batches safe for WordPress WPDB prepare limits
+// Load Salesforce MC credentials from wp_options (same as plugin AJAX handler)
+$mkc_creds = get_option('acm_static_credentials', []);
+$sf_auth_url_val  = trim($mkc_creds['mkc_auth_url']  ?? '');
+$sf_rest_url_val  = trim($mkc_creds['mkc_rest_url']  ?? '');
+$sf_client_id_val     = trim($mkc_creds['mkc_client_id']     ?? '');
+$sf_client_secret_val = trim($mkc_creds['mkc_client_secret'] ?? '');
+$sf_account_id_val    = trim($mkc_creds['mkc_account_id']    ?? '');
+$sf_de_key_val        = trim($mkc_creds['mkc_de_key']        ?? 'Tracking_WhatsApp_Importado_FINAL');
+
+if (empty($sf_auth_url_val) || empty($sf_client_id_val) || empty($sf_client_secret_val) || empty($sf_account_id_val)) {
+    die("[CONFIG ERROR] Salesforce MC credentials not configured in wp_options (acm_static_credentials). Set mkc_auth_url, mkc_client_id, mkc_client_secret, mkc_account_id via API Manager.\n");
+}
+
+define('SF_AUTH_URL', $sf_auth_url_val);
+define('SF_REST_URL', $sf_rest_url_val);
+define('SF_CLIENT_ID', $sf_client_id_val);
+define('SF_CLIENT_SECRET', $sf_client_secret_val);
+define('SF_ACCOUNT_ID', $sf_account_id_val);
+define('SF_DE_KEY', $sf_de_key_val);
+define('PAGE_SIZE', 500);
 
 echo "[SF_IMPORT] Starting script...\n";
 

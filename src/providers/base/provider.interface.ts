@@ -6,6 +6,7 @@ export interface CampaignData {
   cpf_cnpj: string;
   mensagem: string;
   data_cadastro?: string;
+  midia_campanha?: string;
 }
 
 export interface ProviderResponse {

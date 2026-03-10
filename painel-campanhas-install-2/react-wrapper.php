@@ -117,9 +117,11 @@ usort($js_files, function($a, $b) {
 
         $ajax_data = [
             'ajaxurl' => $ajax_url,
-            'ajaxUrl' => $ajax_url, // Duplicado para compatibilidade
+            'ajaxUrl' => $ajax_url,
             'nonce' => wp_create_nonce('pc_nonce'),
             'cmNonce' => wp_create_nonce('campaign-manager-nonce'),
+            'csvNonce' => wp_create_nonce('pc_csv_download'),
+            'adminPostUrl' => $site_url . '/wp-admin/admin-post.php',
             'homeUrl' => home_url('/'),
             'siteUrl' => $site_url,
             'restUrl' => rest_url('campaigns/v1/'),

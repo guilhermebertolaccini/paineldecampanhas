@@ -132,12 +132,8 @@ export class CdaSendProcessor extends WorkerHost {
           provider: 'CDA',
         });
         
-        // Retorna erro sem lançar para evitar duplicação no catch
-        return {
-          success: false,
-          campaignId,
-          error: result.error || 'Erro ao enviar campanha CDA',
-        };
+        // Throw so BullMQ can retry transient failures
+        throw new Error(result.error || 'Erro ao enviar campanha CDA');
       }
     } catch (error: any) {
       this.logger.error(`Error processing CDA send: ${error.message}`, error.stack);

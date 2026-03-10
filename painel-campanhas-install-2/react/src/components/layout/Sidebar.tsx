@@ -20,6 +20,7 @@ import {
   Fish,
   Trophy,
   Activity,
+  Satellite,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -40,7 +41,15 @@ const navItems: NavItem[] = [
   { label: "Campanhas Recorrentes", href: "/painel/campanhas-recorrentes", icon: RefreshCw },
   { label: "Aprovar Campanhas", href: "/painel/aprovar-campanhas", icon: CheckCircle, adminOnly: true },
   { label: "Templates de Mensagem", href: "/painel/mensagens", icon: MessageSquare },
-  { label: "Relatórios", href: "/painel/relatorios", icon: BarChart3 },
+  {
+    label: "Relatórios",
+    href: "/painel/relatorios",
+    icon: BarChart3,
+    children: [
+      { label: "Visão Geral", href: "/painel/relatorios" },
+      { label: "Dados Detalhados", href: "/painel/relatorios-detalhados" },
+    ],
+  },
   { label: "Ranking de Disparo", href: "/painel/ranking", icon: Trophy },
   {
     label: "Controle de Custo",
@@ -55,12 +64,13 @@ const navItems: NavItem[] = [
   { label: "Cadastro de Iscas", href: "/painel/iscas", icon: Fish },
   { label: "Blocklist", href: "/painel/blocklist", icon: Shield, adminOnly: true },
   { label: "Saúde das Linhas", href: "/painel/saude-linhas", icon: Activity },
+  { label: "Tracking Salesforce", href: "/painel/tracking-salesforce", icon: Satellite, adminOnly: true },
   { label: "API Manager", href: "/painel/api-manager", icon: Key, adminOnly: true },
 ];
 
 export function Sidebar() {
   const location = useLocation();
-  const [expandedItems, setExpandedItems] = useState<string[]>(["Controle de Custo"]);
+  const [expandedItems, setExpandedItems] = useState<string[]>(["Controle de Custo", "Relatórios"]);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
 
   const toggleExpanded = (label: string) => {

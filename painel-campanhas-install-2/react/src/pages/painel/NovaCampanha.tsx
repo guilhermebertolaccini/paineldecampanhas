@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Database, Filter, MessageSquare, Truck, Send, Loader2, AlertCircle, Check, ChevronsUpDown } from "lucide-react";
+import { Database, Filter, MessageSquare, Truck, Send, Loader2, AlertCircle, Check, ChevronsUpDown, ImagePlus, X } from "lucide-react";
 import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -42,6 +42,7 @@ import {
   getOtimaBrokers,
   getIscas,
   saveRecurring,
+  uploadCampaignMedia,
 } from "@/lib/api";
 
 const providers = [
@@ -76,6 +77,7 @@ export default function NovaCampanha() {
     brokerCode: "",
     customerCode: "",
     message: "",
+    midia_campanha: "",
     providers: [] as string[],
     record_limit: 0,
     exclude_recent_phones: true,
@@ -89,6 +91,7 @@ export default function NovaCampanha() {
   const [templateVariables, setTemplateVariables] = useState<Record<string, VarMapping>>({});
   const [selectedTemplateObj, setSelectedTemplateObj] = useState<any>(null);
   const [openTemplateDropdown, setOpenTemplateDropdown] = useState(false);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
 
   // Buscar carteiras
   const { data: carteiras = [] } = useQuery({
@@ -379,7 +382,7 @@ export default function NovaCampanha() {
   });
 
   // Buscar conteúdo do template quando selecionado
-  const { data: templateContent, refetch: refetchTemplate } = useQuery({
+  const { data: templateContent, refetch: refetchTemplate, isLoading: templateContentLoading } = useQuery({
     queryKey: ['template-content', formData.template],
     queryFn: () => {
       console.log('🔍 [useQuery template-content] formData.template:', formData.template);
@@ -390,7 +393,7 @@ export default function NovaCampanha() {
       return getTemplateContent(formData.template);
     },
     enabled: !!formData.template && formData.template !== '' && formData.template !== '0' && step >= 3,
-    retry: false, // Não tenta novamente em caso de erro
+    retry: false,
   });
 
   // Verificar atualização da base quando selecionada
@@ -415,22 +418,19 @@ export default function NovaCampanha() {
     }
   }, [baseUpdateData]);
 
-  // Atualizar mensagem quando template mudar
+  // Atualizar mensagem quando template mudar (template step = 5)
   useEffect(() => {
-    if (formData.template && step === 3 && templateContent?.content) {
+    if (formData.template && templateContent?.content) {
       console.log('🔄 [useEffect template] Atualizando mensagem com:', templateContent.content.substring(0, 50));
-      // Template local, atualiza apenas a mensagem
       setFormData(prev => {
-        // Evita loop: só atualiza se a mensagem realmente mudou
         if (prev.message !== templateContent.content) {
           console.log('✅ [useEffect template] Mensagem atualizada');
           return { ...prev, message: templateContent.content };
         }
-        console.log('⏭️ [useEffect template] Mensagem já está atualizada, pulando');
         return prev;
       });
     }
-  }, [templateContent?.content, step]);
+  }, [templateContent?.content, formData.template]);
 
   const scheduleMutation = useMutation({
     mutationFn: (data: any) => scheduleCampaign(data),
@@ -563,6 +563,7 @@ export default function NovaCampanha() {
         test_only: formData.test_only ? 1 : 0,
         throttling_type: formData.throttling_type || 'none',
         throttling_config: formData.throttling_config || {},
+        midia_campanha: formData.midia_campanha || '',
       };
       saveRecurringMutation.mutate(recurringData);
     } else {
@@ -583,6 +584,7 @@ export default function NovaCampanha() {
         test_only: formData.test_only ? 1 : 0,
         throttling_type: formData.throttling_type || 'none',
         throttling_config: formData.throttling_config || {},
+        midia_campanha: formData.midia_campanha || '',
       };
 
       scheduleMutation.mutate(campaignData);
@@ -610,9 +612,15 @@ export default function NovaCampanha() {
           return !!formData.throttling_config?.fase1_percent && !!formData.throttling_config?.fase1_horas && !!formData.throttling_config?.fase2_horas;
         }
         return true;
-      case 5:
+      case 5: {
+        if (!formData.template) return false;
         const isOtima = formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp';
-        return boolean(formData.template && formData.message.trim() && (!isOtima || formData.brokerCode));
+        if (isOtima && !formData.brokerCode) return false;
+        const isExternalProvider = isOtima || formData.templateSource === 'gosac_oficial';
+        if (isExternalProvider) return boolean(formData.message.trim());
+        // Local templates (incl. Salesforce custom): accept if message loaded OR template selected
+        return boolean(formData.message.trim() || formData.templateCode);
+      }
       default:
         return false;
     }
@@ -1076,9 +1084,19 @@ export default function NovaCampanha() {
                 <div className="space-y-2">
                   <Label>Pré-visualização do Template</Label>
                   <div className="rounded-md border bg-gray-50 p-4 min-h-[120px]">
-                    {formData.message ? (
+                    {templateContentLoading && formData.template ? (
+                      <div className="flex items-center gap-2 text-sm text-gray-500">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Carregando conteúdo do template...
+                      </div>
+                    ) : formData.message ? (
                       <p className="text-sm whitespace-pre-wrap text-gray-700">
                         {formData.message}
+                      </p>
+                    ) : formData.template ? (
+                      <p className="text-sm text-amber-600 italic">
+                        Template selecionado, mas sem conteúdo de pré-visualização disponível.
+                        A mensagem será definida pelo provedor na hora do envio.
                       </p>
                     ) : (
                       <p className="text-sm text-gray-400 italic">
@@ -1091,6 +1109,85 @@ export default function NovaCampanha() {
                   </p>
                 </div>
               )}
+
+              {/* Upload de Mídia — disponível para templates livres (CDA RCS, CDA WPP, local) */}
+              <div className="space-y-3 pt-4 border-t">
+                <Label className="flex items-center gap-2">
+                  <ImagePlus className="h-4 w-4" />
+                  Mídia da Campanha <span className="text-xs text-muted-foreground font-normal">(opcional)</span>
+                </Label>
+
+                {formData.midia_campanha ? (
+                  <div className="flex items-center gap-3 p-3 rounded-lg border bg-muted/30">
+                    <img
+                      src={formData.midia_campanha}
+                      alt="Mídia da campanha"
+                      className="h-20 w-20 rounded-md object-cover border"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{formData.midia_campanha.split('/').pop()}</p>
+                      <p className="text-xs text-muted-foreground">Imagem anexada à campanha</p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="shrink-0 text-destructive hover:text-destructive"
+                      onClick={() => setFormData(prev => ({ ...prev, midia_campanha: '' }))}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <label className="flex flex-col items-center justify-center gap-2 p-6 rounded-lg border-2 border-dashed cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-colors">
+                    {isUploadingMedia ? (
+                      <>
+                        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                        <span className="text-sm text-muted-foreground">Enviando imagem...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ImagePlus className="h-8 w-8 text-muted-foreground" />
+                        <span className="text-sm text-muted-foreground">Clique para enviar uma imagem</span>
+                        <span className="text-xs text-muted-foreground">PNG ou JPEG, máximo 5MB</span>
+                      </>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg"
+                      className="hidden"
+                      disabled={isUploadingMedia}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+
+                        if (!['image/png', 'image/jpeg'].includes(file.type)) {
+                          toast({ title: 'Tipo inválido', description: 'Aceitos: PNG e JPEG', variant: 'destructive' });
+                          return;
+                        }
+                        if (file.size > 5 * 1024 * 1024) {
+                          toast({ title: 'Arquivo muito grande', description: 'Máximo: 5MB', variant: 'destructive' });
+                          return;
+                        }
+
+                        setIsUploadingMedia(true);
+                        try {
+                          const result = await uploadCampaignMedia(file);
+                          setFormData(prev => ({ ...prev, midia_campanha: result.url }));
+                          toast({ title: 'Imagem enviada', description: result.filename });
+                        } catch (err: any) {
+                          toast({ title: 'Erro no upload', description: err.message || 'Tente novamente', variant: 'destructive' });
+                        } finally {
+                          setIsUploadingMedia(false);
+                          e.target.value = '';
+                        }
+                      }}
+                    />
+                  </label>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  A imagem será enviada junto com a mensagem via campo <code className="text-[11px] bg-muted px-1 py-0.5 rounded">midia_campanha</code> no disparo RCS/WPP.
+                </p>
+              </div>
             </CardContent>
           </>
         )}
