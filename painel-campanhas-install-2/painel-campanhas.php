@@ -2383,7 +2383,7 @@ class Painel_Campanhas
         $total_records = count($records);
         $distribution_mode = $providers_config['mode'] ?? 'split';
         $raw_providers = $providers_config['providers'] ?? [];
-        
+
         // Normaliza providers para garantir que são strings (nomes/IDs)
         // Isso evita o erro "Cannot access offset of type array on array" no PHP 8
         $providers = [];
@@ -2391,7 +2391,7 @@ class Painel_Campanhas
             if (is_array($p)) {
                 $providers[] = $p['id'] ?? $p['name'] ?? 'unknown';
             } else {
-                $providers[] = (string)$p;
+                $providers[] = (string) $p;
             }
         }
 
@@ -3291,7 +3291,9 @@ class Painel_Campanhas
                 'title' => $post->post_title,
                 'content' => $post->post_content,
                 'date' => $post->post_date,
-                'source' => 'local'
+                'source' => 'local',
+                'provider' => get_post_meta($post->ID, '_template_provider', true) ?: '',
+                'wallet_id' => get_post_meta($post->ID, '_template_wallet_id', true) ?: '',
             ];
         }, $messages);
 
@@ -3448,6 +3450,8 @@ class Painel_Campanhas
 
         $title = sanitize_text_field($_POST['title'] ?? '');
         $content = sanitize_textarea_field($_POST['content'] ?? '');
+        $provider = sanitize_text_field($_POST['provider'] ?? '');
+        $wallet_id = sanitize_text_field($_POST['wallet_id'] ?? '');
         $current_user_id = get_current_user_id();
 
         if (empty($title) || empty($content)) {
@@ -3468,6 +3472,14 @@ class Painel_Campanhas
             return;
         }
 
+        // Salva metadados de fornecedor e carteira
+        if (!empty($provider)) {
+            update_post_meta($post_id, '_template_provider', $provider);
+        }
+        if (!empty($wallet_id)) {
+            update_post_meta($post_id, '_template_wallet_id', $wallet_id);
+        }
+
         wp_send_json_success([
             'message' => 'Mensagem criada com sucesso!',
             'id' => $post_id
@@ -3481,6 +3493,8 @@ class Painel_Campanhas
         $message_id = intval($_POST['message_id'] ?? 0);
         $title = sanitize_text_field($_POST['title'] ?? '');
         $content = sanitize_textarea_field($_POST['content'] ?? '');
+        $provider = sanitize_text_field($_POST['provider'] ?? '');
+        $wallet_id = sanitize_text_field($_POST['wallet_id'] ?? '');
         $current_user_id = get_current_user_id();
 
         if ($message_id <= 0) {
@@ -3516,6 +3530,10 @@ class Painel_Campanhas
             wp_send_json_error('Erro ao atualizar mensagem: ' . $updated->get_error_message());
             return;
         }
+
+        // Atualiza metadados de fornecedor e carteira
+        update_post_meta($message_id, '_template_provider', $provider);
+        update_post_meta($message_id, '_template_wallet_id', $wallet_id);
 
         wp_send_json_success([
             'message' => 'Mensagem atualizada com sucesso!'
@@ -5633,6 +5651,101 @@ class Painel_Campanhas
             return new WP_Error('invalid_request', 'Body vazio', ['status' => 400]);
         }
 
+        // Bulk mode: { bulk: true, updates: [ ...payloads ] }
+        if (!empty($body['bulk']) && is_array($body['updates'] ?? null)) {
+            return $this->handle_webhook_bulk_update($body['updates']);
+        }
+
+        return $this->process_single_webhook_update($body);
+    }
+
+    private function handle_webhook_bulk_update(array $updates)
+    {
+        error_log('📦 [Webhook] Processando bulk update: ' . count($updates) . ' itens');
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'envios_pendentes';
+
+        $columns = $wpdb->get_col("SHOW COLUMNS FROM {$table}");
+        $has_resposta_api = in_array('resposta_api', $columns);
+
+        $results = [];
+        $total_updated = 0;
+        $total_errors = 0;
+
+        $status_map = [
+            'enviado' => 'enviado',
+            'erro_envio' => 'erro',
+            'erro_credenciais' => 'erro',
+            'erro_validacao' => 'erro',
+            'processando' => 'pendente',
+            'iniciado' => 'enviado',
+            'erro_inicio' => 'erro',
+            'mkc_executado' => 'enviado',
+            'mkc_erro' => 'erro',
+        ];
+
+        foreach ($updates as $item) {
+            $agendamento_id = sanitize_text_field($item['agendamento_id'] ?? '');
+            $status = sanitize_text_field($item['status'] ?? '');
+
+            if (empty($agendamento_id) || empty($status)) {
+                $total_errors++;
+                $results[] = ['agendamento_id' => $agendamento_id, 'ok' => false, 'reason' => 'missing_fields'];
+                continue;
+            }
+
+            $wp_status = $status_map[$status] ?? 'erro';
+            $data_disparo = sanitize_text_field($item['data_disparo'] ?? '');
+            $resposta_api = sanitize_textarea_field($item['resposta_api'] ?? '');
+
+            $update_data = ['status' => $wp_status];
+            $update_formats = ['%s'];
+
+            if (!empty($data_disparo)) {
+                $update_data['data_disparo'] = date('Y-m-d H:i:s', strtotime($data_disparo));
+                $update_formats[] = '%s';
+            }
+
+            if ($has_resposta_api && !empty($resposta_api)) {
+                $resposta_decoded = json_decode($resposta_api, true);
+                $update_data['resposta_api'] = (json_last_error() === JSON_ERROR_NONE)
+                    ? json_encode($resposta_decoded, JSON_UNESCAPED_UNICODE)
+                    : $resposta_api;
+                $update_formats[] = '%s';
+            }
+
+            $updated = $wpdb->update(
+                $table,
+                $update_data,
+                ['agendamento_id' => $agendamento_id],
+                $update_formats,
+                ['%s']
+            );
+
+            if ($updated === false) {
+                $total_errors++;
+                $results[] = ['agendamento_id' => $agendamento_id, 'ok' => false, 'reason' => $wpdb->last_error];
+            } else {
+                $total_updated += $updated;
+                $results[] = ['agendamento_id' => $agendamento_id, 'ok' => true, 'records' => $updated];
+            }
+        }
+
+        error_log("📦 [Webhook] Bulk concluído: {$total_updated} registros atualizados, {$total_errors} erros");
+
+        return rest_ensure_response([
+            'success' => $total_errors === 0,
+            'message' => "Bulk update: {$total_updated} registros atualizados, {$total_errors} erros",
+            'total_items' => count($updates),
+            'total_records_updated' => $total_updated,
+            'total_errors' => $total_errors,
+            'results' => $results,
+        ]);
+    }
+
+    private function process_single_webhook_update(array $body)
+    {
         $agendamento_id = sanitize_text_field($body['agendamento_id'] ?? '');
         $status = sanitize_text_field($body['status'] ?? '');
         $provider = sanitize_text_field($body['provider'] ?? '');
@@ -5650,7 +5763,6 @@ class Painel_Campanhas
             return new WP_Error('invalid_request', 'agendamento_id e status são obrigatórios', ['status' => 400]);
         }
 
-        // Mapeia status do microserviço para status do WordPress
         $status_map = [
             'enviado' => 'enviado',
             'erro_envio' => 'erro',
@@ -5668,44 +5780,29 @@ class Painel_Campanhas
         global $wpdb;
         $table = $wpdb->prefix . 'envios_pendentes';
 
-        // Prepara dados para atualização
-        $update_data = [];
-        $update_formats = [];
+        $update_data = ['status' => $wp_status];
+        $update_formats = ['%s'];
 
-        $update_data['status'] = $wp_status;
-        $update_formats[] = '%s';
-
-        // Adiciona data_disparo se fornecida
         if (!empty($data_disparo)) {
-            // Converte formato ISO para MySQL datetime
-            $data_disparo_mysql = date('Y-m-d H:i:s', strtotime($data_disparo));
-            $update_data['data_disparo'] = $data_disparo_mysql;
+            $update_data['data_disparo'] = date('Y-m-d H:i:s', strtotime($data_disparo));
             $update_formats[] = '%s';
         }
 
-        // Verifica se a coluna resposta_api existe antes de tentar atualizar
         $columns = $wpdb->get_col("SHOW COLUMNS FROM {$table}");
-        if (in_array('resposta_api', $columns)) {
-            // Adiciona resposta_api se fornecida (pode ser JSON string)
-            if (!empty($resposta_api)) {
-                // Tenta decodificar se for JSON
-                $resposta_decoded = json_decode($resposta_api, true);
-                if (json_last_error() === JSON_ERROR_NONE) {
-                    $update_data['resposta_api'] = json_encode($resposta_decoded, JSON_UNESCAPED_UNICODE);
-                } else {
-                    $update_data['resposta_api'] = $resposta_api;
-                }
-                $update_formats[] = '%s';
-            }
+        if (in_array('resposta_api', $columns) && !empty($resposta_api)) {
+            $resposta_decoded = json_decode($resposta_api, true);
+            $update_data['resposta_api'] = (json_last_error() === JSON_ERROR_NONE)
+                ? json_encode($resposta_decoded, JSON_UNESCAPED_UNICODE)
+                : $resposta_api;
+            $update_formats[] = '%s';
         }
 
-        // Atualiza todos os registros com o mesmo agendamento_id
         $updated = $wpdb->update(
             $table,
             $update_data,
             ['agendamento_id' => $agendamento_id],
             $update_formats,
-            ['%s'] // formato do where: agendamento_id
+            ['%s']
         );
 
         if ($updated === false) {

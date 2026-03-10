@@ -10,6 +10,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -29,7 +36,21 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { getMessages, createMessage, updateMessage, deleteMessage, getOtimaTemplates } from "@/lib/api";
+import { getMessages, createMessage, updateMessage, deleteMessage, getOtimaTemplates, getCarteiras } from "@/lib/api";
+
+const PROVIDER_OPTIONS = [
+  { id: "SALESFORCE", name: "Salesforce" },
+  { id: "OTIMA_RCS", name: "Ótima RCS" },
+  { id: "OTIMA_WPP", name: "Ótima WPP" },
+  { id: "GOSAC", name: "GOSAC" },
+  { id: "GOSAC_OFICIAL", name: "GOSAC Oficial" },
+  { id: "CDA", name: "CDA WPP" },
+  { id: "CDA_RCS", name: "CDA RCS" },
+  { id: "NOAH", name: "Noah" },
+  { id: "NOAH_OFICIAL", name: "Noah Oficial" },
+  { id: "TECH_IA", name: "Tech IA" },
+  { id: "RCS", name: "RCS" },
+];
 
 interface Template {
   id: string;
@@ -41,6 +62,7 @@ interface Template {
   provider?: string;
   templateCode?: string;
   walletName?: string;
+  walletId?: string;
   imageUrl?: string;
 }
 
@@ -50,7 +72,7 @@ export default function Mensagens() {
   const [search, setSearch] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
-  const [formData, setFormData] = useState({ name: "", content: "" });
+  const [formData, setFormData] = useState({ name: "", content: "", provider: "", wallet_id: "" });
 
   const { data: messages = [], isLoading: isLoadingMessages } = useQuery({
     queryKey: ['messages'],
@@ -60,13 +82,18 @@ export default function Mensagens() {
   const { data: otimaTemplates = [], isLoading: isLoadingOtima } = useQuery({
     queryKey: ['otima-templates'],
     queryFn: getOtimaTemplates,
-    staleTime: 5 * 60 * 1000, // Cache por 5 minutos
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: carteiras = [] } = useQuery({
+    queryKey: ['carteiras'],
+    queryFn: getCarteiras,
   });
 
   const isLoading = isLoadingMessages || isLoadingOtima;
 
   // Mapeia os dados da API para o formato esperado
-  const localTemplates: Template[] = messages.map((msg: any) => ({
+  const localTemplates: Template[] = (messages as any[]).map((msg: any) => ({
     id: String(msg.id),
     name: msg.title || '',
     content: msg.content || '',
@@ -74,6 +101,11 @@ export default function Mensagens() {
     usageCount: 0,
     source: msg.source || 'local',
     templateCode: msg.template_code || msg.template_id || '',
+    provider: msg.provider || '',
+    walletId: msg.wallet_id || '',
+    walletName: msg.wallet_id
+      ? (carteiras as any[]).find((c: any) => String(c.id_carteira) === String(msg.wallet_id) || String(c.id) === String(msg.wallet_id))?.nome || msg.wallet_id
+      : '',
   }));
 
   const externalTemplates: Template[] = Array.isArray(otimaTemplates) ? otimaTemplates.map((msg: any) => ({
@@ -98,12 +130,12 @@ export default function Mensagens() {
   );
 
   const createMutation = useMutation({
-    mutationFn: (data: { title: string; content: string }) => createMessage(data),
+    mutationFn: (data: { title: string; content: string; provider?: string; wallet_id?: string }) => createMessage(data),
     onSuccess: () => {
       toast({ title: "Template criado com sucesso!" });
       queryClient.invalidateQueries({ queryKey: ['messages'] });
       setIsOpen(false);
-      setFormData({ name: "", content: "" });
+      setFormData({ name: "", content: "", provider: "", wallet_id: "" });
       setEditingTemplate(null);
     },
     onError: (error: any) => {
@@ -116,13 +148,13 @@ export default function Mensagens() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: { title: string; content: string } }) =>
+    mutationFn: ({ id, data }: { id: string; data: { title: string; content: string; provider?: string; wallet_id?: string } }) =>
       updateMessage(id, data),
     onSuccess: () => {
       toast({ title: "Template atualizado com sucesso!" });
       queryClient.invalidateQueries({ queryKey: ['messages'] });
       setIsOpen(false);
-      setFormData({ name: "", content: "" });
+      setFormData({ name: "", content: "", provider: "", wallet_id: "" });
       setEditingTemplate(null);
     },
     onError: (error: any) => {
@@ -159,19 +191,28 @@ export default function Mensagens() {
       return;
     }
 
+    const payload = {
+      title: formData.name,
+      content: formData.content,
+      provider: formData.provider,
+      wallet_id: formData.wallet_id,
+    };
+
     if (editingTemplate) {
-      updateMutation.mutate({
-        id: editingTemplate.id,
-        data: { title: formData.name, content: formData.content },
-      });
+      updateMutation.mutate({ id: editingTemplate.id, data: payload });
     } else {
-      createMutation.mutate({ title: formData.name, content: formData.content });
+      createMutation.mutate(payload);
     }
   };
 
   const handleEdit = (template: Template) => {
     setEditingTemplate(template);
-    setFormData({ name: template.name, content: template.content });
+    setFormData({
+      name: template.name,
+      content: template.content,
+      provider: template.provider || "",
+      wallet_id: template.walletId || "",
+    });
     setIsOpen(true);
   };
 
@@ -181,8 +222,12 @@ export default function Mensagens() {
 
   const openNewDialog = () => {
     setEditingTemplate(null);
-    setFormData({ name: "", content: "" });
+    setFormData({ name: "", content: "", provider: "", wallet_id: "" });
     setIsOpen(true);
+  };
+
+  const getProviderLabel = (providerId: string) => {
+    return PROVIDER_OPTIONS.find(p => p.id === providerId)?.name || providerId;
   };
 
   return (
@@ -274,6 +319,12 @@ export default function Mensagens() {
                         )}
                         {(template.source === 'gosac_oficial' || template.provider === 'Gosac Oficial') && (
                           <Badge variant="outline" className="text-xs bg-orange-50 text-orange-700 border-orange-200">GOSAC</Badge>
+                        )}
+                        {/* Local template provider badge */}
+                        {template.source === 'local' && template.provider && (
+                          <Badge variant="outline" className="text-xs bg-indigo-50 text-indigo-700 border-indigo-200">
+                            {getProviderLabel(template.provider)}
+                          </Badge>
                         )}
                       </div>
 
@@ -380,6 +431,51 @@ export default function Mensagens() {
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               />
             </div>
+
+            {/* Provider */}
+            <div className="space-y-2">
+              <Label htmlFor="provider">
+                Fornecedor <span className="text-muted-foreground text-xs">(opcional — para filtro automático)</span>
+              </Label>
+              <Select
+                value={formData.provider}
+                onValueChange={(v) => setFormData({ ...formData, provider: v === "__none__" ? "" : v })}
+              >
+                <SelectTrigger id="provider">
+                  <SelectValue placeholder="Selecione o fornecedor..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Todos (sem restrição)</SelectItem>
+                  {PROVIDER_OPTIONS.map(p => (
+                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Wallet */}
+            <div className="space-y-2">
+              <Label htmlFor="wallet_id">
+                Carteira <span className="text-muted-foreground text-xs">(opcional — para filtro automático)</span>
+              </Label>
+              <Select
+                value={formData.wallet_id}
+                onValueChange={(v) => setFormData({ ...formData, wallet_id: v === "__none__" ? "" : v })}
+              >
+                <SelectTrigger id="wallet_id">
+                  <SelectValue placeholder="Selecione a carteira..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Todas (sem restrição)</SelectItem>
+                  {(carteiras as any[]).map((c: any) => (
+                    <SelectItem key={c.id} value={String(c.id_carteira || c.id)}>
+                      {c.nome || c.name || c.id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="content">Conteúdo da Mensagem</Label>
               <Textarea

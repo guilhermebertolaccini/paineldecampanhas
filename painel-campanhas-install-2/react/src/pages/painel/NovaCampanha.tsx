@@ -195,9 +195,9 @@ export default function NovaCampanha() {
       id: String(t.id),
       name: t.title || '',
       source: t.source || 'local',
-      provider: null,
+      provider: t.provider || null,       // e.g. 'SALESFORCE', 'OTIMA_RCS', etc.
+      walletId: t.wallet_id || null,       // id_carteira string
       templateCode: t.template_code || t.template_id || '',
-      walletId: null,
       walletName: null,
       imageUrl: null,
     }));
@@ -263,15 +263,55 @@ export default function NovaCampanha() {
     'TECH_IA': [],
   };
 
-  // Filter templates: always show local, show external only matching selected providers
+  // Filter templates by the chosen providers + wallet
+  // Rules:
+  //   External (otima_rcs, gosac_oficial …):
+  //     - No providers selected → show all
+  //     - Providers selected → show only whose source is in the union of their mapped sources
+  //       (if the selected providers map to zero sources, NO external templates are shown)
+  //   Local:
+  //     - No metadata (provider=null, walletId=null) → backward-compat, always show
+  //     - Has metadata → both provider AND wallet must match the campaign selections
   const filteredTemplates = useMemo(() => {
+    const noneSelected = formData.providers.length === 0;
     const selectedSources = formData.providers.flatMap(p => PROVIDER_TO_SOURCE_MAP[p] ?? []);
+
+    const selectedWallet = formData.carteira
+      ? (carteiras as any[]).find((c: any) => String(c.id) === String(formData.carteira))
+      : null;
+    const selectedWalletCode = selectedWallet?.id_carteira
+      ? String(selectedWallet.id_carteira)
+      : null;
+
     return templates.filter(t => {
-      if (t.source === 'local') return true; // local always shown
-      if (selectedSources.length === 0) return true; // no providers selected yet = show all
-      return selectedSources.includes(t.source);
+      // ── External templates ──────────────────────────────────────────────────
+      if (t.source !== 'local') {
+        if (noneSelected) return true;              // nothing chosen yet → show all
+        return selectedSources.includes(t.source); // strict source match (empty → hides all external)
+      }
+
+      // ── Local templates ──────────────────────────────────────────────────
+      const hasProviderMeta = !!t.provider;
+      const hasWalletMeta = !!t.walletId;
+
+      if (!hasProviderMeta && !hasWalletMeta) {
+        // No metadata → legacy template, show for all providers/wallets
+        return true;
+      }
+
+      // Provider must match (or no provider chosen yet = no restriction)
+      const providerMatch = !hasProviderMeta
+        || noneSelected
+        || formData.providers.includes(t.provider as string);
+
+      // Wallet must match (or no wallet chosen yet = no restriction)
+      const walletMatch = !hasWalletMeta
+        || !selectedWalletCode
+        || String(t.walletId) === selectedWalletCode;
+
+      return providerMatch && walletMatch;
     });
-  }, [templates, formData.providers]);
+  }, [templates, formData.providers, formData.carteira, carteiras]);
 
   const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading || otimaBrokersLoading;
 

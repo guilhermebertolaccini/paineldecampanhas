@@ -98,8 +98,9 @@ export default function CampanhaArquivo() {
       id: String(t.id),
       name: t.title || '',
       source: t.source || 'local',
+      provider: t.provider || null,
+      walletId: t.wallet_id || null,
       templateCode: t.template_code || t.template_id || '',
-      walletId: null,
       walletName: null,
     }));
 
@@ -121,26 +122,46 @@ export default function CampanhaArquivo() {
     console.log('📋 [CampanhaArquivo] Templates locais:', local.length);
     console.log('📋 [CampanhaArquivo] Templates Ótima:', otima.length);
 
-    // Se tiver carteira selecionada, filtra os templates Ótima pelo Código da Carteira (id_carteira)
-    if (carteira) {
-      const selectedWallet = carteiras.find((c: any) => String(c.id) === String(carteira));
-      const walletCode = selectedWallet?.id_carteira ? String(selectedWallet.id_carteira) : null;
+    const selectedWallet = carteira
+      ? (carteiras as any[]).find((c: any) => String(c.id) === String(carteira))
+      : null;
+    const walletCode = selectedWallet?.id_carteira ? String(selectedWallet.id_carteira) : null;
 
-      console.log('🔍 [CampanhaArquivo] Filtrando templates para Código da Carteira:', walletCode);
+    // Ótima templates only make sense for OTIMA_RCS / OTIMA_WPP providers.
+    // If a different provider is explicitly selected, hide them entirely.
+    const OTIMA_PROVIDERS = ['OTIMA_RCS', 'OTIMA_WPP'];
+    const otimaProviderSelected = !provider || OTIMA_PROVIDERS.includes(provider);
 
-      if (!walletCode) {
-        return local;
-      }
+    // Filter Ótima templates: must match provider type AND wallet
+    const otimaFiltrados = otimaProviderSelected
+      ? otima.filter(t => {
+        // Filter by wallet when one is selected
+        if (carteira && walletCode) {
+          return String(t.walletId) === walletCode || String(t.customerCode) === walletCode;
+        }
+        return true;
+      })
+      : [];
 
-      const otimaFiltrados = otima.filter(t => String(t.walletId) === walletCode || String(t.customerCode) === walletCode);
-      console.log('📋 [CampanhaArquivo] Templates Ótima filtrados:', otimaFiltrados.length);
+    console.log('📋 [CampanhaArquivo] Templates Ótima filtrados:', otimaFiltrados.length);
 
-      return [...local, ...otimaFiltrados];
-    }
+    // Filter local templates: show if no metadata (backward compat)
+    // else strict match on provider AND wallet
+    const noneSelected = !provider;
+    const localFiltrados = local.filter((t: any) => {
+      const hasProviderMeta = !!t.provider;
+      const hasWalletMeta = !!t.walletId;
 
-    // Se nenhuma carteira selecionada, mostra apenas locais
-    return local;
-  }, [localTemplatesData, otimaTemplatesData, carteira, carteiras]);
+      if (!hasProviderMeta && !hasWalletMeta) return true; // backward compat
+
+      const providerMatch = !hasProviderMeta || noneSelected || t.provider === provider;
+      const walletMatch = !hasWalletMeta || !walletCode || String(t.walletId) === walletCode;
+
+      return providerMatch && walletMatch;
+    });
+
+    return [...localFiltrados, ...otimaFiltrados];
+  }, [localTemplatesData, otimaTemplatesData, carteira, carteiras, provider]);
 
   const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || otimaBrokersLoading;
 

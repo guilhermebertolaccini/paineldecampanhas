@@ -33,12 +33,33 @@ interface RecurringCampaign {
   nome_campanha: string;
   tabela_origem: string;
   filtros_json?: string;
-  providers_config: string;
+  providers_config?: string;
   template_id: string;
-  ativo: boolean;
+  ativo: number | boolean | string;
   ultima_execucao?: string;
   totalRuns?: number;
 }
+
+const isActive = (value: unknown): boolean =>
+  value === true || value === 1 || value === '1';
+
+const parseProviderNames = (config?: string): string => {
+  if (!config) return '—';
+  try {
+    const parsed = JSON.parse(config);
+    if (Array.isArray(parsed?.providers)) {
+      return parsed.providers.map((p: any) => p.id || p.name || '?').join(', ') || '—';
+    }
+    if (typeof parsed === 'object' && parsed !== null) {
+      const mode = parsed.mode ? `${parsed.mode}` : '';
+      const ids = Object.keys(parsed).filter(k => k !== 'mode');
+      return [mode, ...ids].filter(Boolean).join(' · ') || '—';
+    }
+    return String(parsed) || '—';
+  } catch {
+    return String(config);
+  }
+};
 
 export default function CampanhasRecorrentes() {
   const { toast } = useToast();
@@ -117,7 +138,7 @@ export default function CampanhasRecorrentes() {
   });
 
   const handleToggleActive = (campaign: RecurringCampaign) => {
-    toggleMutation.mutate({ id: campaign.id, active: !campaign.ativo });
+    toggleMutation.mutate({ id: campaign.id, active: !isActive(campaign.ativo) });
   };
 
   const handleExecuteNow = (campaign: RecurringCampaign) => {
@@ -179,10 +200,10 @@ export default function CampanhasRecorrentes() {
                 <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
                   <div className="flex items-start gap-4">
                     <div
-                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${campaign.ativo ? "bg-success/10" : "bg-muted"
+                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${isActive(campaign.ativo) ? "bg-success/10" : "bg-muted"
                         }`}
                     >
-                      {campaign.ativo ? (
+                      {isActive(campaign.ativo) ? (
                         <CheckCircle className="h-6 w-6 text-success" />
                       ) : (
                         <Pause className="h-6 w-6 text-muted-foreground" />
@@ -193,13 +214,13 @@ export default function CampanhasRecorrentes() {
                       <CardDescription className="flex flex-wrap items-center gap-2 mt-1">
                         <Badge variant="secondary">{campaign.tabela_origem}</Badge>
                         <span>•</span>
-                        <span>{JSON.parse(campaign.providers_config || '{}')}</span>
+                        <span>{parseProviderNames(campaign.providers_config)}</span>
                       </CardDescription>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
                     <Switch
-                      checked={campaign.ativo}
+                      checked={isActive(campaign.ativo)}
                       onCheckedChange={() => handleToggleActive(campaign)}
                       disabled={toggleMutation.isPending}
                     />
@@ -207,7 +228,7 @@ export default function CampanhasRecorrentes() {
                       variant="secondary"
                       size="sm"
                       onClick={() => estimateMutation.mutate(campaign.id)}
-                      disabled={!campaign.ativo || estimateMutation.isPending}
+                      disabled={!isActive(campaign.ativo) || estimateMutation.isPending}
                     >
                       {estimateMutation.isPending && estimateMutation.variables === campaign.id ? (
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -220,7 +241,7 @@ export default function CampanhasRecorrentes() {
                       variant="default"
                       size="sm"
                       onClick={() => handleExecuteNow(campaign)}
-                      disabled={!campaign.ativo || executeMutation.isPending}
+                      disabled={!isActive(campaign.ativo) || executeMutation.isPending}
                     >
                       {executeMutation.isPending && executeMutation.variables === campaign.id ? (
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -276,8 +297,8 @@ export default function CampanhasRecorrentes() {
                   </div>
                   <div className="rounded-lg bg-muted/50 p-3">
                     <p className="text-xs text-muted-foreground mb-1">Status</p>
-                    <Badge variant={campaign.ativo ? "default" : "secondary"}>
-                      {campaign.ativo ? "Ativa" : "Inativa"}
+                    <Badge variant={isActive(campaign.ativo) ? "default" : "secondary"}>
+                      {isActive(campaign.ativo) ? "Ativa" : "Inativa"}
                     </Badge>
                   </div>
                   {estimates[campaign.id] && (
