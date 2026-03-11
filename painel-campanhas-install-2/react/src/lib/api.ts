@@ -97,7 +97,11 @@ export const wpAjax = async (action: string, data: Record<string, any> = {}, non
     }
 
     if (!result.success) {
-      throw new Error(result.data?.message || result.data || 'Erro na requisição');
+      const err = result.data;
+      const msg = typeof err === 'string'
+        ? err
+        : (err?.message ?? err?.error ?? (typeof err === 'object' ? JSON.stringify(err) : String(err)));
+      throw new Error(msg || 'Erro na requisição');
     }
 
     // Garante que retorna array se for pc_get_bases_carteira
@@ -655,6 +659,7 @@ export interface SalesforceTrackingRecord {
   name: string;
   cpf_cnpj__c: string;
   status: string;
+  TemplateName?: string;
   trackingtype: string;
   sendtype: string;
   channeltype: string;

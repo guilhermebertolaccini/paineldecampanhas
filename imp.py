@@ -39,7 +39,7 @@ KEEP_TIME = True  # True = dd/mm/aaaa HH:MM(:SS), False = dd/mm/aaaa
 # ONDE SALVAR O CSV
 # ============================================
 OUTPUT_PATH = Path(
-    r"\\10.103.2.243\adm$\MIS\MIS\Lucas Cavaguti\Automacao\SolAgora\SALES_MESSAGING_EXPORT.csv"
+    r"C:\Users\Daniel\Documents\sales\SALES_MESSAGING_EXPORT.csv"
 )
 CHECKPOINT_PATH = OUTPUT_PATH.with_suffix(".checkpoint.txt")
 

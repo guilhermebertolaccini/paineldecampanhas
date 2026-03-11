@@ -216,6 +216,21 @@ ob_start();
                                 value="<?php echo esc_attr($static_credentials['mkc_api_url'] ?? 'https://mchdb47kwgw19dh5mmnsw0fvhv2m.rest.marketingcloudapis.com/automation/v1/automations'); ?>"
                                 class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
                         </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Account ID <span class="text-red-500">*</span></label>
+                            <input type="text" name="mkc_account_id"
+                                value="<?php echo esc_attr($static_credentials['mkc_account_id'] ?? ''); ?>"
+                                placeholder="ID da conta Marketing Cloud (obrigatório para importação)"
+                                class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Data Extension Key</label>
+                            <input type="text" name="mkc_de_key"
+                                value="<?php echo esc_attr($static_credentials['mkc_de_key'] ?? 'Tracking_WhatsApp_Importado_FINAL'); ?>"
+                                placeholder="Customer Key da Data Extension (ex: Tracking_WhatsApp_Importado_FINAL)"
+                                class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Customer Key da DE no Marketing Cloud. Em 404, verifique se existe na sua instância.</p>
+                        </div>
                     </div>
                 </div>
 

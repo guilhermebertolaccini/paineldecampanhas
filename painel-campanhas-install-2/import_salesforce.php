@@ -68,6 +68,7 @@ $sql = "CREATE TABLE IF NOT EXISTS {$table_name} (
     operacao__c varchar(100),
     cpf_cnpj__c varchar(50),
     name varchar(255),
+    TemplateName varchar(255),
     criado_em datetime DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY  (id),
     UNIQUE KEY uniqueid_hash (uniqueid_hash)
@@ -230,7 +231,7 @@ while (true) {
     echo "[SF_IMPORT] Processing page $page ($batch_size records)...\n";
 
     // Prepare batch insert
-    $query = "INSERT INTO {$table_name} (uniqueid, uniqueid_hash, trackingtype, sendtype, mid, eid, contactkey, mobilenumber, eventdateutc, appid, channelid, channeltype, conversationtype, activityname, channelname, status, reason, jbdefinitionid, sendidentifier, assetid, messagetypeid, operacao__c, cpf_cnpj__c, name) VALUES ";
+    $query = "INSERT INTO {$table_name} (uniqueid, uniqueid_hash, trackingtype, sendtype, mid, eid, contactkey, mobilenumber, eventdateutc, appid, channelid, channeltype, conversationtype, activityname, channelname, status, reason, jbdefinitionid, sendidentifier, assetid, messagetypeid, operacao__c, cpf_cnpj__c, name, TemplateName) VALUES ";
     $values = [];
     $placeholders = [];
 
@@ -251,7 +252,7 @@ while (true) {
             $eventdateutc = normalize_date($row['eventdateu']);
         }
 
-        $placeholders[] = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)";
+        $placeholders[] = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)";
         $values[] = $uniqueid;
         $values[] = $uniqueid_hash;
         $values[] = isset($row['trackingtype']) ? $row['trackingtype'] : '';
@@ -276,6 +277,7 @@ while (true) {
         $values[] = isset($row['operacao__c']) ? $row['operacao__c'] : '';
         $values[] = isset($row['cpf_cnpj__c']) ? $row['cpf_cnpj__c'] : '';
         $values[] = isset($row['name']) ? $row['name'] : '';
+        $values[] = isset($row['TemplateName']) ? $row['TemplateName'] : (isset($row['templatename']) ? $row['templatename'] : '');
     }
 
     if (!empty($placeholders)) {
@@ -302,7 +304,8 @@ while (true) {
             messagetypeid = VALUES(messagetypeid),
             operacao__c = VALUES(operacao__c),
             cpf_cnpj__c = VALUES(cpf_cnpj__c),
-            name = VALUES(name)
+            name = VALUES(name),
+            TemplateName = VALUES(TemplateName)
         ";
 
         $prepared = $wpdb->prepare($query, $values);

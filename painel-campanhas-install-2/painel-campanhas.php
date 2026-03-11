@@ -661,6 +661,7 @@ class Painel_Campanhas
             operacao__c varchar(100),
             cpf_cnpj__c varchar(50),
             name varchar(255),
+            TemplateName varchar(255),
             criado_em datetime DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY  (id),
             UNIQUE KEY uniqueid_hash (uniqueid_hash)
@@ -2292,6 +2293,8 @@ class Painel_Campanhas
             $template_id = intval($_POST['template_id'] ?? 0);
             $template_code = sanitize_text_field($_POST['template_code'] ?? '');
             $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
+            $broker_code = sanitize_text_field($_POST['broker_code'] ?? '');
+            $customer_code = sanitize_text_field($_POST['customer_code'] ?? '');
             $filters_json = stripslashes($_POST['filters'] ?? '[]');
             $filters = json_decode($filters_json, true);
             $providers_config_json = stripslashes($_POST['providers_config'] ?? '{}');
@@ -2410,9 +2413,12 @@ class Painel_Campanhas
                     // Para templates da Ótima, armazena template_code no campo mensagem
                     $mensagem_para_armazenar = $mensagem_final;
                     if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code)) {
+                        // broker_code = do template; customer_code = id_carteira do contato
                         $mensagem_para_armazenar = json_encode([
                             'template_code' => $template_code,
                             'template_source' => $template_source,
+                            'broker_code' => $broker_code,
+                            'customer_code' => (string) $id_carteira,
                             'original_message' => $mensagem_final,
                             'variables_map' => $variables_map
                         ]);
@@ -2619,6 +2625,8 @@ class Painel_Campanhas
         $template_id = intval($_POST['template_id'] ?? 0);
         $template_code = sanitize_text_field($_POST['template_code'] ?? '');
         $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
+        $broker_code = sanitize_text_field($_POST['broker_code'] ?? '');
+        $customer_code = sanitize_text_field($_POST['customer_code'] ?? '');
         $record_limit = intval($_POST['record_limit'] ?? 0);
         $exclude_recent_phones = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
         $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
@@ -2675,6 +2683,9 @@ class Painel_Campanhas
                 ADD COLUMN include_baits tinyint(1) DEFAULT 0 AFTER throttling_config;
             ");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM `$table` LIKE 'broker_code'"))) {
+            $wpdb->query("ALTER TABLE `$table` ADD COLUMN broker_code varchar(100) DEFAULT '' AFTER template_source, ADD COLUMN customer_code varchar(100) DEFAULT '' AFTER broker_code");
+        }
 
         // Adiciona exclusão ao config
         $config_array = json_decode($providers_config_json, true);
@@ -2695,6 +2706,8 @@ class Painel_Campanhas
                 'template_id' => $template_id,
                 'template_code' => $template_code,
                 'template_source' => $template_source,
+                'broker_code' => $broker_code,
+                'customer_code' => $customer_code,
                 'record_limit' => $record_limit,
                 'throttling_type' => $throttling_type,
                 'throttling_config' => $throttling_config_json,
@@ -2702,8 +2715,7 @@ class Painel_Campanhas
                 'ativo' => 1,
                 'criado_por' => get_current_user_id()
             ],
-            // nome, tabela, filtros, prov_config, temp_id, temp_code, temp_source, limit, thrott_type, thrott_conf, baits, ativo, autor
-            ['%s', '%s', '%s', '%s', '%d', '%s', '%s', '%d', '%s', '%s', '%d', '%d', '%d']
+            ['%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%d', '%d', '%d']
         );
 
         if ($result === false) {
@@ -2918,12 +2930,12 @@ class Painel_Campanhas
                 // Para templates da Ótima, armazena template_code no campo mensagem
                 $mensagem_para_armazenar = $mensagem_final;
                 if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code)) {
-                    // Armazena JSON com template_code, broker_code, customer_code e informações necessárias
+                    // broker_code = do template selecionado (POST); customer_code = id_carteira do contato
                     $mensagem_para_armazenar = json_encode([
                         'template_code' => $template_code,
                         'template_source' => $template_source,
                         'broker_code' => $broker_code,
-                        'customer_code' => $customer_code,
+                        'customer_code' => (string) $id_carteira,
                         'original_message' => $mensagem_final
                     ]);
                 }
@@ -4844,6 +4856,8 @@ class Painel_Campanhas
 
                 $template_source = $campaign['template_source'] ?? 'local';
                 $template_code = $campaign['template_code'] ?? '';
+                $broker_code = $campaign['broker_code'] ?? '';
+                $customer_code = $campaign['customer_code'] ?? '';
                 $generated_campaign_ids = [];
 
                 foreach ($provider_records as $record) {
@@ -4871,9 +4885,12 @@ class Painel_Campanhas
                     // Para templates da Ótima, armazena template_code no campo mensagem
                     $mensagem_para_armazenar = $mensagem_final;
                     if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code)) {
+                        // broker_code = da campanha; customer_code = id_carteira do contato
                         $mensagem_para_armazenar = json_encode([
                             'template_code' => $template_code,
                             'template_source' => $template_source,
+                            'broker_code' => $broker_code,
+                            'customer_code' => (string) $id_carteira,
                             'original_message' => $mensagem_final
                         ]);
                     }
@@ -5332,8 +5349,8 @@ class Painel_Campanhas
             ) {
                 $payload['otima_rcs_credentials'] = [
                     'token' => $static_credentials['otima_rcs_token'] ?? '',
-                    'broker_code' => '', // Será sobrescrito pelo JSON da mensagem abaixo
-                    'customer_code' => '', // Será sobrescrito pelo JSON da mensagem abaixo
+                    'broker_code' => '', // Vem do JSON da mensagem (template selecionado)
+                    'customer_code' => '', // Vem do JSON da mensagem (id_carteira do contato)
                     'api_url' => 'https://services.otima.digital/v1/rcs',
                 ];
                 error_log('🔵 [Aprovar Campanha] Credenciais do Ótima RCS incluídas no payload');
@@ -5685,12 +5702,15 @@ class Painel_Campanhas
                     );
                 }
 
+                // broker_code e customer_code vêm do JSON da mensagem (template + id_carteira)
                 $credentials = [
                     'token' => $token,
                     'api_url' => 'https://services.otima.digital/v1/rcs',
+                    'broker_code' => '',
+                    'customer_code' => '',
                 ];
 
-                error_log('✅ [REST API] Credenciais Ótima RCS retornadas com sucesso');
+                error_log('✅ [REST API] Credenciais Ótima RCS retornadas (broker/customer vêm do JSON da mensagem)');
             } elseif ($provider === 'GOSAC_OFICIAL') {
                 global $wpdb;
                 $carteiras_table = $wpdb->prefix . 'pc_carteiras_v2';
@@ -7147,8 +7167,8 @@ class Painel_Campanhas
 
         if (!empty($search)) {
             $like = '%' . $wpdb->esc_like($search) . '%';
-            $where_clauses[] = '(mobilenumber LIKE %s OR uniqueid LIKE %s OR contactkey LIKE %s OR name LIKE %s OR cpf_cnpj__c LIKE %s)';
-            $where_values = array_merge($where_values, [$like, $like, $like, $like, $like]);
+            $where_clauses[] = '(mobilenumber LIKE %s OR uniqueid LIKE %s OR contactkey LIKE %s OR name LIKE %s OR cpf_cnpj__c LIKE %s OR TemplateName LIKE %s)';
+            $where_values = array_merge($where_values, [$like, $like, $like, $like, $like, $like]);
         }
 
         if (!empty($status_filter)) {
@@ -7178,7 +7198,7 @@ class Painel_Campanhas
         // Paginated data
         $data_query = "SELECT id, mobilenumber, name, cpf_cnpj__c, status, trackingtype, 
                               sendtype, channeltype, activityname, channelname, reason,
-                              eventdateutc, criado_em, contactkey, operacao__c
+                              eventdateutc, criado_em, contactkey, operacao__c, TemplateName
                        FROM {$table} WHERE {$where_sql}
                        ORDER BY eventdateutc DESC
                        LIMIT %d OFFSET %d";
@@ -7239,8 +7259,8 @@ class Painel_Campanhas
 
         if (!empty($search)) {
             $like = '%' . $wpdb->esc_like($search) . '%';
-            $where_clauses[] = '(mobilenumber LIKE %s OR uniqueid LIKE %s OR contactkey LIKE %s OR name LIKE %s OR cpf_cnpj__c LIKE %s)';
-            $where_values = array_merge($where_values, [$like, $like, $like, $like, $like]);
+            $where_clauses[] = '(mobilenumber LIKE %s OR uniqueid LIKE %s OR contactkey LIKE %s OR name LIKE %s OR cpf_cnpj__c LIKE %s OR TemplateName LIKE %s)';
+            $where_values = array_merge($where_values, [$like, $like, $like, $like, $like, $like]);
         }
 
         if (!empty($status_filter)) {
@@ -7262,7 +7282,7 @@ class Painel_Campanhas
 
         $data_query = "SELECT id, mobilenumber, name, cpf_cnpj__c, status, trackingtype,
                               sendtype, channeltype, activityname, channelname, reason,
-                              eventdateutc, criado_em, contactkey, operacao__c
+                              eventdateutc, criado_em, contactkey, operacao__c, TemplateName
                        FROM {$table} WHERE {$where_sql}
                        ORDER BY eventdateutc DESC LIMIT %d";
 
@@ -7335,8 +7355,8 @@ class Painel_Campanhas
 
             if (!empty($search)) {
                 $like = '%' . $wpdb->esc_like($search) . '%';
-                $where_clauses[] = '(mobilenumber LIKE %s OR uniqueid LIKE %s OR contactkey LIKE %s OR name LIKE %s OR cpf_cnpj__c LIKE %s)';
-                $where_values = array_merge($where_values, [$like, $like, $like, $like, $like]);
+                $where_clauses[] = '(mobilenumber LIKE %s OR uniqueid LIKE %s OR contactkey LIKE %s OR name LIKE %s OR cpf_cnpj__c LIKE %s OR TemplateName LIKE %s)';
+                $where_values = array_merge($where_values, [$like, $like, $like, $like, $like, $like]);
             }
             if (!empty($status_filter)) {
                 $where_clauses[] = 'status = %s';
@@ -7355,7 +7375,7 @@ class Painel_Campanhas
 
             $data_query = "SELECT id, mobilenumber, name, cpf_cnpj__c, status, trackingtype,
                                   sendtype, channeltype, activityname, channelname, reason,
-                                  eventdateutc, criado_em, contactkey, operacao__c
+                                  eventdateutc, criado_em, contactkey, operacao__c, TemplateName
                            FROM {$table} WHERE {$where_sql}
                            ORDER BY eventdateutc DESC LIMIT %d";
 
@@ -9353,16 +9373,42 @@ class Painel_Campanhas
 
             // ── Config (loaded from wp_options — never hardcode secrets) ────────
             $mkc_creds = get_option('acm_static_credentials', []);
-            $sf_auth_url  = trim($mkc_creds['mkc_auth_url']  ?? '');
-            $sf_rest_url  = trim($mkc_creds['mkc_rest_url']  ?? '');
             $sf_client_id     = trim($mkc_creds['mkc_client_id']     ?? '');
             $sf_client_secret = trim($mkc_creds['mkc_client_secret'] ?? '');
             $sf_account_id    = trim($mkc_creds['mkc_account_id']    ?? '');
             $sf_de_key        = trim($mkc_creds['mkc_de_key']        ?? 'Tracking_WhatsApp_Importado_FINAL');
 
-            if (empty($sf_auth_url) || empty($sf_client_id) || empty($sf_client_secret) || empty($sf_account_id)) {
+            // mkc_auth_url ou fallback: derivar de mkc_token_url (ex: .../v2/token -> base)
+            $sf_auth_url = trim($mkc_creds['mkc_auth_url'] ?? '');
+            if (empty($sf_auth_url) && !empty($mkc_creds['mkc_token_url'])) {
+                $tok = trim($mkc_creds['mkc_token_url']);
+                $sf_auth_url = preg_replace('#/v2/token/?$#i', '', $tok);
+            }
+
+            // mkc_rest_url ou fallback: derivar de mkc_api_url (scheme + host)
+            $sf_rest_url = trim($mkc_creds['mkc_rest_url'] ?? '');
+            if (empty($sf_rest_url) && !empty($mkc_creds['mkc_api_url'])) {
+                $parsed = wp_parse_url(trim($mkc_creds['mkc_api_url']));
+                if (!empty($parsed['host'])) {
+                    $sf_rest_url = ($parsed['scheme'] ?? 'https') . '://' . $parsed['host'];
+                }
+            }
+
+            if (empty($sf_auth_url) || empty($sf_client_id) || empty($sf_client_secret)) {
                 wp_send_json_error([
-                    'error' => 'Credenciais da Salesforce Marketing Cloud não configuradas. Acesse API Manager > Credenciais Estáticas para configurar mkc_auth_url, mkc_client_id, mkc_client_secret e mkc_account_id.',
+                    'error' => 'Credenciais da Salesforce Marketing Cloud incompletas. Configure: Token URL (ou Auth URL), Client ID e Client Secret em API Manager > Credenciais Estáticas.',
+                ]);
+                return;
+            }
+            if (empty($sf_account_id)) {
+                wp_send_json_error([
+                    'error' => 'Account ID da Salesforce Marketing Cloud não configurado. Adicione mkc_account_id em API Manager > Credenciais Estáticas (Marketing Cloud).',
+                ]);
+                return;
+            }
+            if (empty($sf_rest_url)) {
+                wp_send_json_error([
+                    'error' => 'API Base URL da Salesforce Marketing Cloud não configurada. Configure mkc_api_url ou mkc_rest_url em Credenciais Estáticas.',
                 ]);
                 return;
             }
@@ -9408,12 +9454,17 @@ class Painel_Campanhas
                 operacao__c varchar(100) DEFAULT '',
                 cpf_cnpj__c varchar(50) DEFAULT '',
                 name varchar(255) DEFAULT '',
+                TemplateName varchar(255) DEFAULT '',
                 criado_em datetime DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (id),
                 UNIQUE KEY uniqueid_hash (uniqueid_hash)
             ) {$charset_collate};";
 
             $wpdb->query($sql_create);
+
+            if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table_name} LIKE 'TemplateName'"))) {
+                $wpdb->query("ALTER TABLE {$table_name} ADD COLUMN TemplateName varchar(255) DEFAULT ''");
+            }
 
             error_log('Salesforce Import Step 4: Requesting OAuth2 Token... URL: ' . $sf_auth_url . '/v2/token');
             // ── OAuth2 Token ────────────────────────────────────────────────────
@@ -9547,8 +9598,8 @@ class Painel_Campanhas
                                 (uniqueid, uniqueid_hash, trackingtype, sendtype, mid, eid, contactkey, mobilenumber,
                                  eventdateutc, appid, channelid, channeltype, conversationtype, activityname,
                                  channelname, status, reason, jbdefinitionid, sendidentifier, assetid,
-                                 messagetypeid, operacao__c, cpf_cnpj__c, name)
-                             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                 messagetypeid, operacao__c, cpf_cnpj__c, name, TemplateName)
+                             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                              ON DUPLICATE KEY UPDATE
                                  trackingtype=VALUES(trackingtype), sendtype=VALUES(sendtype),
                                  mid=VALUES(mid), eid=VALUES(eid), contactkey=VALUES(contactkey),
@@ -9560,7 +9611,7 @@ class Painel_Campanhas
                                  jbdefinitionid=VALUES(jbdefinitionid), sendidentifier=VALUES(sendidentifier),
                                  assetid=VALUES(assetid), messagetypeid=VALUES(messagetypeid),
                                  operacao__c=VALUES(operacao__c), cpf_cnpj__c=VALUES(cpf_cnpj__c),
-                                 name=VALUES(name)",
+                                 name=VALUES(name), TemplateName=VALUES(TemplateName)",
                         array(
                             $uniqueid,
                             $uniqueid_hash,
@@ -9585,7 +9636,8 @@ class Painel_Campanhas
                             isset($row['messagetypeid']) ? (string) $row['messagetypeid'] : '',
                             isset($row['operacao__c']) ? (string) $row['operacao__c'] : '',
                             isset($row['cpf_cnpj__c']) ? (string) $row['cpf_cnpj__c'] : '',
-                            isset($row['name']) ? (string) $row['name'] : ''
+                            isset($row['name']) ? (string) $row['name'] : '',
+                            isset($row['TemplateName']) ? (string) $row['TemplateName'] : (isset($row['templatename']) ? (string) $row['templatename'] : '')
                         )
                     );
 

@@ -50,7 +50,6 @@ export class RcsOtimaProvider extends BaseProvider {
 
     const token = credentials.token || credentials.authorization;
     let broker_code = credentials.broker_code || '';
-    let customer_code = credentials.customer_code || '';
     let template_code = credentials.template_code || '';
 
     // Parse variables_map from campaign JSON (set by the frontend variable mapper)
@@ -62,10 +61,6 @@ export class RcsOtimaProvider extends BaseProvider {
           if (parsed.broker_code) {
             broker_code = parsed.broker_code;
             this.logger.log(`🏢 [RCS Ótima] broker_code extraído da campanha: ${broker_code}`);
-          }
-          if (parsed.customer_code) {
-            customer_code = parsed.customer_code;
-            this.logger.log(`👤 [RCS Ótima] customer_code extraído da campanha: ${customer_code}`);
           }
           if (parsed.template_code) {
             template_code = parsed.template_code;
@@ -81,95 +76,117 @@ export class RcsOtimaProvider extends BaseProvider {
       }
     }
 
-    // Formata mensagens para o formato da API Ótima
-    const messages: RCSTemplateMessage[] = data.map((item) => {
-      const phone = this.normalizePhoneNumber(item.telefone);
-
-      // Resolve variables dynamically from the variables_map
-      const resolvedVariables: Record<string, string> = {};
-      if (variables_map) {
-        for (const [varName, mapping] of Object.entries(variables_map)) {
-          const hyphenatedVarName = `-${varName}-`;
-          if (mapping.type === 'field') {
-            resolvedVariables[hyphenatedVarName] = (item as any)[mapping.value] ?? '';
-          } else {
-            resolvedVariables[hyphenatedVarName] = mapping.value ?? '';
-          }
+    // customer_code = id_carteira de cada contato. API aceita um customer_code por requisição.
+    // Agrupa mensagens por id_carteira (customer_code) para fazer uma requisição por carteira.
+    const groups = new Map<string, CampaignData[]>();
+    for (const item of data) {
+      let customer_code = '';
+      if (item.mensagem && typeof item.mensagem === 'string' && item.mensagem.trim().startsWith('{')) {
+        try {
+          const parsed = JSON.parse(item.mensagem);
+          customer_code = String(parsed.customer_code ?? '').trim();
+        } catch {
+          // ignore
         }
-      } else {
-        // Legacy fallback: map nome -> -var1- (backward-compatible)
-        resolvedVariables['-var1-'] = item.nome ?? '';
+      }
+      if (!customer_code && item.id_carteira) {
+        customer_code = String(item.id_carteira).trim();
+      }
+      const key = customer_code || '__default__';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(item);
+    }
+
+    let lastResult: any = null;
+    for (const [custKey, groupData] of groups) {
+      const customer_code = custKey === '__default__' ? '' : custKey;
+      if (!customer_code) {
+        this.logger.warn(`⚠️ [RCS Ótima] Mensagens sem id_carteira/customer_code serão ignoradas: ${groupData.length}`);
+        continue;
       }
 
-      this.logger.debug(`📋 [RCS Ótima] Variables for ${phone}: ${JSON.stringify(resolvedVariables)}`);
+      const messages: RCSTemplateMessage[] = groupData.map((item) => {
+        const phone = this.normalizePhoneNumber(item.telefone);
+        const resolvedVariables: Record<string, string> = {};
+        if (variables_map) {
+          for (const [varName, mapping] of Object.entries(variables_map)) {
+            const hyphenatedVarName = `-${varName}-`;
+            if (mapping.type === 'field') {
+              resolvedVariables[hyphenatedVarName] = (item as any)[mapping.value] ?? '';
+            } else {
+              resolvedVariables[hyphenatedVarName] = mapping.value ?? '';
+            }
+          }
+        } else {
+          resolvedVariables['-var1-'] = item.nome ?? '';
+        }
 
-      const message: RCSTemplateMessage = {
-        phone: phone,
-        document: item.cpf_cnpj?.replace(/\D/g, ''), // Remove caracteres não numéricos
-        extra_fields: {
-          nome: item.nome,
-          id_carteira: item.idgis_ambiente,
-          idcob_contrato: item.idcob_contrato,
-        },
-        variables: resolvedVariables,
+        const idCarteira = item.id_carteira ?? item.idgis_ambiente ?? '';
+        const message: RCSTemplateMessage = {
+          phone,
+          document: item.cpf_cnpj?.replace(/\D/g, ''),
+          extra_fields: {
+            nome: item.nome,
+            id_carteira: idCarteira,
+            idcob_contrato: item.idcob_contrato,
+          },
+          variables: resolvedVariables,
+        };
+        if (item.data_cadastro) message.date = item.data_cadastro;
+        return message;
+      });
+
+      const payload: RCSOtimaPayload = {
+        broker_code,
+        customer_code,
+        template_code,
+        messages,
       };
 
-      // Adiciona data de agendamento se fornecida
-      if (item.data_cadastro) {
-        message.date = item.data_cadastro;
-      }
+      this.logger.log(`🔖 [RCS Ótima] template_code: ${template_code}`);
+      this.logger.log(`📦 [RCS Ótima] Enviando ${messages.length} mensagens (customer_code=${customer_code})`);
+      this.logger.log(`🏢 [RCS Ótima] Broker: ${broker_code}, Customer: ${customer_code}`);
+      this.logger.debug(`📋 [RCS Ótima] Payload: ${JSON.stringify(payload, null, 2)}`);
 
-      return message;
-    });
+      lastResult = await this.executeWithRetry(
+        async () => {
+          this.logger.log(`🌐 [RCS Ótima] Enviando requisição para ${this.API_URL}`);
+          this.logger.log(`🔑 [RCS Ótima] Token: ${token ? token.substring(0, 10) + '...' : 'N/A'}`);
 
-    const payload: RCSOtimaPayload = {
-      broker_code,
-      customer_code,
-      template_code,
-      messages,
-    };
-
-    this.logger.log(`🔖 [RCS Ótima] template_code: ${template_code}`);
-
-    this.logger.log(`📦 [RCS Ótima] Payload preparado com ${messages.length} mensagens`);
-    this.logger.log(`🏢 [RCS Ótima] Broker: ${broker_code}, Customer: ${customer_code}`);
-    this.logger.debug(`📋 [RCS Ótima] Payload: ${JSON.stringify(payload, null, 2)}`);
-
-    // Executa requisição com retry
-    const result = await this.executeWithRetry(
-      async () => {
-        this.logger.log(`🌐 [RCS Ótima] Enviando requisição para ${this.API_URL}`);
-        this.logger.log(`🔑 [RCS Ótima] Token: ${token ? token.substring(0, 10) + '...' : 'N/A'}`);
-
-        const response = await this.httpService.axiosRef.post(
-          this.API_URL,
-          payload,
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'authorization': token,
+          const response = await this.httpService.axiosRef.post(
+            this.API_URL,
+            payload,
+            {
+              headers: {
+                'Content-Type': 'application/json',
+                'authorization': token,
+              },
+              timeout: 60000, // 60 segundos
             },
-            timeout: 60000, // 60 segundos
-          },
-        );
+          );
 
-        this.logger.log(`✅ [RCS Ótima] Resposta recebida: ${response.status} ${response.statusText}`);
-        this.logger.debug(`📄 [RCS Ótima] Response body: ${JSON.stringify(response.data)}`);
+          this.logger.log(`✅ [RCS Ótima] Resposta recebida: ${response.status} ${response.statusText}`);
+          this.logger.debug(`📄 [RCS Ótima] Response body: ${JSON.stringify(response.data)}`);
 
-        return {
-          success: true,
-          message: 'Mensagens RCS Ótima enviadas com sucesso',
-          data: {
-            status: response.status,
-            statusText: response.statusText,
-            body: response.data,
-          },
-        };
-      },
-      this.getRetryStrategy(),
-    );
+          return {
+            success: true,
+            message: 'Mensagens RCS Ótima enviadas com sucesso',
+            data: {
+              status: response.status,
+              statusText: response.statusText,
+              body: response.data,
+            },
+          };
+        },
+        this.getRetryStrategy(),
+      );
 
-    return result;
+    }
+
+    if (!lastResult) {
+      throw new Error('Nenhuma mensagem com id_carteira (customer_code) para envio. Verifique se os contatos têm carteira vinculada.');
+    }
+    return lastResult;
   }
 
   validateCredentials(credentials: ProviderCredentials): boolean {

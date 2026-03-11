@@ -301,6 +301,7 @@ export default function TrackingSalesforce() {
                   <TableHead>CPF/CNPJ</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Tipo Tracking</TableHead>
+                  <TableHead>Template</TableHead>
                   <TableHead>Atividade</TableHead>
                   <TableHead>Canal</TableHead>
                   <TableHead>Operação</TableHead>
@@ -313,14 +314,14 @@ export default function TrackingSalesforce() {
                 {isLoading ? (
                   Array.from({ length: 10 }).map((_, i) => (
                     <TableRow key={i}>
-                      {Array.from({ length: 12 }).map((_, j) => (
+                      {Array.from({ length: 13 }).map((_, j) => (
                         <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
                       ))}
                     </TableRow>
                   ))
                 ) : records.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={12} className="h-32 text-center">
+                    <TableCell colSpan={13} className="h-32 text-center">
                       <div className="flex flex-col items-center gap-2 text-muted-foreground">
                         <Database className="h-8 w-8 opacity-50" />
                         <p className="font-medium">Nenhum registro encontrado</p>
@@ -350,6 +351,9 @@ export default function TrackingSalesforce() {
                         <Badge variant={getStatusVariant(row.status)}>{row.status || "—"}</Badge>
                       </TableCell>
                       <TableCell className="text-xs">{row.trackingtype || "—"}</TableCell>
+                      <TableCell className="text-xs max-w-[120px] truncate" title={row.TemplateName || ""}>
+                        {row.TemplateName || "—"}
+                      </TableCell>
                       <TableCell className="text-xs max-w-[120px] truncate" title={row.activityname || ""}>
                         {row.activityname || "—"}
                       </TableCell>

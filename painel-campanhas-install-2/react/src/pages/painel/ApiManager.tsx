@@ -62,6 +62,8 @@ export default function ApiManager() {
     mkc_client_secret: "",
     mkc_token_url: "",
     mkc_api_url: "",
+    mkc_account_id: "",
+    mkc_de_key: "",
     rcs_chave_api: "",
     rcs_base_url: "",
     rcs_token: "",
@@ -134,6 +136,8 @@ export default function ApiManager() {
         mkc_client_secret: staticCredsData.mkc_client_secret || "",
         mkc_token_url: staticCredsData.mkc_token_url || "",
         mkc_api_url: staticCredsData.mkc_api_url || "",
+        mkc_account_id: staticCredsData.mkc_account_id || "",
+        mkc_de_key: staticCredsData.mkc_de_key || "",
         rcs_chave_api: staticCredsData.rcs_chave_api || "",
         rcs_base_url: staticCredsData.rcs_base_url || "",
         rcs_token: staticCredsData.rcs_token || "",
@@ -223,11 +227,12 @@ export default function ApiManager() {
       }
     },
     onError: (error: any) => {
-      console.error('🔴 [ApiManager] Error in Salesforce Import:', error);
+      const msg = error?.message ?? (typeof error === 'string' ? error : 'Erro desconhecido');
+      console.error('🔴 [ApiManager] Error in Salesforce Import:', msg, error);
       setSfImportResult(null);
       toast({
         title: "Erro na importação Salesforce",
-        description: error.message || "Erro desconhecido",
+        description: msg,
         variant: "destructive",
       });
     },
@@ -656,6 +661,94 @@ export default function ApiManager() {
                   }
                   placeholder="https://instance.salesforce.com"
                 />
+              </div>
+            </div>
+          </div>
+
+          {/* Marketing Cloud (importação Salesforce) */}
+          <div className="border-b pb-4 space-y-4">
+            <h4 className="font-semibold">Marketing Cloud (Importação)</h4>
+            <p className="text-sm text-muted-foreground">
+              Usado pela importação manual do Salesforce. Token URL e API URL são usados para obter o token OAuth2 e consultar a Data Extension.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Client ID</Label>
+                <Input
+                  value={staticCreds.mkc_client_id}
+                  onChange={(e) =>
+                    setStaticCreds({ ...staticCreds, mkc_client_id: e.target.value })
+                  }
+                  placeholder="Client ID Marketing Cloud"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Client Secret</Label>
+                <div className="relative">
+                  <Input
+                    type={visibleKeys.includes("mkc_secret") ? "text" : "password"}
+                    value={staticCreds.mkc_client_secret}
+                    onChange={(e) =>
+                      setStaticCreds({ ...staticCreds, mkc_client_secret: e.target.value })
+                    }
+                    placeholder="Client Secret"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleKeyVisibility("mkc_secret")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {visibleKeys.includes("mkc_secret") ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Token URL</Label>
+                <Input
+                  value={staticCreds.mkc_token_url}
+                  onChange={(e) =>
+                    setStaticCreds({ ...staticCreds, mkc_token_url: e.target.value })
+                  }
+                  placeholder="https://xxx.auth.marketingcloudapis.com/v2/token"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>API Base URL</Label>
+                <Input
+                  value={staticCreds.mkc_api_url}
+                  onChange={(e) =>
+                    setStaticCreds({ ...staticCreds, mkc_api_url: e.target.value })
+                  }
+                  placeholder="https://xxx.rest.marketingcloudapis.com"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Account ID</Label>
+                <Input
+                  value={staticCreds.mkc_account_id}
+                  onChange={(e) =>
+                    setStaticCreds({ ...staticCreds, mkc_account_id: e.target.value })
+                  }
+                  placeholder="ID da conta Marketing Cloud (obrigatório)"
+                />
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <Label>Data Extension Key (Customer Key)</Label>
+                <Input
+                  value={staticCreds.mkc_de_key}
+                  onChange={(e) =>
+                    setStaticCreds({ ...staticCreds, mkc_de_key: e.target.value })
+                  }
+                  placeholder="Tracking_WhatsApp_Importado_FINAL"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Customer Key da Data Extension no Marketing Cloud. O nome exato da DE no painel. Em 404, verifique se a chave existe na sua instância.
+                </p>
               </div>
             </div>
           </div>
