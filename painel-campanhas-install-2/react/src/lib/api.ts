@@ -174,7 +174,10 @@ export const scheduleCampaign = (data: Record<string, any>) => {
   if (data.template_source) {
     payload.template_source = data.template_source;
   }
-  if (data.broker_code) {
+  // broker_code vem do select em Nova Campanha (getOtimaBrokers) - sempre envia quando Ótima
+  if (data.template_source === 'otima_rcs' || data.template_source === 'otima_wpp') {
+    payload.broker_code = data.broker_code ?? '';
+  } else if (data.broker_code) {
     payload.broker_code = data.broker_code;
   }
   if (data.customer_code) {
@@ -182,6 +185,9 @@ export const scheduleCampaign = (data: Record<string, any>) => {
   }
   if (data.midia_campanha) {
     payload.midia_campanha = data.midia_campanha;
+  }
+  if (data.variables_map && Object.keys(data.variables_map).length > 0) {
+    payload.variables_map = JSON.stringify(data.variables_map);
   }
 
   return wpAjax('cm_schedule_campaign', payload, 'cmNonce');
@@ -247,8 +253,10 @@ export const getIscas = () => {
   return wpAjax('pc_get_iscas', {});
 };
 
-export const getOtimaTemplates = () => {
-  return wpAjax('pc_get_otima_templates', {});
+export const getOtimaTemplates = (walletId?: string) => {
+  const payload: Record<string, string> = {};
+  if (walletId) payload.wallet_id = String(walletId);
+  return wpAjax('pc_get_otima_templates', payload);
 };
 
 export const getOtimaBrokers = () => {
@@ -410,19 +418,26 @@ export const previewCount = (data: Record<string, any>) => {
 };
 
 export const createCpfCampaign = (data: Record<string, any>) => {
+  const templateSource = data.template_source || 'local';
   const payload: Record<string, any> = {
     temp_id: data.temp_id,
     table_name: data.table_name,
     template_id: data.template_id,
     template_code: data.template_code,
-    template_source: data.template_source,
-    broker_code: data.broker_code,
-    customer_code: data.customer_code,
+    template_source: templateSource,
     provider: data.provider,
     match_field: data.match_field || 'cpf',
     include_baits: data.include_baits || 0,
     show_already_sent: data.show_already_sent || 0,
   };
+
+  // broker_code e customer_code: igual Nova Campanha - broker do select, customer = id_carteira por registro (PHP)
+  if (templateSource === 'otima_rcs' || templateSource === 'otima_wpp') {
+    payload.broker_code = data.broker_code ?? '';
+  }
+  if (data.customer_code) {
+    payload.customer_code = data.customer_code;
+  }
 
   if (data.variables_map) {
     payload.variables_map = JSON.stringify(data.variables_map);

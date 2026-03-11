@@ -321,8 +321,12 @@ export class CampaignsService {
         };
 
       case 'RCS':
-        // WordPress retorna base_url, provider já está preparado para usar
-        return credentials;
+        // WordPress retorna chave_api e base_url. Fallback: se chave_api vazio, usa api_key (mesma chave do CDA WPP)
+        return {
+          ...credentials,
+          chave_api: credentials.chave_api || credentials.api_key || '',
+          base_url: credentials.base_url || 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAPI',
+        };
 
       case 'RCS_OTIMA':
         // RCS Ótima usa token para autenticação

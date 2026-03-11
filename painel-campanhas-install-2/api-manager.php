@@ -242,19 +242,23 @@ ob_start();
                         Funciona igual ao CDA: código_equipe = idgis_ambiente (vem dos dados), código_usuario = sempre
                         '1'
                     </p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                        Se a Chave API estiver vazia, o sistema usa automaticamente a mesma chave do CDA WPP.
+                    </p>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Chave API
                                 *</label>
                             <input type="text" name="rcs_chave_api"
-                                value="<?php echo esc_attr($static_credentials['rcs_chave_api'] ?? $static_credentials['rcs_token'] ?? ''); ?>"
+                                value="<?php echo esc_attr($static_credentials['rcs_chave_api'] ?? $static_credentials['rcs_token'] ?? $static_credentials['cda_api_key'] ?? ''); ?>"
+                                placeholder="Deixe vazio para usar a chave do CDA WPP"
                                 class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Base
                                 URL</label>
                             <input type="url" name="rcs_base_url"
-                                value="<?php echo esc_attr($static_credentials['rcs_base_url'] ?? 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAP'); ?>"
+                                value="<?php echo esc_attr($static_credentials['rcs_base_url'] ?? 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAPI'); ?>"
                                 class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
                         </div>
                     </div>

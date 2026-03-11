@@ -177,10 +177,14 @@ export default function NovaCampanha() {
     enabled: !!formData.carteira,
   });
 
-  // Buscar templates Ótima (WPP + RCS)
+  // Buscar templates Ótima sob demanda (apenas após selecionar carteira)
+  const selectedCarteiraObj = carteiras.find((c: any) => String(c.id) === String(formData.carteira));
+  const walletIdForOtima = selectedCarteiraObj?.id_carteira ? String(selectedCarteiraObj.id_carteira) : undefined;
+
   const { data: otimaTemplatesData = [], isLoading: otimaTemplatesLoading } = useQuery({
-    queryKey: ['otima-templates'],
-    queryFn: getOtimaTemplates,
+    queryKey: ['otima-templates', walletIdForOtima],
+    queryFn: () => getOtimaTemplates(walletIdForOtima),
+    enabled: !!walletIdForOtima,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -900,18 +904,25 @@ export default function NovaCampanha() {
                       role="combobox"
                       aria-expanded={openTemplateDropdown}
                       className="w-full justify-between mt-1 text-left font-normal"
-                      disabled={templatesLoading}
                     >
                       {formData.template
                         ? filteredTemplates.find(t => t.id === formData.template)?.name || "Template Selecionado"
                         : templatesLoading ? "Carregando templates..." : "Selecione um template..."}
-                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      {templatesLoading && <Loader2 className="ml-2 h-4 w-4 shrink-0 animate-spin" />}
+                      {!templatesLoading && <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />}
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
                     <Command>
-                      <CommandInput placeholder="Buscar template pelo nome..." />
+                      <CommandInput placeholder="Buscar template pelo nome..." disabled={templatesLoading} />
                       <CommandList>
+                        {templatesLoading ? (
+                          <div className="py-6 px-4 flex items-center justify-center gap-2 text-muted-foreground">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            <span>Carregando templates...</span>
+                          </div>
+                        ) : (
+                          <>
                         <CommandEmpty>Nenhum template encontrado.</CommandEmpty>
                         <CommandGroup>
                           {filteredTemplates.map((t: any, idx: number) => {
@@ -996,6 +1007,8 @@ export default function NovaCampanha() {
                             );
                           })}
                         </CommandGroup>
+                        </>
+                        )}
                       </CommandList>
                     </Command>
                   </PopoverContent>

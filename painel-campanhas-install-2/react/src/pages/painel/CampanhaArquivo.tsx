@@ -78,10 +78,15 @@ export default function CampanhaArquivo() {
     queryFn: getMessages,
   });
 
-  // Buscar templates da Ótima (RCS e WhatsApp)
+  // Buscar templates Ótima sob demanda (apenas após selecionar carteira)
+  const selectedCarteiraObj = (carteiras as any[]).find((c: any) => String(c.id) === String(carteira));
+  const walletIdForOtima = selectedCarteiraObj?.id_carteira ? String(selectedCarteiraObj.id_carteira) : undefined;
+
   const { data: otimaTemplatesData = [], isLoading: otimaTemplatesLoading } = useQuery({
-    queryKey: ['otima-templates'],
-    queryFn: getOtimaTemplates,
+    queryKey: ['otima-templates', walletIdForOtima],
+    queryFn: () => getOtimaTemplates(walletIdForOtima),
+    enabled: !!walletIdForOtima,
+    staleTime: 5 * 60 * 1000,
   });
 
   // Buscar brokers Ótima (WPP + RCS)
@@ -108,7 +113,7 @@ export default function CampanhaArquivo() {
     const otima = Array.isArray(otimaTemplatesData) ? otimaTemplatesData.map((t: any) => ({
       id: `otima_${t.template_code}_${t.wallet_id}`,
       name: t.name || t.template_code || '',
-      source: t.source || 'otima',
+      source: t.source || 'otima_rcs', // Backend retorna otima_rcs ou otima_wpp
       templateCode: t.template_code || '',
       brokerCode: t.broker_code || '',
       customerCode: t.customer_code || '',
@@ -347,12 +352,18 @@ export default function CampanhaArquivo() {
       return;
     }
 
+    // template_source: PHP exige otima_rcs ou otima_wpp para templates Ótima
+    const isOtimaTemplate = selectedTemplate?.source === 'otima_rcs' || selectedTemplate?.source === 'otima_wpp' || selectedTemplate?.source === 'otima';
+    const templateSource = isOtimaTemplate
+      ? (provider === 'OTIMA_WPP' ? 'otima_wpp' : 'otima_rcs')
+      : (selectedTemplate?.source || 'local');
+
     createMutation.mutate({
       temp_id: tempId,
       table_name: tableName,
       template_id: selectedTemplate?.source === 'local' ? parseInt(template) : null,
       template_code: selectedTemplate?.templateCode || null,
-      template_source: selectedTemplate?.source || 'local',
+      template_source: templateSource,
       broker_code: brokerCode || selectedTemplate?.brokerCode || null,
       customer_code: selectedTemplate?.customerCode || null,
       variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
@@ -565,30 +576,37 @@ export default function CampanhaArquivo() {
 
             <div className="space-y-2">
               <Label>Template de Mensagem <span className="text-red-500">*</span></Label>
-              {templatesLoading ? (
-                <div className="h-10 bg-muted animate-pulse rounded" />
-              ) : (
-                <Popover open={openTemplateDropdown} onOpenChange={setOpenTemplateDropdown}>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      role="combobox"
-                      aria-expanded={openTemplateDropdown}
-                      className="w-full justify-between font-normal"
-                      disabled={templatesLoading}
-                    >
-                      {template
-                        ? templates.find((t) => t.id === template)?.name || "Template Selecionado"
-                        : "Selecione um template..."}
-                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
-                    <Command>
-                      <CommandInput placeholder="Buscar template..." />
-                      <CommandList>
-                        <CommandEmpty>Nenhum template encontrado.</CommandEmpty>
-                        <CommandGroup>
+              {(provider === 'OTIMA_RCS' || provider === 'OTIMA_WPP') && !carteira && (
+                <p className="text-xs text-muted-foreground">Selecione uma carteira para carregar templates Ótima.</p>
+              )}
+              <Popover open={openTemplateDropdown} onOpenChange={setOpenTemplateDropdown}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={openTemplateDropdown}
+                    className="w-full justify-between font-normal"
+                  >
+                    {template
+                      ? templates.find((t) => t.id === template)?.name || "Template Selecionado"
+                      : templatesLoading ? "Carregando templates..." : "Selecione um template..."}
+                    {templatesLoading && <Loader2 className="ml-2 h-4 w-4 shrink-0 animate-spin" />}
+                    {!templatesLoading && <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder="Buscar template..." disabled={templatesLoading} />
+                    <CommandList>
+                      {templatesLoading ? (
+                        <div className="py-6 px-4 flex items-center justify-center gap-2 text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>Carregando templates...</span>
+                        </div>
+                      ) : (
+                        <>
+                      <CommandEmpty>Nenhum template encontrado.</CommandEmpty>
+                      <CommandGroup>
                           {templates.map((t) => {
                             const isOtima = t.source === 'otima_rcs' || t.source === 'otima_wpp';
                             return (
@@ -643,11 +661,12 @@ export default function CampanhaArquivo() {
                             );
                           })}
                         </CommandGroup>
+                        </>
+                      )}
                       </CommandList>
                     </Command>
                   </PopoverContent>
                 </Popover>
-              )}
             </div>
 
             {(() => {

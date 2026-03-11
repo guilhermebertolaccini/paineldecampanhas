@@ -16,7 +16,7 @@ import {
  */
 @Injectable()
 export class RcsProvider extends BaseProvider {
-  private readonly DEFAULT_API_URL = 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAP';
+  private readonly DEFAULT_API_URL = 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAPI';
 
   constructor(httpService: HttpService) {
     super(httpService, 'RcsProvider');
@@ -30,13 +30,9 @@ export class RcsProvider extends BaseProvider {
   }
 
   validateCredentials(credentials: ProviderCredentials): boolean {
-    // RCS CDA funciona igual ao CDA:
-    // - chave_api é obrigatória (vem das credenciais estáticas)
-    // - codigo_equipe e codigo_usuario não vêm das credenciais, são definidos no send()
-    return !!(
-      credentials.chave_api &&
-      typeof credentials.chave_api === 'string'
-    );
+    // RCS CDA usa chave_api (mesma do CDA WPP). Fallback: api_key se chave_api vazio
+    const chave = credentials.chave_api || (credentials as any).api_key || '';
+    return !!(chave && typeof chave === 'string');
   }
 
   async send(
@@ -112,6 +108,8 @@ export class RcsProvider extends BaseProvider {
 
     // Determina a URL da API: usa base_url das credenciais se disponível, senão usa a padrão
     const apiUrl = credentials.base_url || this.DEFAULT_API_URL;
+    // Chave API: mesma do CDA WPP. Fallback api_key se chave_api vazio
+    const chaveApi = credentials.chave_api || (credentials as any).api_key || '';
 
     // Monta o payload conforme o manual
     // codigo_equipe = idgis_ambiente ou id_carteira (fallback para iscas)
@@ -121,7 +119,7 @@ export class RcsProvider extends BaseProvider {
     const midia_campanha = data[0].midia_campanha || credentials.midia_campanha || '';
 
     const payload: any = {
-      chave_api: credentials.chave_api,
+      chave_api: chaveApi,
       codigo_equipe: idgis_regua,
       codigo_usuario: '1',
       nome: `campanha_${idgis_regua}_${Date.now()}`,
@@ -160,8 +158,8 @@ export class RcsProvider extends BaseProvider {
     }
 
     // Log detalhado para debug
-    const apiKeyMasked = credentials.chave_api 
-      ? `${credentials.chave_api.substring(0, 8)}...${credentials.chave_api.substring(credentials.chave_api.length - 4)}`
+    const apiKeyMasked = chaveApi 
+      ? `${chaveApi.substring(0, 8)}...${chaveApi.substring(chaveApi.length - 4)}`
       : 'NÃO FORNECIDA';
     
     this.logger.log(`🌐 Tentando enviar para API CromosApp RCS:`);

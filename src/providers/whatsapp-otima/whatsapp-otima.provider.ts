@@ -111,7 +111,7 @@ export class WhatsappOtimaProvider extends BaseProvider {
         document: item.cpf_cnpj?.replace(/\D/g, ''), // Remove caracteres não numéricos
         extra_fields: {
           nome: item.nome,
-          id_carteira: item.idgis_ambiente,
+          id_carteira: item.id_carteira ?? item.idgis_ambiente,
           idcob_contrato: item.idcob_contrato,
         },
         variables: resolvedVariables,

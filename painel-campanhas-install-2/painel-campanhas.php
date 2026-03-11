@@ -2353,13 +2353,19 @@ class Painel_Campanhas
 
                 if (!empty($iscas)) {
                     foreach ($iscas as $isca) {
-                        // Formata a isca como um registro normal
+                        $isca_id_carteira = $isca['id_carteira'] ?? '';
+                        if (!empty($isca_id_carteira)) {
+                            $resolved = $this->resolve_id_carteira_from_carteira_id($isca_id_carteira);
+                            if (!empty($resolved)) {
+                                $isca_id_carteira = $resolved;
+                            }
+                        }
                         $isca_record = [
                             'telefone' => $isca['telefone'],
                             'nome' => $isca['nome'],
                             'cpf_cnpj' => $isca['cpf'] ?? '',
                             'idgis_ambiente' => $isca['idgis_ambiente'] ?? 0,
-                            'id_carteira' => $isca['id_carteira'] ?? '',
+                            'id_carteira' => $isca_id_carteira,
                             'idcob_contrato' => 0,
                         ];
                         $records[] = $isca_record;
@@ -2382,6 +2388,10 @@ class Painel_Campanhas
                 $provider = $provider_data['provider'];
                 $provider_records = $provider_data['records'];
                 $prefix = strtoupper(substr($provider, 0, 1));
+                // CDA_RCS usa prefixo R (RCS) para buscar credenciais RCS (URL importarcs), não CDA (URL importar/campanha)
+                if ($provider === 'CDA_RCS') {
+                    $prefix = 'R';
+                }
                 $agendamento_id = $prefix . $agendamento_base_id;
 
                 foreach ($provider_records as $record) {
@@ -2742,6 +2752,8 @@ class Painel_Campanhas
         $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
         $broker_code = sanitize_text_field($_POST['broker_code'] ?? '');
         $customer_code = sanitize_text_field($_POST['customer_code'] ?? '');
+        $variables_map_json = stripslashes($_POST['variables_map'] ?? '{}');
+        $variables_map = is_string($variables_map_json) ? json_decode($variables_map_json, true) : [];
         $record_limit = intval($_POST['record_limit'] ?? 0);
         $exclude_recent_phones = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
         $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
@@ -2752,6 +2764,7 @@ class Painel_Campanhas
             'template_id' => $template_id,
             'template_code' => $template_code,
             'template_source' => $template_source,
+            'broker_code' => $broker_code,
             'providers_config' => $providers_config,
             'filters_count' => count($filters ?? []),
             'midia_campanha' => $midia_campanha,
@@ -2824,12 +2837,20 @@ class Painel_Campanhas
 
             if (!empty($iscas)) {
                 foreach ($iscas as $isca) {
+                    // cm_baits.id_carteira armazena id interno da carteira; converter para id_carteira (código)
+                    $isca_id_carteira = $isca['id_carteira'] ?? '';
+                    if (!empty($isca_id_carteira)) {
+                        $resolved = $this->resolve_id_carteira_from_carteira_id($isca_id_carteira);
+                        if (!empty($resolved)) {
+                            $isca_id_carteira = $resolved;
+                        }
+                    }
                     $isca_record = [
                         'telefone' => $isca['telefone'],
                         'nome' => $isca['nome'],
                         'cpf_cnpj' => $isca['cpf'] ?? '',
                         'idgis_ambiente' => $isca['idgis_ambiente'] ?? 0,
-                        'id_carteira' => $isca['id_carteira'] ?? '',
+                        'id_carteira' => $isca_id_carteira,
                         'idcob_contrato' => 0,
                     ];
                     $records[] = $isca_record;
@@ -2892,6 +2913,9 @@ class Painel_Campanhas
                 $prefix = 'W';
             } elseif ($provider === 'GOSAC_OFICIAL') {
                 $prefix = 'F';
+            } elseif ($provider === 'CDA_RCS') {
+                // CDA_RCS usa prefixo R (RCS) para buscar credenciais RCS (URL importarcs), não CDA (URL importar/campanha)
+                $prefix = 'R';
             }
             $agendamento_id = $prefix . $agendamento_base_id;
 
@@ -2930,13 +2954,14 @@ class Painel_Campanhas
                 // Para templates da Ótima, armazena template_code no campo mensagem
                 $mensagem_para_armazenar = $mensagem_final;
                 if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code)) {
-                    // broker_code = do template selecionado (POST); customer_code = id_carteira do contato
+                    // JSON Ótima: igual Campanha por Arquivo - broker_code, customer_code=id_carteira, variables_map
                     $mensagem_para_armazenar = json_encode([
                         'template_code' => $template_code,
                         'template_source' => $template_source,
                         'broker_code' => $broker_code,
                         'customer_code' => (string) $id_carteira,
-                        'original_message' => $mensagem_final
+                        'original_message' => $mensagem_final,
+                        'variables_map' => !empty($variables_map) ? $variables_map : null
                     ]);
                 }
 
@@ -4850,6 +4875,9 @@ class Painel_Campanhas
             foreach ($distribution as $provider => $provider_records) {
                 error_log("🔵 Processando provedor {$provider}: " . count($provider_records) . " registros");
                 $prefix = strtoupper(substr($provider, 0, 1));
+                if ($provider === 'CDA_RCS') {
+                    $prefix = 'R';
+                }
                 $campaign_name_clean = preg_replace('/[^a-zA-Z0-9]/', '', $campaign['nome_campanha']);
                 $campaign_name_short = substr($campaign_name_clean, 0, 30);
                 $agendamento_id = $prefix . $agendamento_base_id . '_' . $campaign_name_short;
@@ -5329,7 +5357,7 @@ class Painel_Campanhas
             } elseif ($fornecedor_upper === 'RCS') {
                 $payload['rcs_credentials'] = [
                     'chave_api' => $static_credentials['rcs_chave_api'] ?? $static_credentials['rcs_token'] ?? '',
-                    'base_url' => $static_credentials['rcs_base_url'] ?? 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAP',
+                    'base_url' => $static_credentials['rcs_base_url'] ?? 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAPI',
                 ];
                 error_log('🔵 [Aprovar Campanha] Credenciais do RCS incluídas no payload');
             } elseif (
@@ -5608,7 +5636,8 @@ class Painel_Campanhas
                 // codigo_equipe = idgis_ambiente (vem dos dados da campanha)
                 // codigo_usuario = sempre '1'
                 // chave_api = vem das credenciais estáticas
-                $chave_api = $static_credentials['rcs_chave_api'] ?? $static_credentials['rcs_token'] ?? '';
+                // Chave API RCS: mesma do CDA WPP se rcs_chave_api não configurada
+                $chave_api = $static_credentials['rcs_chave_api'] ?? $static_credentials['rcs_token'] ?? $static_credentials['cda_api_key'] ?? '';
 
                 error_log('🔵 [REST API] Credenciais RCS encontradas: chave_api=' . (!empty($chave_api) ? 'SIM' : 'NÃO'));
 
@@ -5632,7 +5661,7 @@ class Painel_Campanhas
                 // codigo_equipe e codigo_usuario serão definidos no microserviço usando idgis_ambiente e '1'
                 $credentials = [
                     'chave_api' => $chave_api,
-                    'base_url' => $static_credentials['rcs_base_url'] ?? 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAP',
+                    'base_url' => $static_credentials['rcs_base_url'] ?? 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAPI',
                 ];
 
                 error_log('✅ [REST API] Credenciais RCS retornadas com sucesso (codigo_equipe e codigo_usuario serão definidos no microserviço)');
@@ -7896,6 +7925,9 @@ class Painel_Campanhas
         $current_user_id = get_current_user_id();
         $agendamento_base_id = current_time('YmdHis');
         $prefix = strtoupper(substr($provider, 0, 1));
+        if ($provider === 'CDA_RCS') {
+            $prefix = 'R';
+        }
         $agendamento_id = $prefix . $agendamento_base_id;
 
         $total_inserted = 0;
@@ -7951,6 +7983,24 @@ class Painel_Campanhas
     // ========== FUNÇÕES HELPER PARA ID_CARTEIRA ==========
 
     /**
+     * Converte carteira_id (id interno de pc_carteiras_v2) para id_carteira (código cliente).
+     * cm_baits.id_carteira armazena o id interno, não o código.
+     */
+    private function resolve_id_carteira_from_carteira_id($carteira_id)
+    {
+        if (empty($carteira_id)) {
+            return '';
+        }
+        global $wpdb;
+        $table = $wpdb->prefix . 'pc_carteiras_v2';
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT id_carteira FROM $table WHERE id = %d AND ativo = 1 LIMIT 1",
+            intval($carteira_id)
+        ), ARRAY_A);
+        return ($row && !empty($row['id_carteira'])) ? (string) $row['id_carteira'] : '';
+    }
+
+    /**
      * Busca id_carteira baseado na tabela e idgis_ambiente
      * Verifica se a tabela está vinculada a alguma carteira e retorna o id_carteira
      */
@@ -7967,7 +8017,7 @@ class Painel_Campanhas
         $carteiras_bases_table = $wpdb->prefix . 'pc_carteiras_bases_v2';
 
         $carteira = $wpdb->get_row($wpdb->prepare(
-            "SELECT c.id 
+            "SELECT c.id_carteira 
              FROM $carteiras_table c
              INNER JOIN $carteiras_bases_table cb ON c.id = cb.carteira_id
              WHERE cb.nome_base = %s AND c.ativo = 1
@@ -7975,8 +8025,8 @@ class Painel_Campanhas
             $table_name
         ), ARRAY_A);
 
-        if ($carteira && !empty($carteira['id'])) {
-            return (string) $carteira['id'];
+        if ($carteira && !empty($carteira['id_carteira'])) {
+            return (string) $carteira['id_carteira'];
         }
 
         return '';
@@ -7985,6 +8035,7 @@ class Painel_Campanhas
     /**
      * Busca id_carteira baseado apenas no idgis_ambiente
      * Tenta encontrar através de qualquer tabela vinculada
+     * Retorna id_carteira (código cliente, ex: "373"), NÃO c.id (interno)
      */
     private function get_id_carteira_from_idgis($idgis_ambiente)
     {
@@ -7996,19 +8047,18 @@ class Painel_Campanhas
 
         // Busca em todas as bases vinculadas
         $carteiras_table = $wpdb->prefix . 'pc_carteiras_v2';
-        $carteiras_bases_table = $wpdb->prefix . 'pc_carteiras_bases_v2';
 
-        // Pega a primeira carteira ativa encontrada
+        // Pega a primeira carteira ativa - retorna id_carteira (código), não id (interno)
         $carteira = $wpdb->get_row(
-            "SELECT c.id 
+            "SELECT c.id_carteira 
              FROM $carteiras_table c
              WHERE c.ativo = 1
              LIMIT 1",
             ARRAY_A
         );
 
-        if ($carteira && !empty($carteira['id'])) {
-            return (string) $carteira['id'];
+        if ($carteira && !empty($carteira['id_carteira'])) {
+            return (string) $carteira['id_carteira'];
         }
 
         return '';
@@ -9064,11 +9114,24 @@ class Painel_Campanhas
         global $wpdb;
         $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
 
-        // Busca carteiras ativas
-        $carteiras = $wpdb->get_results("SELECT id_carteira, nome FROM $table_carteiras WHERE ativo = 1", ARRAY_A);
+        // wallet_id = id_carteira (ex: "373") - fetch sob demanda para uma carteira só
+        $wallet_id = sanitize_text_field($_POST['wallet_id'] ?? $_GET['wallet_id'] ?? '');
+
+        if (!empty($wallet_id)) {
+            // Fetch direcionado: apenas a carteira solicitada
+            $carteira = $wpdb->get_row($wpdb->prepare(
+                "SELECT id_carteira, nome FROM $table_carteiras WHERE (id_carteira = %s OR id = %d) AND ativo = 1 LIMIT 1",
+                $wallet_id,
+                intval($wallet_id)
+            ), ARRAY_A);
+            $carteiras = $carteira ? [$carteira] : [];
+        } else {
+            // Fallback: todas as carteiras (ex: página Mensagens)
+            $carteiras = $wpdb->get_results("SELECT id_carteira, nome FROM $table_carteiras WHERE ativo = 1", ARRAY_A);
+        }
 
         if (empty($carteiras)) {
-            wp_send_json_success([]); // Sem carteiras, sem templates Otima
+            wp_send_json_success([]);
             return;
         }
 
