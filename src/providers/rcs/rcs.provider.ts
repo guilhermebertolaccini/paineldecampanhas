@@ -12,11 +12,11 @@ import {
 /**
  * Provider para integração com API CromosApp RCS
  * Documentação: Manual de Integração CromosApp com CRM - Sistema CromosApp RCS
- * URL: https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAPI
+ * URL: https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAP
  */
 @Injectable()
 export class RcsProvider extends BaseProvider {
-  private readonly DEFAULT_API_URL = 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAPI';
+  private readonly DEFAULT_API_URL = 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAP';
 
   constructor(httpService: HttpService) {
     super(httpService, 'RcsProvider');
@@ -59,15 +59,15 @@ export class RcsProvider extends BaseProvider {
 
     // Extrai informações comuns da primeira mensagem
     const mensagem_corpo = data[0].mensagem || '';
-    const idgis_regua = data[0].idgis_ambiente;
+    // codigo_equipe: usa id_carteira quando idgis_ambiente é vazio/zero (ex: disparo de teste com iscas)
+    const idgis_regua = data[0].idgis_ambiente && data[0].idgis_ambiente !== '0'
+      ? data[0].idgis_ambiente
+      : data[0].id_carteira || '';
 
-    // RCS CDA funciona igual ao CDA:
-    // codigo_equipe = idgis_ambiente (vem dos dados)
-    // codigo_usuario = sempre '1'
     if (!idgis_regua) {
       return {
         success: false,
-        error: 'idgis_ambiente não encontrado nos dados',
+        error: 'codigo_equipe não encontrado: idgis_ambiente e id_carteira estão vazios',
       };
     }
 
@@ -114,7 +114,7 @@ export class RcsProvider extends BaseProvider {
     const apiUrl = credentials.base_url || this.DEFAULT_API_URL;
 
     // Monta o payload conforme o manual
-    // codigo_equipe = idgis_ambiente (vem dos dados)
+    // codigo_equipe = idgis_ambiente ou id_carteira (fallback para iscas)
     // codigo_usuario = sempre '1' (igual ao CDA)
     // ativo = true para iniciar o envio assim que disparar
     // midia_campanha: URL de imagem (PNG/JPEG) associada à campanha

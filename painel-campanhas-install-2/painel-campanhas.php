@@ -2812,14 +2812,13 @@ class Painel_Campanhas
 
             if (!empty($iscas)) {
                 foreach ($iscas as $isca) {
-                    // Formata a isca como um registro normal
                     $isca_record = [
                         'telefone' => $isca['telefone'],
                         'nome' => $isca['nome'],
                         'cpf_cnpj' => $isca['cpf'] ?? '',
                         'idgis_ambiente' => $isca['idgis_ambiente'] ?? 0,
+                        'id_carteira' => $isca['id_carteira'] ?? '',
                         'idcob_contrato' => 0,
-                        // Adiciona outros campos que possam ser usados nos placeholders
                     ];
                     $records[] = $isca_record;
                     $baits_added++;
@@ -2911,8 +2910,10 @@ class Painel_Campanhas
                     $idgis_ambiente = PC_IDGIS_Mapper::get_mapped_idgis($table_name, $provider, $idgis_original);
                 }
 
-                // Busca id_carteira baseado na tabela e idgis_ambiente
-                $id_carteira = $this->get_id_carteira_from_table_idgis($table_name, $idgis_ambiente);
+                // Usa id_carteira do registro (iscas já trazem esse campo) ou busca pela tabela+idgis
+                $id_carteira = !empty($record['id_carteira']) 
+                    ? $record['id_carteira'] 
+                    : $this->get_id_carteira_from_table_idgis($table_name, $idgis_ambiente);
 
                 // Para templates da Ótima, armazena template_code no campo mensagem
                 $mensagem_para_armazenar = $mensagem_final;
@@ -5311,7 +5312,7 @@ class Painel_Campanhas
             } elseif ($fornecedor_upper === 'RCS') {
                 $payload['rcs_credentials'] = [
                     'chave_api' => $static_credentials['rcs_chave_api'] ?? $static_credentials['rcs_token'] ?? '',
-                    'base_url' => $static_credentials['rcs_base_url'] ?? 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAPI',
+                    'base_url' => $static_credentials['rcs_base_url'] ?? 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAP',
                 ];
                 error_log('🔵 [Aprovar Campanha] Credenciais do RCS incluídas no payload');
             } elseif (
@@ -5614,7 +5615,7 @@ class Painel_Campanhas
                 // codigo_equipe e codigo_usuario serão definidos no microserviço usando idgis_ambiente e '1'
                 $credentials = [
                     'chave_api' => $chave_api,
-                    'base_url' => $static_credentials['rcs_base_url'] ?? 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAPI',
+                    'base_url' => $static_credentials['rcs_base_url'] ?? 'https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAP',
                 ];
 
                 error_log('✅ [REST API] Credenciais RCS retornadas com sucesso (codigo_equipe e codigo_usuario serão definidos no microserviço)');

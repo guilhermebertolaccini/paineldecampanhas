@@ -54,8 +54,10 @@ export class CdaProvider extends BaseProvider {
     // Aceita tanto 'url' quanto 'api_url' (WordPress pode retornar api_url)
     const apiUrl = credentials.url || credentials.api_url;
 
-    // Extrai informações comuns
-    const idgis_regua = data[0].idgis_ambiente;
+    // Extrai informações comuns — usa id_carteira como fallback (iscas de teste podem ter idgis_ambiente=0)
+    const idgis_regua = data[0].idgis_ambiente && data[0].idgis_ambiente !== '0'
+      ? data[0].idgis_ambiente
+      : data[0].id_carteira || '';
     const mensagem_corpo = data[0].mensagem || '';
 
     // Formata as linhas conforme o formato CDA
@@ -64,17 +66,19 @@ export class CdaProvider extends BaseProvider {
         ? dado.cpf_cnpj.slice(-2)
         : '';
       
-      // Normaliza o telefone usando função helper
       const telefone_normalizado = this.normalizePhoneNumber(dado.telefone);
+      const equipe = dado.idgis_ambiente && dado.idgis_ambiente !== '0'
+        ? dado.idgis_ambiente
+        : dado.id_carteira || idgis_regua;
       
-      return `${dado.idgis_ambiente};${telefone_normalizado};${dado.nome};${dado.cpf_cnpj};${last_cpf}`;
+      return `${equipe};${telefone_normalizado};${dado.nome};${dado.cpf_cnpj};${last_cpf}`;
     });
 
     const payload = {
       chave_api: credentials.api_key,
       codigo_equipe: idgis_regua,
       codigo_usuario: '1',
-      nome: `campanha_${data[0].idgis_ambiente}_${Date.now()}`,
+      nome: `campanha_${idgis_regua}_${Date.now()}`,
       ativo: true,
       corpo_mensagem: mensagem_corpo,
       mensagens: linhas,

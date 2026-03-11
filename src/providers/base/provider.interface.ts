@@ -2,6 +2,7 @@ export interface CampaignData {
   telefone: string;
   nome: string;
   idgis_ambiente: string;
+  id_carteira?: string;
   idcob_contrato: string;
   cpf_cnpj: string;
   mensagem: string;
