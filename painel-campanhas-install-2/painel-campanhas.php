@@ -164,6 +164,8 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_get_otima_brokers', [$this, 'handle_get_otima_brokers']);
         add_action('wp_ajax_pc_get_gosac_oficial_templates', [$this, 'handle_get_gosac_oficial_templates']);
         add_action('wp_ajax_pc_get_gosac_oficial_connections', [$this, 'handle_get_gosac_oficial_connections']);
+        add_action('wp_ajax_pc_get_noah_oficial_templates', [$this, 'handle_get_noah_oficial_templates']);
+        add_action('wp_ajax_pc_get_noah_oficial_channels', [$this, 'handle_get_noah_oficial_channels']);
         add_action('wp_ajax_pc_get_all_connections_health', [$this, 'handle_get_all_connections_health']);
         add_action('wp_ajax_pc_get_templates_by_wallet', [$this, 'handle_get_templates_by_wallet']);
 
@@ -2301,6 +2303,13 @@ class Painel_Campanhas
             $providers_config = json_decode($providers_config_json, true);
             $variables_map_json = stripslashes($_POST['variables_map'] ?? '{}');
             $variables_map = json_decode($variables_map_json, true);
+            $carteira = sanitize_text_field($_POST['carteira'] ?? '');
+
+            // id_carteira da carteira selecionada (herança para todos os registros da fila)
+            $campaign_id_carteira = '';
+            if (!empty($carteira)) {
+                $campaign_id_carteira = $this->resolve_id_carteira_from_carteira_id($carteira);
+            }
 
             $is_template_ok = ($template_source === 'local' && $template_id > 0)
                 || (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code));
@@ -2360,6 +2369,10 @@ class Painel_Campanhas
                                 $isca_id_carteira = $resolved;
                             }
                         }
+                        // Iscas sem id_carteira herdam da carteira selecionada na campanha
+                        if (empty($isca_id_carteira) && !empty($campaign_id_carteira)) {
+                            $isca_id_carteira = $campaign_id_carteira;
+                        }
                         $isca_record = [
                             'telefone' => $isca['telefone'],
                             'nome' => $isca['nome'],
@@ -2407,17 +2420,20 @@ class Painel_Campanhas
                         $mensagem_final = $this->replace_placeholders($message_content, $record);
                     }
 
-                    // Busca id_carteira se não informado
+                    // Busca id_carteira: registro, coluna carteira do CSV, ou herda da carteira selecionada
                     $id_carteira = $record['id_carteira'] ?? '';
                     if (empty($id_carteira) && !empty($record['carteira'])) {
                         $carteiras_table = $wpdb->prefix . 'pc_carteiras_v2';
-                        $carteira = $wpdb->get_row($wpdb->prepare(
+                        $carteira_row = $wpdb->get_row($wpdb->prepare(
                             "SELECT id_carteira FROM $carteiras_table WHERE nome = %s AND ativo = 1 LIMIT 1",
                             $record['carteira']
                         ), ARRAY_A);
-                        if ($carteira) {
-                            $id_carteira = $carteira['id_carteira'];
+                        if ($carteira_row) {
+                            $id_carteira = $carteira_row['id_carteira'];
                         }
+                    }
+                    if (empty($id_carteira) && !empty($campaign_id_carteira)) {
+                        $id_carteira = $campaign_id_carteira;
                     }
 
                     // Para templates da Ótima, armazena template_code no campo mensagem
@@ -2637,6 +2653,7 @@ class Painel_Campanhas
         $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
         $broker_code = sanitize_text_field($_POST['broker_code'] ?? '');
         $customer_code = sanitize_text_field($_POST['customer_code'] ?? '');
+        $carteira = sanitize_text_field($_POST['carteira'] ?? '');
         $record_limit = intval($_POST['record_limit'] ?? 0);
         $exclude_recent_phones = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
         $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
@@ -2696,6 +2713,9 @@ class Painel_Campanhas
         if (empty($wpdb->get_results("SHOW COLUMNS FROM `$table` LIKE 'broker_code'"))) {
             $wpdb->query("ALTER TABLE `$table` ADD COLUMN broker_code varchar(100) DEFAULT '' AFTER template_source, ADD COLUMN customer_code varchar(100) DEFAULT '' AFTER broker_code");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM `$table` LIKE 'carteira'"))) {
+            $wpdb->query("ALTER TABLE `$table` ADD COLUMN carteira varchar(50) DEFAULT '' AFTER customer_code");
+        }
 
         // Adiciona exclusão ao config
         $config_array = json_decode($providers_config_json, true);
@@ -2718,6 +2738,7 @@ class Painel_Campanhas
                 'template_source' => $template_source,
                 'broker_code' => $broker_code,
                 'customer_code' => $customer_code,
+                'carteira' => $carteira,
                 'record_limit' => $record_limit,
                 'throttling_type' => $throttling_type,
                 'throttling_config' => $throttling_config_json,
@@ -2725,7 +2746,7 @@ class Painel_Campanhas
                 'ativo' => 1,
                 'criado_por' => get_current_user_id()
             ],
-            ['%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%d', '%d', '%d']
+            ['%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%d', '%d', '%d']
         );
 
         if ($result === false) {
@@ -2758,6 +2779,13 @@ class Painel_Campanhas
         $exclude_recent_phones = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
         $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
         $midia_campanha = esc_url_raw($_POST['midia_campanha'] ?? '');
+        $carteira = sanitize_text_field($_POST['carteira'] ?? '');
+
+        // id_carteira da carteira selecionada (herança para todos os registros da fila)
+        $campaign_id_carteira = '';
+        if (!empty($carteira)) {
+            $campaign_id_carteira = $this->resolve_id_carteira_from_carteira_id($carteira);
+        }
 
         error_log('🔵 Dados recebidos: ' . json_encode([
             'table_name' => $table_name,
@@ -2791,8 +2819,21 @@ class Painel_Campanhas
             // Template da Ótima - não precisa de conteúdo local, será usado o template_code
             $message_content = 'Template da Ótima: ' . $template_code;
             $template_info = ['template_code' => $template_code, 'source' => $template_source];
+        } elseif ($template_source === 'gosac_oficial' && !empty($template_code)) {
+            $message_content = 'Template GOSAC Oficial: ' . $template_code;
+            $template_info = ['template_code' => $template_code, 'source' => 'gosac_oficial'];
+        } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
+            $message_content = 'Template NOAH Oficial: ' . $template_code;
+            $template_info = [
+                'template_code' => $template_code,
+                'source' => 'noah_oficial',
+                'channel_id' => intval($_POST['noah_channel_id'] ?? 0),
+                'template_id' => intval($_POST['noah_template_id'] ?? 0),
+                'template_name' => $template_code,
+                'language' => sanitize_text_field($_POST['noah_language'] ?? 'pt_BR'),
+            ];
         } else {
-            wp_send_json_error('Template inválido. Informe template_id para templates locais ou template_code para templates da Ótima.');
+            wp_send_json_error('Template inválido. Informe template_id para templates locais ou template_code para templates externos (Ótima, GOSAC Oficial, NOAH Oficial).');
         }
 
         // Busca registros filtrados
@@ -2844,6 +2885,10 @@ class Painel_Campanhas
                         if (!empty($resolved)) {
                             $isca_id_carteira = $resolved;
                         }
+                    }
+                    // Iscas sem id_carteira herdam da carteira selecionada na campanha
+                    if (empty($isca_id_carteira) && !empty($campaign_id_carteira)) {
+                        $isca_id_carteira = $campaign_id_carteira;
                     }
                     $isca_record = [
                         'telefone' => $isca['telefone'],
@@ -2913,6 +2958,8 @@ class Painel_Campanhas
                 $prefix = 'W';
             } elseif ($provider === 'GOSAC_OFICIAL') {
                 $prefix = 'F';
+            } elseif ($provider === 'NOAH_OFICIAL') {
+                $prefix = 'H';
             } elseif ($provider === 'CDA_RCS') {
                 // CDA_RCS usa prefixo R (RCS) para buscar credenciais RCS (URL importarcs), não CDA (URL importar/campanha)
                 $prefix = 'R';
@@ -2946,10 +2993,10 @@ class Painel_Campanhas
                     $idgis_ambiente = PC_IDGIS_Mapper::get_mapped_idgis($table_name, $provider, $idgis_original);
                 }
 
-                // Usa id_carteira do registro (iscas já trazem esse campo) ou busca pela tabela+idgis
-                $id_carteira = !empty($record['id_carteira']) 
-                    ? $record['id_carteira'] 
-                    : $this->get_id_carteira_from_table_idgis($table_name, $idgis_ambiente);
+                // Usa id_carteira do registro (iscas já trazem esse campo), tabela+idgis, ou herda da carteira selecionada
+                $id_carteira = !empty($record['id_carteira'])
+                    ? $record['id_carteira']
+                    : ($this->get_id_carteira_from_table_idgis($table_name, $idgis_ambiente) ?: $campaign_id_carteira);
 
                 // Para templates da Ótima, armazena template_code no campo mensagem
                 $mensagem_para_armazenar = $mensagem_final;
@@ -2962,6 +3009,29 @@ class Painel_Campanhas
                         'customer_code' => (string) $id_carteira,
                         'original_message' => $mensagem_final,
                         'variables_map' => !empty($variables_map) ? $variables_map : null
+                    ]);
+                } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
+                    $channel_id = intval($template_info['channel_id'] ?? 0);
+                    $noah_template_id = intval($template_info['template_id'] ?? 0);
+                    $noah_template_name = $template_info['template_name'] ?? $template_code;
+                    $noah_language = $template_info['language'] ?? 'pt_BR';
+                    $noah_components = [];
+                    if (!empty($variables_map) && is_array($variables_map)) {
+                        $body_params = [];
+                        foreach ($variables_map as $var_name => $field) {
+                            $val = $record[$field] ?? $record[strtoupper($field)] ?? '';
+                            $body_params[] = ['type' => 'text', 'text' => (string) $val];
+                        }
+                        if (!empty($body_params)) {
+                            $noah_components[] = ['type' => 'body', 'parameters' => $body_params];
+                        }
+                    }
+                    $mensagem_para_armazenar = json_encode([
+                        'channelId' => $channel_id,
+                        'templateId' => $noah_template_id,
+                        'templateName' => $noah_template_name,
+                        'language' => $noah_language,
+                        'components' => $noah_components,
                     ]);
                 }
 
@@ -4270,6 +4340,9 @@ class Painel_Campanhas
         if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'idcob_contrato'"))) {
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN idcob_contrato bigint(20) DEFAULT NULL");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'midia_campanha'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN midia_campanha text DEFAULT NULL");
+        }
 
         // Prepara valores para INSERT múltiplo
         $values = [];
@@ -4277,9 +4350,10 @@ class Painel_Campanhas
         foreach ($data_array as $data) {
             $id_carteira = isset($data['id_carteira']) ? $data['id_carteira'] : '';
             $idcob_contrato = isset($data['idcob_contrato']) ? $data['idcob_contrato'] : 0;
+            $midia_campanha = isset($data['midia_campanha']) ? $data['midia_campanha'] : '';
 
             $values[] = $wpdb->prepare(
-                "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %d, %d, %s)",
+                "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %s, %d, %d, %s)",
                 $data['telefone'],
                 $data['nome'],
                 $data['idgis_ambiente'],
@@ -4287,6 +4361,7 @@ class Painel_Campanhas
                 $idcob_contrato,
                 $data['cpf_cnpj'],
                 $data['mensagem'],
+                $midia_campanha,
                 $data['fornecedor'],
                 $data['agendamento_id'],
                 $data['status'],
@@ -4297,7 +4372,7 @@ class Painel_Campanhas
         }
 
         $sql = "INSERT INTO {$table} 
-                (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
+                (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, midia_campanha, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
                 VALUES " . implode(', ', $values);
 
         error_log('🔵 [bulk_insert] Inserindo ' . count($data_array) . ' registros na tabela ' . $table);
@@ -4817,6 +4892,9 @@ class Painel_Campanhas
             // 3. 🎣 ADICIONA ISCAS ATIVAS (apenas com IDGIS compatível)
             $baits_count = 0;
             $all_baits = PC_Campaign_Baits::get_active_baits();
+            $recurring_campaign_id_carteira_pre = !empty($campaign['carteira'])
+                ? $this->resolve_id_carteira_from_carteira_id($campaign['carteira'])
+                : '';
             if (!empty($all_baits)) {
                 $idgis_found = [];
 
@@ -4828,10 +4906,21 @@ class Painel_Campanhas
 
                 foreach ($all_baits as $bait) {
                     if (isset($idgis_found[$bait['idgis_ambiente']])) {
+                        $bait_id_carteira = $bait['id_carteira'] ?? '';
+                        if (!empty($bait_id_carteira)) {
+                            $resolved = $this->resolve_id_carteira_from_carteira_id($bait_id_carteira);
+                            if (!empty($resolved)) {
+                                $bait_id_carteira = $resolved;
+                            }
+                        }
+                        if (empty($bait_id_carteira) && !empty($recurring_campaign_id_carteira_pre)) {
+                            $bait_id_carteira = $recurring_campaign_id_carteira_pre;
+                        }
                         $records[] = [
                             'telefone' => $bait['telefone'],
                             'nome' => $bait['nome'] . ' [ISCA]',
                             'idgis_ambiente' => $bait['idgis_ambiente'],
+                            'id_carteira' => $bait_id_carteira,
                             'idcob_contrato' => 0,
                             'cpf_cnpj' => ''
                         ];
@@ -4872,6 +4961,11 @@ class Painel_Campanhas
             $current_user_id = get_current_user_id();
             $agendamento_base_id = current_time('YmdHis');
 
+            $campaign_carteira = $campaign['carteira'] ?? '';
+            $recurring_campaign_id_carteira = !empty($campaign_carteira)
+                ? $this->resolve_id_carteira_from_carteira_id($campaign_carteira)
+                : '';
+
             foreach ($distribution as $provider => $provider_records) {
                 error_log("🔵 Processando provedor {$provider}: " . count($provider_records) . " registros");
                 $prefix = strtoupper(substr($provider, 0, 1));
@@ -4904,8 +4998,8 @@ class Painel_Campanhas
                         );
                     }
 
-                    // Busca id_carteira baseado na tabela e idgis_ambiente
-                    $id_carteira = $this->get_id_carteira_from_table_idgis($campaign['tabela_origem'], $idgis_mapeado);
+                    // Busca id_carteira: tabela+idgis ou herda da carteira da campanha recorrente
+                    $id_carteira = $this->get_id_carteira_from_table_idgis($campaign['tabela_origem'], $idgis_mapeado) ?: $recurring_campaign_id_carteira;
 
                     // Prepara mensagem
                     $mensagem_final = $this->replace_placeholders($mensagem_template, $record);
@@ -5636,8 +5730,8 @@ class Painel_Campanhas
                 // codigo_equipe = idgis_ambiente (vem dos dados da campanha)
                 // codigo_usuario = sempre '1'
                 // chave_api = vem das credenciais estáticas
-                // Chave API RCS: mesma do CDA WPP se rcs_chave_api não configurada
-                $chave_api = $static_credentials['rcs_chave_api'] ?? $static_credentials['rcs_token'] ?? $static_credentials['cda_api_key'] ?? '';
+                // Chave API RCS: mesma do CDA WPP se rcs_chave_api não configurada (?: trata string vazia)
+                $chave_api = trim($static_credentials['rcs_chave_api'] ?? '') ?: trim($static_credentials['rcs_token'] ?? '') ?: trim($static_credentials['cda_api_key'] ?? '');
 
                 error_log('🔵 [REST API] Credenciais RCS encontradas: chave_api=' . (!empty($chave_api) ? 'SIM' : 'NÃO'));
 
@@ -5808,6 +5902,14 @@ class Painel_Campanhas
             $result = $wpdb->get_var($query);
 
             if (empty($result)) {
+                // Fallback: NOAH_OFICIAL usa acm_provider_credentials (API Manager)
+                if (strtoupper($provider) === 'NOAH_OFICIAL') {
+                    $acm_creds = get_option('acm_provider_credentials', []);
+                    $provider_key = 'noah_oficial';
+                    if (isset($acm_creds[$provider_key][$env_id]) && $this->has_valid_credentials($acm_creds[$provider_key][$env_id])) {
+                        return rest_ensure_response($acm_creds[$provider_key][$env_id]);
+                    }
+                }
                 return new WP_Error('no_credentials', 'Credenciais não encontradas para ' . $provider . ':' . $env_id, ['status' => 404]);
             }
 
@@ -8908,6 +9010,64 @@ class Painel_Campanhas
                                             ];
                                         }
                                     }
+                            }
+                        }
+                    }
+                    } elseif ($provider === 'noah_oficial') {
+                        $data = $envs[$id_ambient];
+                        $base_url = rtrim($data['url'], '/');
+                        $token = $data['token'] ?? '';
+                        if (stripos($token, 'Bearer ') !== 0) {
+                            $token = 'Bearer ' . $token;
+                        }
+
+                        if (!empty($base_url) && !empty($token)) {
+                            $channels_url = $base_url . '/channels';
+                            $ch_response = wp_remote_get($channels_url, [
+                                'headers' => [
+                                    'Authorization' => $token,
+                                    'Content-Type' => 'application/json',
+                                    'Accept' => 'application/json',
+                                ],
+                                'timeout' => 15,
+                            ]);
+
+                            if (!is_wp_error($ch_response) && wp_remote_retrieve_response_code($ch_response) === 200) {
+                                $ch_body = wp_remote_retrieve_body($ch_response);
+                                $ch_data = json_decode($ch_body, true);
+                                $channels = is_array($ch_data) ? (isset($ch_data['data']) ? $ch_data['data'] : $ch_data) : [];
+
+                                if (is_array($channels)) {
+                                    foreach ($channels as $ch) {
+                                        $ch_id = $ch['id'] ?? $ch['channelId'] ?? null;
+                                        if (empty($ch_id)) continue;
+
+                                        $quality_url = $base_url . '/phone-quality?channelId=' . urlencode($ch_id);
+                                        $q_response = wp_remote_get($quality_url, [
+                                            'headers' => [
+                                                'Authorization' => $token,
+                                                'Content-Type' => 'application/json',
+                                                'Accept' => 'application/json',
+                                            ],
+                                            'timeout' => 15,
+                                        ]);
+
+                                        $quality_info = '';
+                                        if (!is_wp_error($q_response) && wp_remote_retrieve_response_code($q_response) === 200) {
+                                            $q_body = wp_remote_retrieve_body($q_response);
+                                            $q_data = json_decode($q_body, true);
+                                            $quality_info = is_array($q_data) ? json_encode($q_data) : $q_body;
+                                        }
+
+                                        $provider_conns[] = [
+                                            'id' => $ch_id,
+                                            'name' => $ch['name'] ?? $ch['phoneNumber'] ?? 'Canal ' . $ch_id,
+                                            'status' => $ch['status'] ?? '',
+                                            'quality' => $quality_info,
+                                            'provider' => 'Noah Oficial',
+                                            'id_ambient' => $id_ambient,
+                                        ];
+                                    }
                                 }
                             }
                         }
@@ -9031,6 +9191,48 @@ class Painel_Campanhas
                             }
                         }
                     }
+                } elseif ($provider === 'noah_oficial') {
+                    $base_url = rtrim($data['url'], '/');
+                    $token = $data['token'] ?? '';
+                    if (stripos($token, 'Bearer ') !== 0) {
+                        $token = 'Bearer ' . $token;
+                    }
+
+                    if (!empty($base_url) && !empty($token)) {
+                        $url = $base_url . '/message-templates';
+                        $response = wp_remote_get($url, [
+                            'headers' => [
+                                'Authorization' => $token,
+                                'Content-Type' => 'application/json',
+                                'Accept' => 'application/json',
+                            ],
+                            'timeout' => 15,
+                        ]);
+
+                        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+                            $body = wp_remote_retrieve_body($response);
+                            $templates_data = json_decode($body, true);
+                            $items = is_array($templates_data) ? (isset($templates_data['data']) ? $templates_data['data'] : (isset($templates_data['templates']) ? $templates_data['templates'] : $templates_data)) : [];
+
+                            if (is_array($items)) {
+                                foreach ($items as $tpl) {
+                                    $all_templates[] = [
+                                        'id' => $tpl['id'] ?? $tpl['templateId'] ?? '',
+                                        'name' => $tpl['name'] ?? $tpl['templateName'] ?? '',
+                                        'content' => '',
+                                        'category' => $tpl['category'] ?? '',
+                                        'language' => $tpl['language'] ?? 'pt_BR',
+                                        'status' => $tpl['status'] ?? '',
+                                        'provider' => 'Noah Oficial',
+                                        'id_ambient' => $id_ambient,
+                                        'templateName' => $tpl['name'] ?? $tpl['templateName'] ?? '',
+                                        'templateId' => $tpl['templateId'] ?? $tpl['id'] ?? '',
+                                        'channelId' => $tpl['channelId'] ?? '',
+                                    ];
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -9100,6 +9302,147 @@ class Painel_Campanhas
         }
 
         wp_send_json_success($all_connections);
+    }
+
+    /**
+     * NOAH Oficial: Lista templates aprovados (GET /v1/api/external/:apiId/message-templates)
+     */
+    public function handle_get_noah_oficial_templates()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        $credentials = get_option('acm_provider_credentials', []);
+        $noah_oficial_creds = $credentials['noah_oficial'] ?? [];
+
+        if (empty($noah_oficial_creds)) {
+            wp_send_json_success([]);
+            return;
+        }
+
+        $all_templates = [];
+
+        foreach ($noah_oficial_creds as $env_id => $data) {
+            $base_url = rtrim($data['url'], '/');
+            $token = $data['token'] ?? '';
+            if (stripos($token, 'Bearer ') !== 0) {
+                $token = 'Bearer ' . $token;
+            }
+
+            if (empty($base_url) || empty($token)) {
+                continue;
+            }
+
+            $url = $base_url . '/message-templates';
+
+            $response = wp_remote_get($url, [
+                'headers' => [
+                    'Authorization' => $token,
+                    'Content-Type' => 'application/json',
+                    'Accept' => 'application/json',
+                ],
+                'timeout' => 15,
+            ]);
+
+            if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+                error_log("🔴 [Noah Oficial] erro ao buscar templates para $env_id: " . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
+                continue;
+            }
+
+            $body = wp_remote_retrieve_body($response);
+            $templates_data = json_decode($body, true);
+
+            if (is_array($templates_data)) {
+                $items = isset($templates_data['data']) ? $templates_data['data'] : (isset($templates_data['templates']) ? $templates_data['templates'] : $templates_data);
+                if (is_array($items)) {
+                    foreach ($items as $tpl) {
+                        $all_templates[] = [
+                            'id' => $tpl['id'] ?? $tpl['templateId'] ?? '',
+                            'templateId' => $tpl['templateId'] ?? $tpl['id'] ?? '',
+                            'templateName' => $tpl['name'] ?? $tpl['templateName'] ?? '',
+                            'name' => $tpl['name'] ?? $tpl['templateName'] ?? '',
+                            'language' => $tpl['language'] ?? 'pt_BR',
+                            'status' => $tpl['status'] ?? '',
+                            'channelId' => $tpl['channelId'] ?? '',
+                            'components' => $tpl['components'] ?? [],
+                            'env_id' => $env_id,
+                            'provider' => 'Noah Oficial',
+                        ];
+                    }
+                }
+            }
+        }
+
+        wp_send_json_success($all_templates);
+    }
+
+    /**
+     * NOAH Oficial: Lista canais WABA (GET /v1/api/external/:apiId/channels)
+     */
+    public function handle_get_noah_oficial_channels()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        $carteira_id = isset($_POST['carteira_id']) ? sanitize_text_field($_POST['carteira_id']) : '';
+        $id_carteira = '';
+
+        if (!empty($carteira_id)) {
+            global $wpdb;
+            $table = $wpdb->prefix . 'pc_carteiras_v2';
+            $row = $wpdb->get_row($wpdb->prepare(
+                "SELECT id_carteira FROM $table WHERE id = %d AND ativo = 1 LIMIT 1",
+                intval($carteira_id)
+            ), ARRAY_A);
+            if ($row) {
+                $id_carteira = $row['id_carteira'];
+            }
+        }
+
+        $credentials = get_option('acm_provider_credentials', []);
+        $noah_oficial_creds = $credentials['noah_oficial'] ?? [];
+
+        if (empty($id_carteira) || !isset($noah_oficial_creds[$id_carteira])) {
+            wp_send_json_success([]);
+            return;
+        }
+
+        $data = $noah_oficial_creds[$id_carteira];
+        $base_url = rtrim($data['url'], '/');
+        $token = $data['token'] ?? '';
+        if (stripos($token, 'Bearer ') !== 0) {
+            $token = 'Bearer ' . $token;
+        }
+
+        $url = $base_url . '/channels';
+
+        $response = wp_remote_get($url, [
+            'headers' => [
+                'Authorization' => $token,
+                'Content-Type' => 'application/json',
+                'Accept' => 'application/json',
+            ],
+            'timeout' => 15,
+        ]);
+
+        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+            wp_send_json_error('Erro ao buscar canais NOAH: ' . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
+            return;
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        $channels_data = json_decode($body, true);
+        $items = is_array($channels_data) ? (isset($channels_data['data']) ? $channels_data['data'] : $channels_data) : [];
+
+        wp_send_json_success(is_array($items) ? $items : []);
     }
 
     public function handle_get_otima_templates()

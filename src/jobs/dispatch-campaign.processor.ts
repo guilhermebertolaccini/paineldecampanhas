@@ -20,6 +20,7 @@ export class DispatchCampaignProcessor extends WorkerHost {
     @InjectQueue(queueNames.WHATSAPP_OTIMA_SEND) private readonly whatsappOtimaQueue: Queue,
     @InjectQueue(queueNames.SALESFORCE_SEND) private readonly salesforceQueue: Queue,
     @InjectQueue(queueNames.GOSAC_OFICIAL_SEND) private readonly gosacOficialQueue: Queue,
+    @InjectQueue(queueNames.NOAH_OFICIAL_SEND) private readonly noahOficialQueue: Queue,
   ) {
     super();
   }
@@ -38,9 +39,17 @@ export class DispatchCampaignProcessor extends WorkerHost {
       this.logger.log(`Fetched ${data.length} records from WordPress`);
 
       // 3. Buscar credenciais
-      const envId = data[0]?.idgis_ambiente;
+      // NOAH_OFICIAL usa id_carteira (credenciais dinâmicas por carteira)
+      const envId =
+        provider === 'NOAH_OFICIAL' && data[0]?.id_carteira
+          ? data[0].id_carteira
+          : data[0]?.idgis_ambiente;
       if (!envId) {
-        throw new Error('idgis_ambiente não encontrado nos dados');
+        throw new Error(
+          provider === 'NOAH_OFICIAL'
+            ? 'id_carteira não encontrado nos dados'
+            : 'idgis_ambiente não encontrado nos dados',
+        );
       }
 
       const credentials = await this.campaignsService.fetchCredentials(provider, envId);
@@ -189,6 +198,7 @@ export class DispatchCampaignProcessor extends WorkerHost {
       'WHATSAPP_OTIMA': this.whatsappOtimaQueue,
       'SALESFORCE': this.salesforceQueue,
       'GOSAC_OFICIAL': this.gosacOficialQueue,
+      'NOAH_OFICIAL': this.noahOficialQueue,
     };
 
     const queue = queueMap[provider];

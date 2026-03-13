@@ -7,6 +7,7 @@ import { SalesforceModule } from './salesforce/salesforce.module';
 import { RcsOtimaModule } from './rcs-otima/rcs-otima.module';
 import { WhatsappOtimaModule } from './whatsapp-otima/whatsapp-otima.module';
 import { GosacOficialModule } from './gosac-oficial/gosac-oficial.module';
+import { NoahOficialModule } from './noah-oficial/noah-oficial.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { GosacOficialModule } from './gosac-oficial/gosac-oficial.module';
     RcsOtimaModule,
     WhatsappOtimaModule,
     GosacOficialModule,
+    NoahOficialModule,
   ],
   exports: [
     CdaModule,
@@ -28,6 +30,7 @@ import { GosacOficialModule } from './gosac-oficial/gosac-oficial.module';
     RcsOtimaModule,
     WhatsappOtimaModule,
     GosacOficialModule,
+    NoahOficialModule,
   ],
 })
 export class ProvidersModule { }

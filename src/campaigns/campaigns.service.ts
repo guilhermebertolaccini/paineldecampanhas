@@ -231,6 +231,7 @@ export class CampaignsService {
       'W': 'WHATSAPP_OTIMA',
       'S': 'SALESFORCE',
       'F': 'GOSAC_OFICIAL',
+      'H': 'NOAH_OFICIAL',
     };
 
     const provider = providerMap[prefix];
@@ -347,6 +348,7 @@ export class CampaignsService {
       case 'GOSAC':
       case 'NOAH':
       case 'GOSAC_OFICIAL':
+      case 'NOAH_OFICIAL':
         // Já recebem url e token corretamente
         return credentials;
 

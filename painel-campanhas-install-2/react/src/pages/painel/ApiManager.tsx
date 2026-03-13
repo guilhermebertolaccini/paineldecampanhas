@@ -585,6 +585,57 @@ export default function ApiManager() {
             </div>
           </div>
 
+          {/* RCS CDA (CromosApp) */}
+          <div className="border-b pb-4 space-y-4">
+            <h4 className="font-semibold">RCS CDA (CromosApp)</h4>
+            <p className="text-sm text-muted-foreground">
+              Usa a mesma chave do CDA WPP. Deixe vazio para herdar automaticamente a Chave API do CDA acima.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Chave API</Label>
+                <div className="relative">
+                  <Input
+                    type={visibleKeys.includes("rcs_chave") ? "text" : "password"}
+                    value={staticCreds.rcs_chave_api}
+                    onChange={(e) =>
+                      setStaticCreds({ ...staticCreds, rcs_chave_api: e.target.value })
+                    }
+                    placeholder="Deixe vazio para usar a chave do CDA WPP"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleKeyVisibility("rcs_chave")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {visibleKeys.includes("rcs_chave") ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Mesma chave do CDA WPP. Se vazio, o sistema usa automaticamente a Chave API do CDA acima.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>Base URL (RCS)</Label>
+                <Input
+                  value={staticCreds.rcs_base_url}
+                  onChange={(e) =>
+                    setStaticCreds({ ...staticCreds, rcs_base_url: e.target.value })
+                  }
+                  placeholder="https://cromosapp.com.br/api/importarcs/importarRcsCampanhaAPI"
+                />
+                <p className="text-xs text-muted-foreground">
+                  URL da API CromosApp para RCS. Diferente da URL do CDA WPP.
+                </p>
+              </div>
+            </div>
+          </div>
+
           {/* Salesforce */}
           <div className="border-b pb-4 space-y-4">
             <h4 className="font-semibold">Salesforce</h4>

@@ -12,6 +12,7 @@ import { SalesforceSendProcessor } from './providers/salesforce-send.processor';
 import { SalesforceMkcProcessor } from './providers/salesforce-mkc.processor';
 import { GosacOficialSendProcessor } from './providers/gosac-oficial-send.processor';
 import { GosacOficialStartProcessor } from './providers/gosac-oficial-start.processor';
+import { NoahOficialSendProcessor } from './providers/noah-oficial-send.processor';
 import { CampaignsModule } from '../campaigns/campaigns.module';
 import { ProvidersModule } from '../providers/providers.module';
 import { WebhookModule } from '../webhook/webhook.module';
@@ -34,6 +35,7 @@ import { PrismaModule } from '../prisma/prisma.module';
       { name: queueNames.SALESFORCE_MKC },
       { name: queueNames.GOSAC_OFICIAL_SEND },
       { name: queueNames.GOSAC_OFICIAL_START },
+      { name: queueNames.NOAH_OFICIAL_SEND },
     ),
     CampaignsModule,
     ProvidersModule,
@@ -53,6 +55,7 @@ import { PrismaModule } from '../prisma/prisma.module';
     SalesforceMkcProcessor,
     GosacOficialSendProcessor,
     GosacOficialStartProcessor,
+    NoahOficialSendProcessor,
   ],
   exports: [BullModule],
 })

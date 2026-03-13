@@ -76,6 +76,9 @@ export default function NovaCampanha() {
     templateSource: "",
     brokerCode: "",
     customerCode: "",
+    noahChannelId: "",
+    noahTemplateId: "",
+    noahLanguage: "pt_BR",
     message: "",
     midia_campanha: "",
     providers: [] as string[],
@@ -233,22 +236,27 @@ export default function NovaCampanha() {
       }
     }
 
-    // Templates Externos GOSAC (já filtrados por carteira)
+    // Templates Externos (GOSAC Oficial + NOAH Oficial, filtrados por carteira)
     const external = Array.isArray(externalTemplatesData) ? externalTemplatesData.map((t: any) => {
       const isGosac = t.provider === 'Gosac Oficial';
+      const isNoah = t.provider === 'Noah Oficial';
+      const source = isGosac ? 'gosac_oficial' : (isNoah ? 'noah_oficial' : (t.source || 'external'));
       return {
         id: `${t.provider}_${t.id}_${t.id_ambient}`,
         name: t.name || t.id || '',
-        source: isGosac ? 'gosac_oficial' : (t.source || 'external'),
+        source,
         provider: t.provider || null,
-        templateCode: t.name || '',
+        templateCode: t.templateName || t.name || '',
         walletId: t.id_ambient,
         walletName: t.wallet_name || `${t.provider} (${t.id_ambient})`,
         imageUrl: t.image_url,
         content: t.content || '',
-        language: t.language,
+        language: t.language || 'pt_BR',
         category: t.category,
         components: t.components,
+        channelId: t.channelId,
+        templateId: t.templateId,
+        templateName: t.templateName || t.name,
       };
     }) : [];
 
@@ -266,7 +274,7 @@ export default function NovaCampanha() {
     'CDA': [],
     'CDA_RCS': [],
     'NOAH': [],
-    'NOAH_OFICIAL': [],
+    'NOAH_OFICIAL': ['noah_oficial'],
     'TECH_IA': [],
   };
 
@@ -552,11 +560,15 @@ export default function NovaCampanha() {
       const recurringData = {
         nome_campanha: formData.name,
         table_name: formData.base,
+        carteira: formData.carteira || '',
         template_id: formData.templateSource === 'local' ? parseInt(formData.template) : null,
         template_code: formData.templateCode || null,
         template_source: formData.templateSource || 'local',
         broker_code: formData.brokerCode || null,
         customer_code: formData.customerCode || null,
+        noah_channel_id: formData.noahChannelId || null,
+        noah_template_id: formData.noahTemplateId || null,
+        noah_language: formData.noahLanguage || 'pt_BR',
         variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
         providers_config: providersConfig,
         filters: formattedFilters,
@@ -573,6 +585,7 @@ export default function NovaCampanha() {
     } else {
       const campaignData = {
         table_name: formData.base,
+        carteira: formData.carteira || '',
         filters: formattedFilters,
         providers_config: providersConfig,
         template_id: formData.templateSource === 'local' ? parseInt(formData.template) : null,
@@ -580,6 +593,9 @@ export default function NovaCampanha() {
         template_source: formData.templateSource || 'local',
         broker_code: formData.brokerCode || null,
         customer_code: formData.customerCode || null,
+        noah_channel_id: formData.noahChannelId || null,
+        noah_template_id: formData.noahTemplateId || null,
+        noah_language: formData.noahLanguage || 'pt_BR',
         variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
         record_limit: formData.record_limit || 0,
         exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
@@ -620,7 +636,7 @@ export default function NovaCampanha() {
         if (!formData.template) return false;
         const isOtima = formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp';
         if (isOtima && !formData.brokerCode) return false;
-        const isExternalProvider = isOtima || formData.templateSource === 'gosac_oficial';
+        const isExternalProvider = isOtima || formData.templateSource === 'gosac_oficial' || formData.templateSource === 'noah_oficial';
         if (isExternalProvider) return boolean(formData.message.trim());
         // Local templates (incl. Salesforce custom): accept if message loaded OR template selected
         return boolean(formData.message.trim() || formData.templateCode);
@@ -947,6 +963,9 @@ export default function NovaCampanha() {
                                     templateSource: selectedTemplate?.source || '',
                                     brokerCode: selectedTemplate?.brokerCode || '',
                                     customerCode: selectedTemplate?.customerCode || '',
+                                    noahChannelId: selectedTemplate?.channelId ?? '',
+                                    noahTemplateId: selectedTemplate?.templateId ?? '',
+                                    noahLanguage: selectedTemplate?.language || 'pt_BR',
                                   });
 
                                   // Save template object for preview + variable extraction

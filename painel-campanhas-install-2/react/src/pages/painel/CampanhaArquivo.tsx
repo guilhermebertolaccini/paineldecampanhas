@@ -361,6 +361,7 @@ export default function CampanhaArquivo() {
     createMutation.mutate({
       temp_id: tempId,
       table_name: tableName,
+      carteira: carteira || '',
       template_id: selectedTemplate?.source === 'local' ? parseInt(template) : null,
       template_code: selectedTemplate?.templateCode || null,
       template_source: templateSource,

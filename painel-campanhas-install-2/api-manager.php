@@ -345,7 +345,7 @@ ob_start();
                 }
 
                 $has_credentials = false;
-                foreach (['gosac', 'noah', 'cda', 'salesforce', 'rcs'] as $provider_name) {
+                foreach (['gosac', 'noah', 'noah_oficial', 'cda', 'salesforce', 'rcs'] as $provider_name) {
                     if (isset($provider_credentials[$provider_name]) && is_array($provider_credentials[$provider_name])) {
                         foreach ($provider_credentials[$provider_name] as $env_id => $data) {
                             if (is_array($data) && !empty($data)) {
@@ -422,6 +422,7 @@ ob_start();
                         <option value="">Selecione um Provider</option>
                         <option value="gosac">GOSAC</option>
                         <option value="noah">Noah</option>
+                        <option value="noah_oficial">Noah Oficial</option>
                         <option value="cda">CDA</option>
                         <option value="salesforce">Salesforce</option>
                         <option value="rcs">RCS CDA (CromosApp)</option>

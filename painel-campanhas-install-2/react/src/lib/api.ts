@@ -155,6 +155,7 @@ export const scheduleCampaign = (data: Record<string, any>) => {
   // Formata os dados conforme esperado pelo backend
   const payload: Record<string, any> = {
     table_name: data.base || data.table_name,
+    carteira: data.carteira || '',
     filters: data.filters || [],
     providers_config: data.providers_config || {},
     template_id: data.template_id || data.template,
@@ -188,6 +189,11 @@ export const scheduleCampaign = (data: Record<string, any>) => {
   }
   if (data.variables_map && Object.keys(data.variables_map).length > 0) {
     payload.variables_map = JSON.stringify(data.variables_map);
+  }
+  if (data.template_source === 'noah_oficial') {
+    payload.noah_channel_id = data.noah_channel_id ?? '';
+    payload.noah_template_id = data.noah_template_id ?? '';
+    payload.noah_language = data.noah_language ?? 'pt_BR';
   }
 
   return wpAjax('cm_schedule_campaign', payload, 'cmNonce');
@@ -331,6 +337,7 @@ export const saveRecurring = (data: Record<string, any>) => {
   const payload: Record<string, any> = {
     nome_campanha: data.nome_campanha,
     table_name: data.table_name,
+    carteira: data.carteira || '',
     template_id: data.template_id,
     providers_config: typeof data.providers_config === 'string'
       ? data.providers_config
@@ -360,6 +367,11 @@ export const saveRecurring = (data: Record<string, any>) => {
   }
   if (data.customer_code) {
     payload.customer_code = data.customer_code;
+  }
+  if (data.template_source === 'noah_oficial') {
+    payload.noah_channel_id = data.noah_channel_id ?? '';
+    payload.noah_template_id = data.noah_template_id ?? '';
+    payload.noah_language = data.noah_language ?? 'pt_BR';
   }
 
   return wpAjax('cm_save_recurring', payload, 'cmNonce');
@@ -422,6 +434,7 @@ export const createCpfCampaign = (data: Record<string, any>) => {
   const payload: Record<string, any> = {
     temp_id: data.temp_id,
     table_name: data.table_name,
+    carteira: data.carteira || '',
     template_id: data.template_id,
     template_code: data.template_code,
     template_source: templateSource,
@@ -832,59 +845,14 @@ export const getWalletsHealth = async (): Promise<{ connections: any[]; debug_in
   return { connections: allConnections, debug_info: debugInfo };
 };
 
-/** Fetch Templates directly from GOSAC middleware for a given wallet/ambient ID */
+/** Fetch Templates from backend (GOSAC Oficial + NOAH Oficial) for a given wallet */
 export const getTemplatesByWallet = async (walletId: number | string): Promise<any[]> => {
-  const creds = await getStaticCredentials();
-  const gosacUrl = String(creds?.gosac_oficial_url || '').trim().replace(/\/$/, '');
-  const gosacToken = ensureBearer(creds?.gosac_oficial_token);
-
-  if (!gosacUrl || !gosacToken || !walletId) return [];
-
-  // Get the id_carteira for this wallet
-  const carteiras: any[] = await wpAjax('pc_get_carteiras', {});
-  const wallet = (carteiras || []).find((w: any) => String(w.id) === String(walletId));
-  const idAmbient = wallet?.id_carteira ? String(wallet.id_carteira).trim() : String(walletId);
-
-  if (!idAmbient) return [];
-
-  const url = `${gosacUrl}/templates/waba?idAmbient=${encodeURIComponent(idAmbient)}`;
-  console.log(`🔵 [Templates] Calling GOSAC directly: GET ${url}`);
-
+  if (!walletId) return [];
   try {
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: gosacToken, 'Content-Type': 'application/json', Accept: 'application/json' },
-    });
-    if (!res.ok) {
-      console.error(`🔴 [Templates] GOSAC responded ${res.status}`);
-      return [];
-    }
-    const json = await res.json();
-    const envItems: any[] = json.data ?? json;
-    const allTemplates: any[] = [];
-
-    if (Array.isArray(envItems)) {
-      for (const envItem of envItems) {
-        if (!envItem?.templates?.length) continue;
-        for (const t of envItem.templates) {
-          allTemplates.push({
-            id: t.id ?? t.name ?? '',
-            name: t.name ?? '',
-            content: t.content ?? '',
-            category: t.category ?? '',
-            language: t.language ?? '',
-            status: t.status ?? '',
-            provider: 'Gosac Oficial',
-            source: 'gosac_oficial',
-            id_ambient: idAmbient,
-            idRuler: envItem.idRuler ?? '',
-          });
-        }
-      }
-    }
-    return allTemplates;
+    const data = await wpAjax('pc_get_templates_by_wallet', { wallet_id: String(walletId) });
+    return Array.isArray(data) ? data : [];
   } catch (err) {
-    console.error('🔴 [Templates] GOSAC fetch error:', err);
+    console.error('🔴 [Templates] getTemplatesByWallet error:', err);
     return [];
   }
 };
