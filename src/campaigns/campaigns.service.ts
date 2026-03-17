@@ -232,6 +232,7 @@ export class CampaignsService {
       'S': 'SALESFORCE',
       'F': 'GOSAC_OFICIAL',
       'H': 'NOAH_OFICIAL',
+      'B': 'ROBBU_OFICIAL',
     };
 
     const provider = providerMap[prefix];
@@ -349,7 +350,8 @@ export class CampaignsService {
       case 'NOAH':
       case 'GOSAC_OFICIAL':
       case 'NOAH_OFICIAL':
-        // Já recebem url e token corretamente
+      case 'ROBBU_OFICIAL':
+        // Já recebem no formato correto (ROBBU: company, username, password, invenio_private_token)
         return credentials;
 
       case 'SALESFORCE':

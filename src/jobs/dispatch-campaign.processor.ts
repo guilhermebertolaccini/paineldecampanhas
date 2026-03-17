@@ -21,6 +21,7 @@ export class DispatchCampaignProcessor extends WorkerHost {
     @InjectQueue(queueNames.SALESFORCE_SEND) private readonly salesforceQueue: Queue,
     @InjectQueue(queueNames.GOSAC_OFICIAL_SEND) private readonly gosacOficialQueue: Queue,
     @InjectQueue(queueNames.NOAH_OFICIAL_SEND) private readonly noahOficialQueue: Queue,
+    @InjectQueue(queueNames.ROBBU_OFICIAL_SEND) private readonly robbuOficialQueue: Queue,
   ) {
     super();
   }
@@ -39,14 +40,14 @@ export class DispatchCampaignProcessor extends WorkerHost {
       this.logger.log(`Fetched ${data.length} records from WordPress`);
 
       // 3. Buscar credenciais
-      // NOAH_OFICIAL usa id_carteira (credenciais dinâmicas por carteira)
+      // NOAH_OFICIAL e ROBBU_OFICIAL usam id_carteira (credenciais dinâmicas por carteira)
       const envId =
-        provider === 'NOAH_OFICIAL' && data[0]?.id_carteira
+        (provider === 'NOAH_OFICIAL' || provider === 'ROBBU_OFICIAL') && data[0]?.id_carteira
           ? data[0].id_carteira
           : data[0]?.idgis_ambiente;
       if (!envId) {
         throw new Error(
-          provider === 'NOAH_OFICIAL'
+          provider === 'NOAH_OFICIAL' || provider === 'ROBBU_OFICIAL'
             ? 'id_carteira não encontrado nos dados'
             : 'idgis_ambiente não encontrado nos dados',
         );
@@ -199,6 +200,7 @@ export class DispatchCampaignProcessor extends WorkerHost {
       'SALESFORCE': this.salesforceQueue,
       'GOSAC_OFICIAL': this.gosacOficialQueue,
       'NOAH_OFICIAL': this.noahOficialQueue,
+      'ROBBU_OFICIAL': this.robbuOficialQueue,
     };
 
     const queue = queueMap[provider];

@@ -4,17 +4,12 @@
 
 // Configuração da URL do WordPress
 const getAjaxUrl = () => {
-  // Se o WordPress já forneceu a URL correta via window.pcAjax, usa ela diretamente
-  if (typeof (window as any).pcAjax !== 'undefined' && (window as any).pcAjax?.ajaxurl) {
-    const ajaxUrl = (window as any).pcAjax.ajaxurl;
-    console.log('🔵 [API] Usando AJAX URL do WordPress:', ajaxUrl);
-    return ajaxUrl;
+  const pc = (window as any).pcAjax;
+  const url = pc?.ajaxUrl || pc?.ajaxurl;
+  if (typeof pc !== 'undefined' && url) {
+    return url;
   }
-
-  // Fallback: constrói URL absoluta (site raiz + /wp-admin/admin-ajax.php)
-  const fallbackUrl = `${window.location.origin}/wp-admin/admin-ajax.php`;
-  console.warn('⚠️ [API] window.pcAjax não encontrado, usando fallback:', fallbackUrl);
-  return fallbackUrl;
+  return `${window.location.origin}/wp-admin/admin-ajax.php`;
 };
 
 // Helper para fazer requisições AJAX do WordPress
@@ -277,6 +272,10 @@ export const getGosacOficialConnections = () => {
   return wpAjax('pc_get_gosac_oficial_connections', {});
 };
 
+export const getRobbuWebhookStats = () => {
+  return wpAjax('pc_get_robbu_webhook_stats', {});
+};
+
 
 export const getTemplateContent = async (id: string) => {
   console.log('📄 [getTemplateContent] ID recebido:', id, 'Tipo:', typeof id);
@@ -373,6 +372,9 @@ export const saveRecurring = (data: Record<string, any>) => {
     payload.noah_template_id = data.noah_template_id ?? '';
     payload.noah_language = data.noah_language ?? 'pt_BR';
   }
+  if (data.template_source === 'robbu_oficial') {
+    payload.robbu_channel = data.robbu_channel ?? 3;
+  }
 
   return wpAjax('cm_save_recurring', payload, 'cmNonce');
 };
@@ -450,6 +452,14 @@ export const createCpfCampaign = (data: Record<string, any>) => {
   }
   if (data.customer_code) {
     payload.customer_code = data.customer_code;
+  }
+  if (templateSource === 'noah_oficial') {
+    payload.noah_channel_id = data.noah_channel_id ?? '';
+    payload.noah_template_id = data.noah_template_id ?? '';
+    payload.noah_language = data.noah_language ?? 'pt_BR';
+  }
+  if (templateSource === 'robbu_oficial') {
+    payload.robbu_channel = data.robbu_channel ?? 3;
   }
 
   if (data.variables_map) {
@@ -621,7 +631,14 @@ export const listCredentials = () => {
 };
 
 export const createCredential = (data: Record<string, any>) => {
-  return wpAjax('pc_create_credential', data);
+  const { credential_data, ...rest } = data;
+  const payload: Record<string, any> = { ...rest };
+  if (credential_data && typeof credential_data === 'object') {
+    Object.entries(credential_data).forEach(([k, v]) => {
+      payload[`credential_data[${k}]`] = Array.isArray(v) ? JSON.stringify(v) : v;
+    });
+  }
+  return wpAjax('pc_create_credential', payload);
 };
 
 export const getCredential = (provider: string, envId: string) => {
@@ -629,7 +646,13 @@ export const getCredential = (provider: string, envId: string) => {
 };
 
 export const updateCredential = (provider: string, envId: string, data: Record<string, any>) => {
-  return wpAjax('pc_update_credential', { provider, env_id: envId, credential_data: data });
+  const payload: Record<string, any> = { provider, env_id: envId };
+  if (data && typeof data === 'object') {
+    Object.entries(data).forEach(([k, v]) => {
+      payload[`credential_data[${k}]`] = Array.isArray(v) ? JSON.stringify(v) : v;
+    });
+  }
+  return wpAjax('pc_update_credential', payload);
 };
 
 export const deleteCredential = (provider: string, envId: string) => {
@@ -754,95 +777,23 @@ interface DebugEntry {
   provider: string;
 }
 
-/** Fetch Line Health directly from GOSAC middleware - no PHP proxy */
+/** Fetch Line Health via PHP (GOSAC Oficial + NOAH Oficial). Sempre via servidor para evitar ERR_CERT_DATE_INVALID no browser. */
 export const getWalletsHealth = async (): Promise<{ connections: any[]; debug_info: DebugEntry[] }> => {
-  // 1. Load credentials from WordPress (one lightweight AJAX call)
-  const creds = await getStaticCredentials();
-  const gosacUrl = String(creds?.gosac_oficial_url || '').trim().replace(/\/$/, '');
-  const gosacToken = ensureBearer(creds?.gosac_oficial_token);
+  const ajaxUrl = getAjaxUrl();
+  const nonce = (window as any).pcAjax?.nonce || '(não disponível)';
+  console.log('🔍 [LineHealth] Chamada PHP:', {
+    url: ajaxUrl,
+    action: 'pc_get_all_connections_health',
+    nonce: nonce !== '(não disponível)' ? `${String(nonce).substring(0, 12)}...${String(nonce).slice(-6)}` : nonce,
+  });
 
-  if (!gosacUrl || !gosacToken) {
-    console.warn('⚠️ [LineHealth] GOSAC credentials not configured');
-    return { connections: [], debug_info: [] };
-  }
-
-  // 2. Load wallet list from local WP DB to get unique idAmbient values
-  const carteiras: any[] = await wpAjax('pc_get_carteiras', {});
-  const uniqueAmbients = [...new Set(
-    (carteiras || []).map((w: any) => String(w.id_carteira || '').trim()).filter(Boolean)
-  )];
-
-  const allConnections: any[] = [];
-  const debugInfo: DebugEntry[] = [];
-
-  // 3. Call GOSAC directly for each unique ambient
-  for (const idAmbient of uniqueAmbients) {
-    const url = `${gosacUrl}/connections/official?idAmbient=${encodeURIComponent(idAmbient)}`;
-    const headers: Record<string, string> = {
-      Authorization: gosacToken,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    };
-
-    let httpStatus: number | string = 'NETWORK_ERROR';
-    let rawBody = '';
-
-    try {
-      console.log(`🔵 [LineHealth] Calling GOSAC directly: GET ${url}`);
-      const res = await fetch(url, { method: 'GET', headers });
-      httpStatus = res.status;
-      rawBody = await res.text();
-
-      if (res.ok) {
-        const json = JSON.parse(rawBody);
-        const envItems: any[] = json.data ?? json;
-
-        if (Array.isArray(envItems)) {
-          for (const envItem of envItems) {
-            if (!envItem?.connections?.length) continue;
-            for (const conn of envItem.connections) {
-              let restriction = conn.accountRestriction ?? null;
-              if (typeof restriction === 'string' && restriction) {
-                try { restriction = JSON.parse(restriction); } catch { /* keep as string */ }
-              }
-              // Map wallet name from local carteiras
-              const wallet = (carteiras || []).find((w: any) => String(w.id_carteira) === idAmbient);
-              allConnections.push({
-                id: conn.id ?? '',
-                name: conn.name ?? '',
-                status: conn.status ?? '',
-                type: conn.type ?? '',
-                messagingLimit: conn.messagingLimit ?? '',
-                accountRestriction: restriction,
-                provider: 'Gosac Oficial',
-                id_ambient: idAmbient,
-                idRuler: envItem.idRuler ?? '',
-                wallet_name: wallet?.nome ?? idAmbient,
-              });
-            }
-          }
-        }
-      }
-    } catch (err: any) {
-      httpStatus = 'NETWORK_ERROR';
-      rawBody = String(err?.message || err);
-      console.error(`🔴 [LineHealth] GOSAC fetch error for idAmbient ${idAmbient}:`, err);
-    }
-
-    // Mask token for debug display
-    const tokenMasked = gosacToken.substring(0, 14) + '...' + gosacToken.slice(-6);
-    debugInfo.push({
-      external_url: url,
-      method: 'GET',
-      headers_sent: { Authorization: tokenMasked, 'Content-Type': 'application/json', Accept: 'application/json' },
-      http_status: httpStatus,
-      raw_response: rawBody,
-      id_ambient: idAmbient,
-      provider: 'gosac_oficial',
-    });
-  }
-
-  return { connections: allConnections, debug_info: debugInfo };
+  const result = await wpAjax('pc_get_all_connections_health', {});
+  const connections = result?.connections ?? [];
+  const debug_info = result?.debug_info ?? [];
+  return {
+    connections: Array.isArray(connections) ? connections : [],
+    debug_info: Array.isArray(debug_info) ? debug_info : [],
+  };
 };
 
 /** Fetch Templates from backend (GOSAC Oficial + NOAH Oficial) for a given wallet */

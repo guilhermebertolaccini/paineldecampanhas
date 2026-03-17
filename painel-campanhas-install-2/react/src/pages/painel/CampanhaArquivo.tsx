@@ -34,6 +34,7 @@ import {
   checkBaseUpdate,
   getOtimaTemplates,
   getOtimaBrokers,
+  getTemplatesByWallet,
 } from "@/lib/api";
 
 const providers = [
@@ -42,7 +43,10 @@ const providers = [
   { id: "CDA_RCS", name: "CDA RCS" },
   { id: "CDA", name: "CDA" },
   { id: "GOSAC", name: "GOSAC" },
+  { id: "GOSAC_OFICIAL", name: "Gosac Oficial" },
   { id: "NOAH", name: "NOAH" },
+  { id: "NOAH_OFICIAL", name: "Noah Oficial" },
+  { id: "ROBBU_OFICIAL", name: "Robbu Oficial" },
   { id: "RCS", name: "RCS" },
   { id: "SALESFORCE", name: "Salesforce" },
 ];
@@ -96,6 +100,13 @@ export default function CampanhaArquivo() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // Buscar templates externos (GOSAC Oficial + NOAH Oficial) por carteira
+  const { data: externalTemplatesData = [], isLoading: externalTemplatesLoading } = useQuery({
+    queryKey: ['external-templates', carteira],
+    queryFn: () => getTemplatesByWallet(carteira),
+    enabled: !!carteira,
+  });
+
   // Processar e mesclar templates
   const templates = useMemo(() => {
     // Templates Locais
@@ -124,8 +135,29 @@ export default function CampanhaArquivo() {
       raw_data: t.raw_data || t,
     })) : [];
 
+    // Templates Externos (GOSAC Oficial + NOAH Oficial)
+    const external = Array.isArray(externalTemplatesData) ? externalTemplatesData.map((t: any) => {
+      const isGosac = t.provider === 'Gosac Oficial';
+      const isNoah = t.provider === 'Noah Oficial';
+      const isRobbu = t.provider === 'Robbu Oficial';
+      const source = isGosac ? 'gosac_oficial' : (isNoah ? 'noah_oficial' : (isRobbu ? 'robbu_oficial' : (t.source || 'external')));
+      return {
+        id: `${t.provider}_${t.id}_${t.id_ambient}`,
+        name: t.name || t.id || '',
+        source,
+        templateCode: t.templateName || t.name || '',
+        walletId: t.id_ambient,
+        walletName: t.wallet_name || `${t.provider} (${t.id_ambient})`,
+        channelId: t.channelId,
+        templateId: t.templateId,
+        templateName: t.templateName || t.name,
+        language: t.language || 'pt_BR',
+      };
+    }) : [];
+
     console.log('📋 [CampanhaArquivo] Templates locais:', local.length);
     console.log('📋 [CampanhaArquivo] Templates Ótima:', otima.length);
+    console.log('📋 [CampanhaArquivo] Templates GOSAC/NOAH:', external.length);
 
     const selectedWallet = carteira
       ? (carteiras as any[]).find((c: any) => String(c.id) === String(carteira))
@@ -133,14 +165,12 @@ export default function CampanhaArquivo() {
     const walletCode = selectedWallet?.id_carteira ? String(selectedWallet.id_carteira) : null;
 
     // Ótima templates only make sense for OTIMA_RCS / OTIMA_WPP providers.
-    // If a different provider is explicitly selected, hide them entirely.
     const OTIMA_PROVIDERS = ['OTIMA_RCS', 'OTIMA_WPP'];
     const otimaProviderSelected = !provider || OTIMA_PROVIDERS.includes(provider);
 
     // Filter Ótima templates: must match provider type AND wallet
     const otimaFiltrados = otimaProviderSelected
       ? otima.filter(t => {
-        // Filter by wallet when one is selected
         if (carteira && walletCode) {
           return String(t.walletId) === walletCode || String(t.customerCode) === walletCode;
         }
@@ -148,7 +178,20 @@ export default function CampanhaArquivo() {
       })
       : [];
 
+    // GOSAC/NOAH/ROBBU templates: show when provider is GOSAC_OFICIAL/NOAH_OFICIAL/ROBBU_OFICIAL or none selected
+    const EXTERNAL_PROVIDERS = ['GOSAC_OFICIAL', 'NOAH_OFICIAL', 'ROBBU_OFICIAL'];
+    const externalProviderSelected = !provider || EXTERNAL_PROVIDERS.includes(provider);
+    const externalFiltrados = externalProviderSelected
+      ? external.filter(t => {
+        if (carteira && walletCode) {
+          return String(t.walletId) === walletCode;
+        }
+        return true;
+      })
+      : [];
+
     console.log('📋 [CampanhaArquivo] Templates Ótima filtrados:', otimaFiltrados.length);
+    console.log('📋 [CampanhaArquivo] Templates GOSAC/NOAH filtrados:', externalFiltrados.length);
 
     // Filter local templates: show if no metadata (backward compat)
     // else strict match on provider AND wallet
@@ -165,10 +208,10 @@ export default function CampanhaArquivo() {
       return providerMatch && walletMatch;
     });
 
-    return [...localFiltrados, ...otimaFiltrados];
-  }, [localTemplatesData, otimaTemplatesData, carteira, carteiras, provider]);
+    return [...localFiltrados, ...otimaFiltrados, ...externalFiltrados];
+  }, [localTemplatesData, otimaTemplatesData, externalTemplatesData, carteira, carteiras, provider]);
 
-  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || otimaBrokersLoading;
+  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading || otimaBrokersLoading;
 
   // Buscar bases da carteira selecionada
   const { data: basesCarteira = [] } = useQuery({
@@ -352,13 +395,13 @@ export default function CampanhaArquivo() {
       return;
     }
 
-    // template_source: PHP exige otima_rcs ou otima_wpp para templates Ótima
+    // template_source: PHP exige otima_rcs/otima_wpp para Ótima, gosac_oficial/noah_oficial para GOSAC/NOAH
     const isOtimaTemplate = selectedTemplate?.source === 'otima_rcs' || selectedTemplate?.source === 'otima_wpp' || selectedTemplate?.source === 'otima';
     const templateSource = isOtimaTemplate
       ? (provider === 'OTIMA_WPP' ? 'otima_wpp' : 'otima_rcs')
       : (selectedTemplate?.source || 'local');
 
-    createMutation.mutate({
+    const payload: Record<string, any> = {
       temp_id: tempId,
       table_name: tableName,
       carteira: carteira || '',
@@ -372,7 +415,18 @@ export default function CampanhaArquivo() {
       match_field: matchField,
       include_baits: includeBaits ? 1 : 0,
       show_already_sent: showAlreadySent ? 1 : 0,
-    });
+    };
+
+    if (templateSource === 'noah_oficial' && selectedTemplate) {
+      payload.noah_channel_id = selectedTemplate.channelId ?? '';
+      payload.noah_template_id = selectedTemplate.templateId ?? '';
+      payload.noah_language = selectedTemplate.language ?? 'pt_BR';
+    }
+    if (templateSource === 'robbu_oficial') {
+      payload.robbu_channel = 3;
+    }
+
+    createMutation.mutate(payload);
   };
 
   return (

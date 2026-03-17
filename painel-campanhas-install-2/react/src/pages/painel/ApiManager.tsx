@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Key, Eye, EyeOff, Save, Plus, Trash2, Link2, Loader2, Server, Play, CheckCircle2, XCircle } from "lucide-react";
+import { Key, Eye, EyeOff, Save, Plus, Trash2, Link2, Loader2, Server, Play, CheckCircle2, XCircle, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,14 +29,164 @@ import {
   updateCustomProvider,
   deleteCustomProvider,
   runSalesforceImport,
+  getRobbuWebhookStats,
 } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+
+function RobbuWebhookCard() {
+  const { toast } = useToast();
+  const { data: stats, isLoading, refetch } = useQuery({
+    queryKey: ['robbu-webhook-stats'],
+    queryFn: getRobbuWebhookStats,
+    refetchInterval: 30000,
+  });
+
+  const totalEvents = stats?.total_events ?? 0;
+  const lastEventAt = stats?.last_event_at ?? null;
+  const eventsByType = stats?.events_by_type ?? [];
+  const recentEvents = stats?.recent_events ?? [];
+  const totalLines = stats?.total_lines ?? 0;
+  const lines = stats?.lines ?? [];
+
+  return (
+    <Card className="border-amber-300 bg-amber-50/40 dark:bg-amber-900/10">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+          <Server className="h-5 w-5" />
+          Webhook Robbu / Invenio
+        </CardTitle>
+        <CardDescription>
+          URL para cadastrar no Invenio Center e receber eventos em tempo real (status de mensagens, saúde das linhas WhatsApp).
+          Acesse: Configurações → Webhook → Gerenciar
+        </CardDescription>
+        <p className="text-sm text-amber-700/90 dark:text-amber-400/90 mt-1">
+          <strong>Credenciais para envio:</strong> role até a seção &quot;Credenciais Estáticas&quot; abaixo → preencha <strong>Robbu Oficial</strong> (Company, Username, Password e Token Privado Invenio).
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <Label>URL do Webhook</Label>
+          <div className="flex gap-2">
+            <Input
+              readOnly
+              value={`${window.location.origin}/wp-json/robbu-webhook/v2/receive`}
+              className="font-mono text-sm"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                navigator.clipboard.writeText(`${window.location.origin}/wp-json/robbu-webhook/v2/receive`);
+                toast({ title: "URL copiada para a área de transferência!" });
+              }}
+            >
+              Copiar
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Libere os IPs da Robbu no firewall se necessário. Após cadastrar, aguarde ~60 min para começar a receber eventos.
+          </p>
+        </div>
+
+        {/* Monitoramento de eventos */}
+        <div className="rounded-lg border border-amber-200 bg-white/60 dark:bg-slate-900/40 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="font-semibold text-sm text-amber-800 dark:text-amber-300">Monitoramento</h4>
+            <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isLoading}>
+              <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+            </Button>
+          </div>
+          {isLoading ? (
+            <Skeleton className="h-16 w-full" />
+          ) : (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                <div>
+                  <p className="text-muted-foreground">Total de eventos</p>
+                  <p className="font-bold text-lg tabular-nums">{totalEvents.toLocaleString('pt-BR')}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Linhas cadastradas</p>
+                  <p className="font-bold text-lg tabular-nums">{totalLines}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Último evento</p>
+                  <p className="font-medium text-xs">
+                    {lastEventAt ? new Date(lastEventAt).toLocaleString('pt-BR') : '—'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Por tipo</p>
+                  <p className="font-medium text-xs">
+                    {eventsByType.length > 0
+                      ? eventsByType.map((e: any) => `${e.event_type}: ${e.cnt}`).join(', ')
+                      : '—'}
+                  </p>
+                </div>
+              </div>
+              {recentEvents.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">Últimos 10 eventos</p>
+                  <div className="max-h-24 overflow-y-auto space-y-0.5 text-xs font-mono">
+                    {recentEvents.map((e: any) => (
+                      <div key={e.id} className="flex gap-2">
+                        <span className="text-amber-600 dark:text-amber-500">{e.event_type}</span>
+                        <span className="text-muted-foreground">{e.created_at}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {lines.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">Linhas WhatsApp (últimas 20)</p>
+                  <div className="max-h-28 overflow-y-auto text-xs">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left py-1">Número</th>
+                          <th className="text-left py-1">Status</th>
+                          <th className="text-left py-1">Limite/dia</th>
+                          <th className="text-left py-1">Atualizado</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {lines.map((l: any) => (
+                          <tr key={l.robbu_line_id} className="border-b border-amber-100">
+                            <td className="py-1">+55 {l.area_code || ''}{l.phone_number || l.robbu_line_id}</td>
+                            <td className="py-1">
+                              <Badge variant={l.status === 'GREEN' ? 'default' : l.status === 'YELLOW' ? 'secondary' : 'destructive'}>
+                                {l.status || '—'}
+                              </Badge>
+                            </td>
+                            <td className="py-1">{l.broadcast_limit_per_day ?? '—'}</td>
+                            <td className="py-1 text-muted-foreground">{l.updated_at ? new Date(l.updated_at).toLocaleString('pt-BR') : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              {totalEvents === 0 && totalLines === 0 && (
+                <p className="text-sm text-muted-foreground italic">
+                  Nenhum evento recebido ainda. Cadastre a URL no Invenio Center e aguarde.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 const PROVIDERS = [
   { value: 'gosac', label: 'GOSAC' },
   { value: 'gosac_oficial', label: 'Gosac Oficial' },
   { value: 'noah', label: 'Noah' },
+  { value: 'noah_oficial', label: 'Noah Oficial' },
   { value: 'salesforce', label: 'Salesforce' },
 ];
 
@@ -74,6 +224,10 @@ export default function ApiManager() {
     otima_rcs_customer_code: "",
     gosac_oficial_token: "",
     gosac_oficial_url: "",
+    robbu_company: "",
+    robbu_username: "",
+    robbu_password: "",
+    robbu_invenio_token: "",
     dashboard_password: "",
   });
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -82,6 +236,11 @@ export default function ApiManager() {
     env_id: "",
     url: "",
     token: "",
+    channel_ids: "",
+    company: "",
+    username: "",
+    password: "",
+    invenio_private_token: "",
     operacao: "",
     automation_id: "",
     chave_api: "",
@@ -148,6 +307,10 @@ export default function ApiManager() {
         otima_rcs_customer_code: staticCredsData.otima_rcs_customer_code || "",
         gosac_oficial_token: staticCredsData.gosac_oficial_token || "",
         gosac_oficial_url: staticCredsData.gosac_oficial_url || "",
+        robbu_company: staticCredsData.robbu_company || "",
+        robbu_username: staticCredsData.robbu_username || "",
+        robbu_password: staticCredsData.robbu_password || "",
+        robbu_invenio_token: staticCredsData.robbu_invenio_token || "",
         dashboard_password: staticCredsData.dashboard_password || "",
       };
       console.log('🔵 [ApiManager] Credenciais carregadas no estado:', Object.entries(loadedCreds).filter(([_, v]) => v && v.trim()).map(([k, v]) => `${k}: ${v.substring(0, 10)}...`));
@@ -290,7 +453,7 @@ export default function ApiManager() {
 
     const credentialData: any = {};
 
-    if (['gosac', 'gosac_oficial', 'noah'].includes(dynamicCredential.provider)) {
+    if (['gosac', 'gosac_oficial', 'noah', 'noah_oficial'].includes(dynamicCredential.provider)) {
       if (!dynamicCredential.url || !dynamicCredential.token) {
         toast({
           title: "Campos obrigatórios",
@@ -301,6 +464,13 @@ export default function ApiManager() {
       }
       credentialData.url = dynamicCredential.url;
       credentialData.token = dynamicCredential.token;
+      if (dynamicCredential.provider === 'noah_oficial' && dynamicCredential.channel_ids?.trim()) {
+        credentialData.channel_ids = dynamicCredential.channel_ids
+          .split(/[,;\s]+/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((s) => (/^\d+$/.test(s) ? parseInt(s, 10) : s));
+      }
     } else if (dynamicCredential.provider === 'salesforce') {
       if (!dynamicCredential.operacao || !dynamicCredential.automation_id) {
         toast({
@@ -338,6 +508,11 @@ export default function ApiManager() {
           env_id: "",
           url: "",
           token: "",
+          channel_ids: "",
+          company: "",
+          username: "",
+          password: "",
+          invenio_private_token: "",
           operacao: "",
           automation_id: "",
           chave_api: "",
@@ -417,6 +592,9 @@ export default function ApiManager() {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Robbu Webhook ───────────────────────────────────────────────────── */}
+      <RobbuWebhookCard />
 
       {/* Master API Key */}
       <Card className="border-primary/30 bg-primary/5">
@@ -1043,6 +1221,89 @@ export default function ApiManager() {
             </div>
           </div>
 
+          {/* Robbu Oficial */}
+          <div className="border-b pb-4 space-y-4">
+            <h4 className="font-semibold">Robbu Oficial</h4>
+            <p className="text-sm text-muted-foreground">
+              Ambiente (Company), Login (Username) e Senha (Password) para autenticação na API Robbu. Token Privado Invenio para templates e envio.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Company (Ambiente)</Label>
+                <Input
+                  value={staticCreds.robbu_company}
+                  onChange={(e) =>
+                    setStaticCreds({ ...staticCreds, robbu_company: e.target.value })
+                  }
+                  placeholder="Nome da empresa no Robbu"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Username (Login)</Label>
+                <Input
+                  value={staticCreds.robbu_username}
+                  onChange={(e) =>
+                    setStaticCreds({ ...staticCreds, robbu_username: e.target.value })
+                  }
+                  placeholder="Usuário de login"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Password (Senha)</Label>
+                <div className="relative">
+                  <Input
+                    type={visibleKeys.includes("robbu_password") ? "text" : "password"}
+                    value={staticCreds.robbu_password}
+                    onChange={(e) =>
+                      setStaticCreds({ ...staticCreds, robbu_password: e.target.value })
+                    }
+                    placeholder="Senha de login"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleKeyVisibility("robbu_password")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {visibleKeys.includes("robbu_password") ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Token Privado Invenio</Label>
+                <div className="relative">
+                  <Input
+                    type={visibleKeys.includes("robbu_token") ? "text" : "password"}
+                    value={staticCreds.robbu_invenio_token}
+                    onChange={(e) =>
+                      setStaticCreds({ ...staticCreds, robbu_invenio_token: e.target.value })
+                    }
+                    placeholder="Token da página Configurações > Conta"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleKeyVisibility("robbu_token")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {visibleKeys.includes("robbu_token") ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Obtido em inveniocenter.robbu.global/painel/configuracoes/conta
+                </p>
+              </div>
+            </div>
+          </div>
+
           <Button
             onClick={handleSaveStaticCreds}
             disabled={staticCredsMutation.isPending}
@@ -1116,8 +1377,8 @@ export default function ApiManager() {
                     </p>
                   </div>
 
-                  {/* Campos para URL/Token (GOSAC, Noah) */}
-                  {['gosac', 'noah'].includes(dynamicCredential.provider) && (
+                  {/* Campos para URL/Token (GOSAC, Noah, GOSAC Oficial, NOAH Oficial) */}
+                  {['gosac', 'noah', 'gosac_oficial', 'noah_oficial'].includes(dynamicCredential.provider) && (
                     <>
                       <div className="space-y-2">
                         <Label>API URL *</Label>
@@ -1153,6 +1414,21 @@ export default function ApiManager() {
                           </button>
                         </div>
                       </div>
+                      {dynamicCredential.provider === 'noah_oficial' && (
+                        <div className="space-y-2">
+                          <Label>Channel IDs (opcional)</Label>
+                          <Input
+                            value={dynamicCredential.channel_ids}
+                            onChange={(e) =>
+                              setDynamicCredential({ ...dynamicCredential, channel_ids: e.target.value })
+                            }
+                            placeholder="Ex: 5 ou 5, 6, 7 (se /channels não existir)"
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            IDs dos canais separados por vírgula. Use se a API não tiver endpoint /channels.
+                          </p>
+                        </div>
+                      )}
                     </>
                   )}
 
@@ -1314,6 +1590,21 @@ function DynamicCredentialsList() {
               {cred.data?.automation_id && (
                 <p>
                   <span className="font-medium">Automation ID:</span> {cred.data.automation_id}
+                </p>
+              )}
+              {cred.data?.company && (
+                <p>
+                  <span className="font-medium">Company:</span> {cred.data.company}
+                </p>
+              )}
+              {cred.data?.username && (
+                <p>
+                  <span className="font-medium">Username:</span> {cred.data.username}
+                </p>
+              )}
+              {cred.data?.invenio_private_token && (
+                <p>
+                  <span className="font-medium">Token Privado:</span> ••••••••
                 </p>
               )}
             </div>

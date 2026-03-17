@@ -22,6 +22,7 @@ export const queueNames = {
   GOSAC_OFICIAL_SEND: 'gosac-oficial-send',
   GOSAC_OFICIAL_START: 'gosac-oficial-start',
   NOAH_OFICIAL_SEND: 'noah-oficial-send',
+  ROBBU_OFICIAL_SEND: 'robbu-oficial-send',
 } as const;
 
 export type QueueName = typeof queueNames[keyof typeof queueNames];

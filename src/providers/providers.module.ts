@@ -8,6 +8,7 @@ import { RcsOtimaModule } from './rcs-otima/rcs-otima.module';
 import { WhatsappOtimaModule } from './whatsapp-otima/whatsapp-otima.module';
 import { GosacOficialModule } from './gosac-oficial/gosac-oficial.module';
 import { NoahOficialModule } from './noah-oficial/noah-oficial.module';
+import { RobbOficialModule } from './robbu-oficial/robbu-oficial.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { NoahOficialModule } from './noah-oficial/noah-oficial.module';
     WhatsappOtimaModule,
     GosacOficialModule,
     NoahOficialModule,
+    RobbOficialModule,
   ],
   exports: [
     CdaModule,
@@ -31,6 +33,7 @@ import { NoahOficialModule } from './noah-oficial/noah-oficial.module';
     WhatsappOtimaModule,
     GosacOficialModule,
     NoahOficialModule,
+    RobbOficialModule,
   ],
 })
 export class ProvidersModule { }

@@ -54,6 +54,7 @@ const providers = [
   { id: "GOSAC_OFICIAL", name: "Gosac Oficial", available: true },
   { id: "NOAH", name: "Noah", available: true },
   { id: "NOAH_OFICIAL", name: "Noah Oficial", available: true },
+  { id: "ROBBU_OFICIAL", name: "Robbu Oficial", available: true },
   { id: "SALESFORCE", name: "Salesforce", available: true },
   { id: "TECH_IA", name: "Tech IA", available: true },
 ];
@@ -240,7 +241,8 @@ export default function NovaCampanha() {
     const external = Array.isArray(externalTemplatesData) ? externalTemplatesData.map((t: any) => {
       const isGosac = t.provider === 'Gosac Oficial';
       const isNoah = t.provider === 'Noah Oficial';
-      const source = isGosac ? 'gosac_oficial' : (isNoah ? 'noah_oficial' : (t.source || 'external'));
+      const isRobbu = t.provider === 'Robbu Oficial';
+      const source = isGosac ? 'gosac_oficial' : (isNoah ? 'noah_oficial' : (isRobbu ? 'robbu_oficial' : (t.source || 'external')));
       return {
         id: `${t.provider}_${t.id}_${t.id_ambient}`,
         name: t.name || t.id || '',
@@ -275,6 +277,7 @@ export default function NovaCampanha() {
     'CDA_RCS': [],
     'NOAH': [],
     'NOAH_OFICIAL': ['noah_oficial'],
+    'ROBBU_OFICIAL': ['robbu_oficial'],
     'TECH_IA': [],
   };
 
@@ -569,6 +572,7 @@ export default function NovaCampanha() {
         noah_channel_id: formData.noahChannelId || null,
         noah_template_id: formData.noahTemplateId || null,
         noah_language: formData.noahLanguage || 'pt_BR',
+        robbu_channel: formData.templateSource === 'robbu_oficial' ? 3 : null,
         variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
         providers_config: providersConfig,
         filters: formattedFilters,
@@ -596,6 +600,7 @@ export default function NovaCampanha() {
         noah_channel_id: formData.noahChannelId || null,
         noah_template_id: formData.noahTemplateId || null,
         noah_language: formData.noahLanguage || 'pt_BR',
+        robbu_channel: formData.templateSource === 'robbu_oficial' ? 3 : null,
         variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
         record_limit: formData.record_limit || 0,
         exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
@@ -636,7 +641,7 @@ export default function NovaCampanha() {
         if (!formData.template) return false;
         const isOtima = formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp';
         if (isOtima && !formData.brokerCode) return false;
-        const isExternalProvider = isOtima || formData.templateSource === 'gosac_oficial' || formData.templateSource === 'noah_oficial';
+        const isExternalProvider = isOtima || formData.templateSource === 'gosac_oficial' || formData.templateSource === 'noah_oficial' || formData.templateSource === 'robbu_oficial';
         if (isExternalProvider) return boolean(formData.message.trim());
         // Local templates (incl. Salesforce custom): accept if message loaded OR template selected
         return boolean(formData.message.trim() || formData.templateCode);

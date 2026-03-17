@@ -167,7 +167,16 @@ export default function LineHealth() {
                                             <TableCell className="text-center">{getStatusBadge(conn)}</TableCell>
                                             <TableCell className="text-center">{getLimitBadge(conn.messagingLimit)}</TableCell>
                                             <TableCell className="text-center">
-                                                {getRestrictionDisplay(conn.accountRestriction)}
+                                                {conn.provider === 'Noah Oficial' ? (
+                                                    <Badge
+                                                        variant={conn.qualityRating === 'GREEN' ? 'default' : conn.qualityRating === 'YELLOW' || conn.qualityRating === 'RED' ? 'destructive' : 'secondary'}
+                                                        className="text-[10px]"
+                                                    >
+                                                        {conn.qualityRating || '—'}
+                                                    </Badge>
+                                                ) : (
+                                                    getRestrictionDisplay(conn.accountRestriction)
+                                                )}
                                             </TableCell>
                                         </TableRow>
                                     ))}

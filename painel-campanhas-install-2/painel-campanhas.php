@@ -166,6 +166,8 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_get_gosac_oficial_connections', [$this, 'handle_get_gosac_oficial_connections']);
         add_action('wp_ajax_pc_get_noah_oficial_templates', [$this, 'handle_get_noah_oficial_templates']);
         add_action('wp_ajax_pc_get_noah_oficial_channels', [$this, 'handle_get_noah_oficial_channels']);
+        add_action('wp_ajax_pc_get_robbu_oficial_templates', [$this, 'handle_get_robbu_oficial_templates']);
+        add_action('wp_ajax_pc_get_robbu_webhook_stats', [$this, 'handle_get_robbu_webhook_stats']);
         add_action('wp_ajax_pc_get_all_connections_health', [$this, 'handle_get_all_connections_health']);
         add_action('wp_ajax_pc_get_templates_by_wallet', [$this, 'handle_get_templates_by_wallet']);
 
@@ -299,6 +301,14 @@ class Painel_Campanhas
             'methods' => 'POST',
             'callback' => [$this, 'handle_webhook_status_update'],
             'permission_callback' => [$this, 'check_api_key_rest'],
+        ]);
+
+        // Webhook Robbu - recebe eventos do Invenio (status de mensagens, saúde das linhas, etc.)
+        // URL para cadastrar na Robbu: https://SEU-SITE.com/wp-json/robbu-webhook/v2/receive
+        register_rest_route('robbu-webhook/v2', '/receive', [
+            'methods' => 'POST',
+            'callback' => [$this, 'handle_robbu_webhook_receive'],
+            'permission_callback' => '__return_true', // Robbu não envia autenticação; use firewall por IP se necessário
         ]);
         register_rest_route('campaigns/v1', '/config/(?P<agendamento_id>[^/]+)', [
             'methods' => 'GET',
@@ -633,6 +643,9 @@ class Painel_Campanhas
             PRIMARY KEY (agendamento_id)
         ) $charset_collate;";
         dbDelta($sql_settings);
+
+        // ── Robbu Webhook ───────────────────────────────────────────────────────
+        $this->create_robbu_webhook_tables();
 
         // ── salesforce_returns ────────────────────────────────────────────────
         // Table populated by import_salesforce.php cron job.
@@ -1153,6 +1166,10 @@ class Painel_Campanhas
                 'otima_rcs_customer_code' => 'sanitize_text_field',
                 'gosac_oficial_token' => 'sanitize_text_field',
                 'gosac_oficial_url' => 'esc_url_raw',
+                'robbu_company' => 'sanitize_text_field',
+                'robbu_username' => 'sanitize_text_field',
+                'robbu_password' => 'sanitize_text_field',
+                'robbu_invenio_token' => 'sanitize_text_field',
                 'dashboard_password' => 'sanitize_text_field'
             ];
 
@@ -1302,6 +1319,10 @@ class Painel_Campanhas
             'otima_rcs_customer_code',
             'gosac_oficial_token',
             'gosac_oficial_url',
+            'robbu_company',
+            'robbu_username',
+            'robbu_password',
+            'robbu_invenio_token',
             'dashboard_password'
         ];
 
@@ -1460,6 +1481,15 @@ class Painel_Campanhas
         $env_id = sanitize_text_field($_POST['env_id'] ?? '');
         $credential_data = $_POST['credential_data'] ?? [];
 
+        // credential_data pode vir como JSON string ou como array nativo (credential_data[url], etc.)
+        if (is_string($credential_data)) {
+            $decoded = json_decode($credential_data, true);
+            $credential_data = is_array($decoded) ? $decoded : [];
+        }
+        if (!is_array($credential_data)) {
+            $credential_data = [];
+        }
+
         if (empty($provider) || empty($env_id) || empty($credential_data)) {
             wp_send_json_error('Dados incompletos');
             return;
@@ -1475,6 +1505,17 @@ class Painel_Campanhas
         foreach ($credential_data as $key => $value) {
             if ($key === 'url') {
                 $sanitized_data[$key] = esc_url_raw($value);
+            } elseif ($key === 'channel_ids') {
+                if (is_array($value)) {
+                    $sanitized_data[$key] = array_map('intval', array_filter($value, 'is_numeric'));
+                } elseif (is_string($value)) {
+                    $arr = json_decode($value, true);
+                    $sanitized_data[$key] = is_array($arr) ? array_map('intval', array_filter($arr, 'is_numeric')) : [];
+                } else {
+                    $sanitized_data[$key] = [];
+                }
+            } elseif (is_array($value)) {
+                $sanitized_data[$key] = array_map('sanitize_text_field', $value);
             } else {
                 $sanitized_data[$key] = sanitize_text_field($value);
             }
@@ -1561,6 +1602,15 @@ class Painel_Campanhas
         $env_id = sanitize_text_field($_POST['env_id'] ?? '');
         $credential_data = $_POST['credential_data'] ?? [];
 
+        // credential_data pode vir como JSON string ou como array nativo (credential_data[url], etc.)
+        if (is_string($credential_data)) {
+            $decoded = json_decode($credential_data, true);
+            $credential_data = is_array($decoded) ? $decoded : [];
+        }
+        if (!is_array($credential_data)) {
+            $credential_data = [];
+        }
+
         if (empty($provider) || empty($env_id) || empty($credential_data)) {
             wp_send_json_error('Dados incompletos');
             return;
@@ -1578,6 +1628,17 @@ class Painel_Campanhas
         foreach ($credential_data as $key => $value) {
             if ($key === 'url') {
                 $sanitized_data[$key] = esc_url_raw($value);
+            } elseif ($key === 'channel_ids') {
+                if (is_array($value)) {
+                    $sanitized_data[$key] = array_map('intval', array_filter($value, 'is_numeric'));
+                } elseif (is_string($value)) {
+                    $arr = json_decode($value, true);
+                    $sanitized_data[$key] = is_array($arr) ? array_map('intval', array_filter($arr, 'is_numeric')) : [];
+                } else {
+                    $sanitized_data[$key] = [];
+                }
+            } elseif (is_array($value)) {
+                $sanitized_data[$key] = array_map('sanitize_text_field', $value);
             } else {
                 $sanitized_data[$key] = sanitize_text_field($value);
             }
@@ -2297,6 +2358,9 @@ class Painel_Campanhas
             $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
             $broker_code = sanitize_text_field($_POST['broker_code'] ?? '');
             $customer_code = sanitize_text_field($_POST['customer_code'] ?? '');
+            $noah_channel_id = intval($_POST['noah_channel_id'] ?? 0);
+            $noah_template_id = intval($_POST['noah_template_id'] ?? 0);
+            $noah_language = sanitize_text_field($_POST['noah_language'] ?? 'pt_BR');
             $filters_json = stripslashes($_POST['filters'] ?? '[]');
             $filters = json_decode($filters_json, true);
             $providers_config_json = stripslashes($_POST['providers_config'] ?? '{}');
@@ -2312,7 +2376,8 @@ class Painel_Campanhas
             }
 
             $is_template_ok = ($template_source === 'local' && $template_id > 0)
-                || (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code));
+                || (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code))
+                || (($template_source === 'gosac_oficial' || $template_source === 'noah_oficial' || $template_source === 'robbu_oficial') && !empty($template_code));
 
             if (empty($table_name) || empty($temp_id) || !$is_template_ok || empty($providers_config['providers'])) {
                 error_log('🔴 [handle_create_cpf_campaign] Dados incompletos: table_name=' . $table_name . ', temp_id=' . $temp_id . ', template_source=' . $template_source . ', template_code=' . $template_code . ', template_id=' . $template_id . ', providers_count=' . (is_array($providers_config['providers'] ?? null) ? count($providers_config['providers']) : 0));
@@ -2326,6 +2391,12 @@ class Painel_Campanhas
                     wp_send_json_error('Template inválido');
                 }
                 $message_content = $template->post_content;
+            } elseif ($template_source === 'gosac_oficial') {
+                $message_content = 'Template GOSAC Oficial: ' . $template_code;
+            } elseif ($template_source === 'noah_oficial') {
+                $message_content = 'Template NOAH Oficial: ' . $template_code;
+            } elseif ($template_source === 'robbu_oficial') {
+                $message_content = 'Template Robbu Oficial: ' . $template_code;
             } else {
                 // Templates da Ótima usam template_code
                 $message_content = 'Template da Ótima: ' . $template_code;
@@ -2413,8 +2484,8 @@ class Painel_Campanhas
                         $telefone = substr($telefone, 2);
                     }
 
-                    // Para templates da Ótima, não substitui placeholders (será resolvido no microserviço)
-                    if ($template_source === 'otima_wpp' || $template_source === 'otima_rcs') {
+                    // Para templates Ótima/GOSAC/NOAH, não substitui placeholders (será resolvido no microserviço)
+                    if (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'robbu_oficial'])) {
                         $mensagem_final = $message_content;
                     } else {
                         $mensagem_final = $this->replace_placeholders($message_content, $record);
@@ -2436,15 +2507,42 @@ class Painel_Campanhas
                         $id_carteira = $campaign_id_carteira;
                     }
 
-                    // Para templates da Ótima, armazena template_code no campo mensagem
+                    // Para templates da Ótima, GOSAC ou NOAH, armazena JSON no campo mensagem
                     $mensagem_para_armazenar = $mensagem_final;
                     if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code)) {
-                        // broker_code = do template; customer_code = id_carteira do contato
                         $mensagem_para_armazenar = json_encode([
                             'template_code' => $template_code,
                             'template_source' => $template_source,
                             'broker_code' => $broker_code,
                             'customer_code' => (string) $id_carteira,
+                            'original_message' => $mensagem_final,
+                            'variables_map' => $variables_map
+                        ]);
+                    } elseif ($template_source === 'gosac_oficial' && !empty($template_code)) {
+                        $mensagem_para_armazenar = json_encode([
+                            'template_code' => $template_code,
+                            'template_source' => 'gosac_oficial',
+                            'original_message' => $mensagem_final,
+                            'variables_map' => $variables_map
+                        ]);
+                    } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
+                        $mensagem_para_armazenar = json_encode([
+                            'template_code' => $template_code,
+                            'template_source' => 'noah_oficial',
+                            'channelId' => $noah_channel_id,
+                            'templateId' => $noah_template_id,
+                            'templateName' => $template_code,
+                            'language' => $noah_language,
+                            'original_message' => $mensagem_final,
+                            'variables_map' => $variables_map
+                        ]);
+                    } elseif ($template_source === 'robbu_oficial' && !empty($template_code)) {
+                        $robbu_channel = intval($_POST['robbu_channel'] ?? 3);
+                        $mensagem_para_armazenar = json_encode([
+                            'template_code' => $template_code,
+                            'template_source' => 'robbu_oficial',
+                            'templateName' => $template_code,
+                            'channel' => $robbu_channel,
                             'original_message' => $mensagem_final,
                             'variables_map' => $variables_map
                         ]);
@@ -2832,6 +2930,14 @@ class Painel_Campanhas
                 'template_name' => $template_code,
                 'language' => sanitize_text_field($_POST['noah_language'] ?? 'pt_BR'),
             ];
+        } elseif ($template_source === 'robbu_oficial' && !empty($template_code)) {
+            $message_content = 'Template Robbu Oficial: ' . $template_code;
+            $template_info = [
+                'template_code' => $template_code,
+                'source' => 'robbu_oficial',
+                'template_name' => $template_code,
+                'channel' => 3,
+            ];
         } else {
             wp_send_json_error('Template inválido. Informe template_id para templates locais ou template_code para templates externos (Ótima, GOSAC Oficial, NOAH Oficial).');
         }
@@ -2960,6 +3066,8 @@ class Painel_Campanhas
                 $prefix = 'F';
             } elseif ($provider === 'NOAH_OFICIAL') {
                 $prefix = 'H';
+            } elseif ($provider === 'ROBBU_OFICIAL') {
+                $prefix = 'B';
             } elseif ($provider === 'CDA_RCS') {
                 // CDA_RCS usa prefixo R (RCS) para buscar credenciais RCS (URL importarcs), não CDA (URL importar/campanha)
                 $prefix = 'R';
@@ -3032,6 +3140,23 @@ class Painel_Campanhas
                         'templateName' => $noah_template_name,
                         'language' => $noah_language,
                         'components' => $noah_components,
+                    ]);
+                } elseif ($template_source === 'robbu_oficial' && !empty($template_code)) {
+                    $robbu_params = [];
+                    if (!empty($variables_map) && is_array($variables_map)) {
+                        foreach ($variables_map as $param_name => $field) {
+                            $val = $record[$field] ?? $record[strtoupper($field)] ?? '';
+                            $robbu_params[] = [
+                                'parameterName' => $param_name,
+                                'parameterValue' => (string) $val,
+                            ];
+                        }
+                    }
+                    $mensagem_para_armazenar = json_encode([
+                        'template_source' => 'robbu_oficial',
+                        'templateName' => $template_code,
+                        'channel' => 3,
+                        'templateParameters' => $robbu_params,
                     ]);
                 }
 
@@ -5710,7 +5835,7 @@ class Painel_Campanhas
 
         // Lista de providers que usam credenciais estáticas
         // Para Ótima, verificamos se contém "OTIMA" no nome (case-insensitive)
-        $static_providers = ['RCS', 'CDA', 'SALESFORCE', 'MKC', 'GOSAC_OFICIAL'];
+        $static_providers = ['RCS', 'CDA', 'SALESFORCE', 'MKC', 'GOSAC_OFICIAL', 'ROBBU_OFICIAL'];
 
         // Verifica se é provider estático (incluindo variações de Ótima)
         $is_static_provider = in_array($provider, $static_providers) ||
@@ -5868,6 +5993,14 @@ class Painel_Campanhas
                 ];
 
                 error_log('✅ [REST API] Credenciais Gosac Oficial retornadas com sucesso. idRuler=' . $id_ruler);
+            } elseif ($provider === 'ROBBU_OFICIAL') {
+                $credentials = [
+                    'company' => $static_credentials['robbu_company'] ?? '',
+                    'username' => $static_credentials['robbu_username'] ?? '',
+                    'password' => $static_credentials['robbu_password'] ?? '',
+                    'invenio_private_token' => $static_credentials['robbu_invenio_token'] ?? '',
+                ];
+                error_log('✅ [REST API] Credenciais Robbu Oficial retornadas (estáticas)');
             }
 
             if (empty($credentials) || !$this->has_valid_credentials($credentials)) {
@@ -6110,6 +6243,117 @@ class Painel_Campanhas
             'total_enviados' => $total_enviados,
             'total_falhas' => $total_falhas
         ]);
+    }
+
+    /**
+     * Webhook Robbu/Invenio - recebe eventos em tempo real.
+     * URL para cadastrar: https://SEU-SITE.com/wp-json/robbu-webhook/v2/receive
+     * IPs Robbu (liberar no firewall se necessário): 104.41.15.44, 104.41.14.184, 104.41.13.132, etc.
+     */
+    public function handle_robbu_webhook_receive($request)
+    {
+        $body = $request->get_json_params();
+        if (!is_array($body)) {
+            $raw = $request->get_body();
+            $body = json_decode($raw, true);
+        }
+        if (!is_array($body)) {
+            error_log('🔴 [Robbu Webhook] Body inválido ou vazio');
+            return new WP_REST_Response(['ok' => true, 'message' => 'Received'], 200);
+        }
+
+        global $wpdb;
+        $table_events = $wpdb->prefix . 'pc_robbu_webhook_events';
+        $table_lines = $wpdb->prefix . 'pc_robbu_line_status';
+
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table_events'") !== $table_events) {
+            require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+            $this->create_robbu_webhook_tables();
+        }
+
+        $processed = 0;
+        $items = isset($body[0]) ? $body : [$body];
+
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            if (isset($item['whatsappNumber'])) {
+                $wn = $item['whatsappNumber'];
+                if (is_array($wn)) {
+                    $line_id = intval($wn['id'] ?? 0);
+                    if ($line_id > 0) {
+                        $wpdb->replace($table_lines, [
+                            'robbu_line_id' => $line_id,
+                            'wallet_id' => isset($wn['walletId']) ? intval($wn['walletId']) : null,
+                            'status' => sanitize_text_field($wn['status'] ?? ''),
+                            'country_code' => sanitize_text_field($wn['countryCode'] ?? ''),
+                            'area_code' => sanitize_text_field($wn['areaCode'] ?? ''),
+                            'phone_number' => sanitize_text_field($wn['phoneNumber'] ?? ''),
+                            'is_active' => !empty($wn['isActive']) ? 1 : 0,
+                            'broadcast_limit_per_day' => isset($wn['broadcastLimitPerDay']) ? intval($wn['broadcastLimitPerDay']) : null,
+                            'can_send_hsm' => !empty($wn['canSendHsm']) ? 1 : 0,
+                            'event_at' => !empty($wn['eventAt']) ? date('Y-m-d H:i:s', strtotime($wn['eventAt'])) : null,
+                        ], ['%d', '%d', '%s', '%s', '%s', '%s', '%d', '%d', '%d', '%s']);
+                        $processed++;
+                    }
+                }
+            }
+
+            $event_type = array_key_first($item);
+            if ($event_type) {
+                $wpdb->insert($table_events, [
+                    'event_type' => $event_type,
+                    'payload_json' => wp_json_encode($item),
+                    'processed' => isset($item['whatsappNumber']) ? 1 : 0,
+                ], ['%s', '%s', '%d']);
+            }
+        }
+
+        error_log('✅ [Robbu Webhook] Recebidos ' . count($items) . ' itens, processados ' . $processed . ' linhas');
+        return new WP_REST_Response(['ok' => true, 'received' => count($items), 'processed' => $processed], 200);
+    }
+
+    private function create_robbu_webhook_tables()
+    {
+        global $wpdb;
+        $charset_collate = $wpdb->get_charset_collate();
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+
+        $table_events = $wpdb->prefix . 'pc_robbu_webhook_events';
+        $sql_events = "CREATE TABLE IF NOT EXISTS $table_events (
+            id bigint(20) NOT NULL AUTO_INCREMENT,
+            event_type varchar(50) NOT NULL,
+            payload_json longtext,
+            processed tinyint(1) DEFAULT 0,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_event_type (event_type),
+            KEY idx_created (created_at)
+        ) $charset_collate;";
+        dbDelta($sql_events);
+
+        $table_lines = $wpdb->prefix . 'pc_robbu_line_status';
+        $sql_lines = "CREATE TABLE IF NOT EXISTS $table_lines (
+            id bigint(20) NOT NULL AUTO_INCREMENT,
+            robbu_line_id bigint(20) NOT NULL,
+            wallet_id bigint(20) DEFAULT NULL,
+            status varchar(20) DEFAULT NULL,
+            country_code varchar(5) DEFAULT NULL,
+            area_code varchar(10) DEFAULT NULL,
+            phone_number varchar(20) DEFAULT NULL,
+            is_active tinyint(1) DEFAULT 1,
+            broadcast_limit_per_day int(11) DEFAULT NULL,
+            can_send_hsm tinyint(1) DEFAULT 1,
+            event_at datetime DEFAULT NULL,
+            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY unique_robbu_line (robbu_line_id),
+            KEY idx_wallet (wallet_id),
+            KEY idx_status (status)
+        ) $charset_collate;";
+        dbDelta($sql_lines);
     }
 
     // ========== HANDLERS PARA CONTROLE DE CUSTO ==========
@@ -8914,26 +9158,49 @@ class Painel_Campanhas
             }
         }
 
+        // Inject static ROBBU OFICIAL credentials (linhas vêm do webhook, não da API)
+        $robbu_token = trim($static_creds['robbu_invenio_token'] ?? '');
+        if (!empty($robbu_token)) {
+            if (!isset($credentials['robbu_oficial'])) {
+                $credentials['robbu_oficial'] = [];
+            }
+            // Sempre inclui 'static' para exibir linhas Robbu (webhook)
+            if (!isset($credentials['robbu_oficial']['static'])) {
+                $credentials['robbu_oficial']['static'] = ['invenio_private_token' => $robbu_token];
+            }
+            foreach ($carteiras as $wallet) {
+                $id_amb = trim($wallet['id_carteira']);
+                if (!empty($id_amb) && !isset($credentials['robbu_oficial'][$id_amb])) {
+                    $credentials['robbu_oficial'][$id_amb] = ['invenio_private_token' => $robbu_token];
+                }
+            }
+        }
+
         $all_health_data = [];
         $fetched_envs = []; // Cache para evitar requisições duplicadas para o mesmo ambiente
         $debug_info = []; // Debug: collect external request details
 
+        // Mapa id_ambient -> primeiro nome de carteira (evita duplicação quando várias carteiras usam o mesmo id)
+        $id_ambient_to_wallet_name = [];
         foreach ($carteiras as $wallet) {
-            $id_ambient = trim($wallet['id_carteira']);
-            if (empty($id_ambient))
-                continue;
+            $id = trim($wallet['id_carteira']);
+            if (!empty($id) && !isset($id_ambient_to_wallet_name[$id])) {
+                $id_ambient_to_wallet_name[$id] = $wallet['nome'];
+            }
+        }
 
-            // Busca os providers configurados para este ambiente
-            foreach ($credentials as $provider => $envs) {
-                if (!is_array($envs) || !isset($envs[$id_ambient]))
-                    continue;
+        // Itera por (provider, id_ambient) único para evitar duplicar conexões
+        foreach ($credentials as $provider => $envs) {
+            if (!is_array($envs)) continue;
+            foreach ($envs as $id_ambient => $data) {
+                $id_ambient = trim($id_ambient);
+                if (empty($id_ambient)) continue;
 
                 $cache_key = $provider . '_' . $id_ambient;
 
                 if (!isset($fetched_envs[$cache_key])) {
                     $provider_conns = [];
                     if ($provider === 'gosac_oficial') {
-                        $data = $envs[$id_ambient];
                         $url = rtrim($data['url'], '/') . '/connections/official?idAmbient=' . urlencode($id_ambient);
                         $token = $data['token'] ?? '';
                         if (stripos($token, 'Bearer ') !== 0) {
@@ -8950,6 +9217,7 @@ class Painel_Campanhas
                             $response = wp_remote_get($url, [
                                 'headers' => $request_headers,
                                 'timeout' => 45,
+                                'sslverify' => false, // Workaround: certificado do GOSAC pode estar expirado (ERR_CERT_DATE_INVALID)
                             ]);
 
                             $http_code = is_wp_error($response) ? 'WP_ERROR' : wp_remote_retrieve_response_code($response);
@@ -9014,35 +9282,70 @@ class Painel_Campanhas
                         }
                     }
                     } elseif ($provider === 'noah_oficial') {
-                        $data = $envs[$id_ambient];
                         $base_url = rtrim($data['url'], '/');
-                        $token = $data['token'] ?? '';
-                        if (stripos($token, 'Bearer ') !== 0) {
-                            $token = 'Bearer ' . $token;
+                        $token_raw = trim($data['token'] ?? '');
+                        // NOAH API usa "INTEGRATION" no Authorization, não Bearer
+                        $token = $token_raw;
+                        if (!empty($token)) {
+                            $token = preg_replace('/^(Bearer|INTEGRATION)\s+/i', '', $token);
+                            $token = 'INTEGRATION ' . $token;
                         }
 
                         if (!empty($base_url) && !empty($token)) {
-                            $channels_url = $base_url . '/channels';
-                            $ch_response = wp_remote_get($channels_url, [
-                                'headers' => [
-                                    'Authorization' => $token,
-                                    'Content-Type' => 'application/json',
-                                    'Accept' => 'application/json',
-                                ],
-                                'timeout' => 15,
-                            ]);
+                            $channels = [];
+                            $channel_ids = $data['channel_ids'] ?? null;
+                            if (is_array($channel_ids) && !empty($channel_ids)) {
+                                foreach ($channel_ids as $cid) {
+                                    $channels[] = ['id' => $cid, 'channelId' => $cid];
+                                }
+                            } else {
+                                $channels_url = $base_url . '/channels';
+                                $ch_response = wp_remote_get($channels_url, [
+                                    'headers' => [
+                                        'Authorization' => $token,
+                                        'Content-Type' => 'application/json',
+                                        'Accept' => 'application/json',
+                                    ],
+                                    'timeout' => 15,
+                                    'sslverify' => false,
+                                ]);
 
-                            if (!is_wp_error($ch_response) && wp_remote_retrieve_response_code($ch_response) === 200) {
-                                $ch_body = wp_remote_retrieve_body($ch_response);
-                                $ch_data = json_decode($ch_body, true);
-                                $channels = is_array($ch_data) ? (isset($ch_data['data']) ? $ch_data['data'] : $ch_data) : [];
+                                if (!is_wp_error($ch_response) && wp_remote_retrieve_response_code($ch_response) === 200) {
+                                    $ch_body = wp_remote_retrieve_body($ch_response);
+                                    $ch_data = json_decode($ch_body, true);
+                                    $channels = is_array($ch_data) ? (isset($ch_data['data']) ? $ch_data['data'] : $ch_data) : [];
+                                    if (!is_array($channels)) {
+                                        $channels = [];
+                                    }
+                                }
+                            }
 
-                                if (is_array($channels)) {
-                                    foreach ($channels as $ch) {
-                                        $ch_id = $ch['id'] ?? $ch['channelId'] ?? null;
-                                        if (empty($ch_id)) continue;
+                            $seen_noah_ids = [];
+                            if (is_array($channels)) {
+                                foreach ($channels as $ch) {
+                                    $ch_id = $ch['id'] ?? $ch['channelId'] ?? null;
+                                    if ($ch_id === null || $ch_id === '') continue;
 
-                                        $quality_url = $base_url . '/phone-quality?channelId=' . urlencode($ch_id);
+                                    // Novo formato: item já tem quality_rating (ex: /channels retorna array completo)
+                                    if (isset($ch['quality_rating']) || isset($ch['qualityRating'])) {
+                                        $conn_id = (string) $ch_id;
+                                        if (isset($seen_noah_ids[$conn_id])) continue;
+                                        $seen_noah_ids[$conn_id] = true;
+                                        $quality_rating = $ch['quality_rating'] ?? $ch['qualityRating'] ?? '';
+                                        $provider_conns[] = [
+                                            'id' => $ch_id,
+                                            'name' => $ch['verified_name'] ?? $ch['name'] ?? $ch['number'] ?? 'Canal ' . $ch_id,
+                                            'number' => $ch['display_phone_number'] ?? $ch['phoneNumber'] ?? $ch['number'] ?? '',
+                                            'status' => $ch['status'] ?? '',
+                                            'qualityRating' => $quality_rating,
+                                            'messagingLimit' => $ch['messaging_limit_tier'] ?? '',
+                                            'provider' => 'Noah Oficial',
+                                            'id_ambient' => $id_ambient,
+                                        ];
+                                        continue;
+                                    }
+
+                                    $quality_url = $base_url . '/phone-quality?channelId=' . urlencode($ch_id);
                                         $q_response = wp_remote_get($quality_url, [
                                             'headers' => [
                                                 'Authorization' => $token,
@@ -9050,35 +9353,77 @@ class Painel_Campanhas
                                                 'Accept' => 'application/json',
                                             ],
                                             'timeout' => 15,
+                                            'sslverify' => false,
                                         ]);
 
-                                        $quality_info = '';
+                                        $added_from_response = 0;
                                         if (!is_wp_error($q_response) && wp_remote_retrieve_response_code($q_response) === 200) {
                                             $q_body = wp_remote_retrieve_body($q_response);
                                             $q_data = json_decode($q_body, true);
-                                            $quality_info = is_array($q_data) ? json_encode($q_data) : $q_body;
+                                            $items = is_array($q_data) ? (isset($q_data['data']) ? $q_data['data'] : $q_data) : [];
+                                            if (!is_array($items)) {
+                                                $items = [];
+                                            }
+                                            foreach ($items as $item) {
+                                                if (!is_array($item)) continue;
+                                                $item_id = (string) ($item['id'] ?? $ch_id);
+                                                if (isset($seen_noah_ids[$item_id])) continue;
+                                                $seen_noah_ids[$item_id] = true;
+                                                $quality_rating = $item['quality_rating'] ?? $item['qualityRating'] ?? '';
+                                                $quality_phone = $item['display_phone_number'] ?? $item['phoneNumber'] ?? '';
+                                                $provider_conns[] = [
+                                                    'id' => $item['id'] ?? $ch_id,
+                                                    'name' => $item['verified_name'] ?? $ch['name'] ?? $ch['number'] ?? 'Canal ' . $ch_id,
+                                                    'number' => $quality_phone,
+                                                    'status' => $item['status'] ?? $ch['status'] ?? '',
+                                                    'qualityRating' => $quality_rating,
+                                                    'messagingLimit' => $item['messaging_limit_tier'] ?? '',
+                                                    'provider' => 'Noah Oficial',
+                                                    'id_ambient' => $id_ambient,
+                                                ];
+                                                $added_from_response++;
+                                            }
                                         }
-
-                                        $provider_conns[] = [
-                                            'id' => $ch_id,
-                                            'name' => $ch['name'] ?? $ch['phoneNumber'] ?? 'Canal ' . $ch_id,
-                                            'status' => $ch['status'] ?? '',
-                                            'quality' => $quality_info,
-                                            'provider' => 'Noah Oficial',
-                                            'id_ambient' => $id_ambient,
-                                        ];
-                                    }
+                                        if ($added_from_response === 0) {
+                                            $provider_conns[] = [
+                                                'id' => $ch_id,
+                                                'name' => $ch['name'] ?? $ch['number'] ?? 'Canal ' . $ch_id,
+                                                'number' => $ch['number'] ?? '',
+                                                'status' => $ch['status'] ?? '',
+                                                'qualityRating' => '',
+                                                'provider' => 'Noah Oficial',
+                                                'id_ambient' => $id_ambient,
+                                            ];
+                                        }
                                 }
+                            }
+                        }
+                    } elseif ($provider === 'robbu_oficial') {
+                        $table_robbu = $wpdb->prefix . 'pc_robbu_line_status';
+                        $robbu_lines = $wpdb->get_results("SELECT * FROM $table_robbu ORDER BY updated_at DESC", ARRAY_A);
+                        if (is_array($robbu_lines)) {
+                            foreach ($robbu_lines as $line) {
+                                $num = trim(($line['area_code'] ?? '') . ($line['phone_number'] ?? ''));
+                                $provider_conns[] = [
+                                    'id' => $line['robbu_line_id'],
+                                    'name' => $num ? ('+55 ' . $num) : ('Linha ' . $line['robbu_line_id']),
+                                    'number' => ($line['country_code'] ?: '55') . ($line['area_code'] ?: '') . ($line['phone_number'] ?: ''),
+                                    'status' => $line['status'] ?: '',
+                                    'qualityRating' => $line['status'] ?: '',
+                                    'messagingLimit' => $line['broadcast_limit_per_day'] ?: '',
+                                    'provider' => 'Robbu Oficial',
+                                    'id_ambient' => $id_ambient,
+                                ];
                             }
                         }
                     }
                     $fetched_envs[$cache_key] = $provider_conns;
                 }
 
-                // Adiciona as conexões encontradas para esta carteira (vínculo virtual)
+                $wallet_name = $id_ambient_to_wallet_name[$id_ambient] ?? $id_ambient;
                 foreach ($fetched_envs[$cache_key] as $conn) {
                     $conn_copy = $conn;
-                    $conn_copy['wallet_name'] = $wallet['nome'];
+                    $conn_copy['wallet_name'] = $wallet_name;
                     $all_health_data[] = $conn_copy;
                 }
             }
@@ -9131,6 +9476,17 @@ class Painel_Campanhas
                     'url' => $gosac_url,
                     'token' => $gosac_token
                 ];
+            }
+        }
+
+        // Inject static ROBBU OFICIAL credentials
+        $robbu_token = trim($static_creds['robbu_invenio_token'] ?? '');
+        if (!empty($robbu_token)) {
+            if (!isset($credentials['robbu_oficial'])) {
+                $credentials['robbu_oficial'] = [];
+            }
+            if (!isset($credentials['robbu_oficial'][$id_ambient])) {
+                $credentials['robbu_oficial'][$id_ambient] = ['invenio_private_token' => $robbu_token];
             }
         }
 
@@ -9193,9 +9549,11 @@ class Painel_Campanhas
                     }
                 } elseif ($provider === 'noah_oficial') {
                     $base_url = rtrim($data['url'], '/');
-                    $token = $data['token'] ?? '';
-                    if (stripos($token, 'Bearer ') !== 0) {
-                        $token = 'Bearer ' . $token;
+                    $token_raw = trim($data['token'] ?? '');
+                    $token = $token_raw;
+                    if (!empty($token)) {
+                        $token = preg_replace('/^(Bearer|INTEGRATION)\s+/i', '', $token);
+                        $token = 'INTEGRATION ' . $token;
                     }
 
                     if (!empty($base_url) && !empty($token)) {
@@ -9207,6 +9565,7 @@ class Painel_Campanhas
                                 'Accept' => 'application/json',
                             ],
                             'timeout' => 15,
+                            'sslverify' => false,
                         ]);
 
                         if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
@@ -9233,11 +9592,143 @@ class Painel_Campanhas
                             }
                         }
                     }
+                } elseif ($provider === 'robbu_oficial') {
+                    $token_privado = trim($data['invenio_private_token'] ?? '');
+                    if (empty($token_privado)) continue;
+
+                    $templates_url = 'http://s.robbu.com.br/wsInvenioAPI.ashx?token=' . urlencode($token_privado) . '&acao=buscartemplates';
+                    $response = wp_remote_get($templates_url, [
+                        'timeout' => 15,
+                        'sslverify' => false,
+                    ]);
+
+                    if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+                        $body = wp_remote_retrieve_body($response);
+                        $items = json_decode($body, true);
+                        if (!is_array($items)) {
+                            $items = isset($items->data) ? $items->data : [];
+                        }
+                        if (!is_array($items)) {
+                            $items = [];
+                        }
+                        foreach ($items as $tpl) {
+                            if (!is_array($tpl)) continue;
+                            $id_canal = $tpl['IdCanal'] ?? 0;
+                            if ($id_canal != 3) continue;
+                            $all_templates[] = [
+                                'id' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
+                                'name' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
+                                'content' => $tpl['Template'] ?? '',
+                                'category' => '',
+                                'language' => $tpl['Linguagem'] ?? 'pt_BR',
+                                'status' => $tpl['StatusWhatsapp'] ?? '',
+                                'provider' => 'Robbu Oficial',
+                                'id_ambient' => $id_ambient,
+                                'templateName' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
+                                'templateId' => $tpl['IdCanal'] ?? 3,
+                                'channelId' => $tpl['IdCanal'] ?? 3,
+                            ];
+                        }
+                    }
                 }
             }
         }
 
         wp_send_json_success($all_templates);
+    }
+
+    public function handle_get_robbu_oficial_templates()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        $static_creds = get_option('acm_static_credentials', []);
+        $token_privado = trim($static_creds['robbu_invenio_token'] ?? '');
+        if (empty($token_privado)) {
+            wp_send_json_success([]);
+            return;
+        }
+
+        $all_templates = [];
+        $templates_url = 'http://s.robbu.com.br/wsInvenioAPI.ashx?token=' . urlencode($token_privado) . '&acao=buscartemplates';
+        $response = wp_remote_get($templates_url, [
+            'timeout' => 15,
+            'sslverify' => false,
+        ]);
+
+        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+            $body = wp_remote_retrieve_body($response);
+            $items = json_decode($body, true);
+            if (!is_array($items)) $items = [];
+            foreach ($items as $tpl) {
+                if (!is_array($tpl)) continue;
+                if (($tpl['IdCanal'] ?? 0) != 3) continue;
+                $all_templates[] = [
+                    'id' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
+                    'name' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
+                    'templateName' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
+                    'language' => $tpl['Linguagem'] ?? 'pt_BR',
+                    'status' => $tpl['StatusWhatsapp'] ?? '',
+                    'env_id' => 'static',
+                    'provider' => 'Robbu Oficial',
+                    'channelId' => $tpl['IdCanal'] ?? 3,
+                ];
+            }
+        }
+        wp_send_json_success($all_templates);
+    }
+
+    public function handle_get_robbu_webhook_stats()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        global $wpdb;
+        $table_events = $wpdb->prefix . 'pc_robbu_webhook_events';
+        $table_lines = $wpdb->prefix . 'pc_robbu_line_status';
+
+        $total_events = 0;
+        $last_event_at = null;
+        $events_by_type = [];
+        $recent_events = [];
+
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table_events'") === $table_events) {
+            $total_events = (int) $wpdb->get_var("SELECT COUNT(*) FROM $table_events");
+            $last_event_at = $wpdb->get_var("SELECT MAX(created_at) FROM $table_events");
+            $events_by_type = $wpdb->get_results(
+                "SELECT event_type, COUNT(*) as cnt FROM $table_events GROUP BY event_type",
+                ARRAY_A
+            );
+            $recent_events = $wpdb->get_results(
+                "SELECT id, event_type, created_at FROM $table_events ORDER BY created_at DESC LIMIT 10",
+                ARRAY_A
+            );
+        }
+
+        $total_lines = 0;
+        $lines = [];
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table_lines'") === $table_lines) {
+            $total_lines = (int) $wpdb->get_var("SELECT COUNT(*) FROM $table_lines");
+            $lines = $wpdb->get_results(
+                "SELECT robbu_line_id, status, phone_number, area_code, broadcast_limit_per_day, updated_at FROM $table_lines ORDER BY updated_at DESC LIMIT 20",
+                ARRAY_A
+            );
+        }
+
+        wp_send_json_success([
+            'total_events' => $total_events,
+            'last_event_at' => $last_event_at,
+            'events_by_type' => $events_by_type,
+            'recent_events' => $recent_events,
+            'total_lines' => $total_lines,
+            'lines' => $lines,
+        ]);
     }
 
     public function handle_get_gosac_oficial_connections()
@@ -9328,9 +9819,11 @@ class Painel_Campanhas
 
         foreach ($noah_oficial_creds as $env_id => $data) {
             $base_url = rtrim($data['url'], '/');
-            $token = $data['token'] ?? '';
-            if (stripos($token, 'Bearer ') !== 0) {
-                $token = 'Bearer ' . $token;
+            $token_raw = trim($data['token'] ?? '');
+            $token = $token_raw;
+            if (!empty($token)) {
+                $token = preg_replace('/^(Bearer|INTEGRATION)\s+/i', '', $token);
+                $token = 'INTEGRATION ' . $token;
             }
 
             if (empty($base_url) || empty($token)) {
@@ -9346,6 +9839,7 @@ class Painel_Campanhas
                     'Accept' => 'application/json',
                 ],
                 'timeout' => 15,
+                'sslverify' => false,
             ]);
 
             if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
@@ -9417,9 +9911,11 @@ class Painel_Campanhas
 
         $data = $noah_oficial_creds[$id_carteira];
         $base_url = rtrim($data['url'], '/');
-        $token = $data['token'] ?? '';
-        if (stripos($token, 'Bearer ') !== 0) {
-            $token = 'Bearer ' . $token;
+        $token_raw = trim($data['token'] ?? '');
+        $token = $token_raw;
+        if (!empty($token)) {
+            $token = preg_replace('/^(Bearer|INTEGRATION)\s+/i', '', $token);
+            $token = 'INTEGRATION ' . $token;
         }
 
         $url = $base_url . '/channels';
@@ -9431,6 +9927,7 @@ class Painel_Campanhas
                 'Accept' => 'application/json',
             ],
             'timeout' => 15,
+            'sslverify' => false,
         ]);
 
         if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
