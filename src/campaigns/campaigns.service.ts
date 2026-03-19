@@ -104,15 +104,22 @@ export class CampaignsService {
         }),
       );
 
-      if (!response.data || response.data.length === 0) {
+      // WordPress REST pode retornar array direto ou wrapped em { data: [...] }
+      let records: CampaignData[] = Array.isArray(response.data)
+        ? response.data
+        : (response.data?.data && Array.isArray(response.data.data)
+          ? response.data.data
+          : []);
+
+      if (!records || records.length === 0) {
         throw new HttpException(
           'Nenhum dado encontrado para este agendamento',
           HttpStatus.NOT_FOUND,
         );
       }
 
-      this.logger.log(`Fetched ${response.data.length} records from WordPress`);
-      return response.data;
+      this.logger.log(`Fetched ${records.length} records from WordPress`);
+      return records;
     } catch (error: any) {
       this.logger.error(
         `Error fetching data from WordPress: ${error.message}`,

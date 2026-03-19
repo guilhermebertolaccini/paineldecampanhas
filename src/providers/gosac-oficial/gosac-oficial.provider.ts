@@ -53,20 +53,27 @@ export class GosacOficialProvider extends BaseProvider {
         let templateId: number | null = null;
         let connectionId: number | null = null;
 
-        if (data[0].mensagem && typeof data[0].mensagem === 'string' && data[0].mensagem.trim().startsWith('{')) {
-            try {
-                const parsed = JSON.parse(data[0].mensagem);
-                if (parsed.id != null) templateId = parseInt(String(parsed.id), 10);
-                if (parsed.connectionId != null) connectionId = parseInt(String(parsed.connectionId), 10);
-            } catch (e) {
-                this.logger.warn(`⚠️ [Gosac Oficial] Falha ao parsear JSON da mensagem: ${e.message}`);
+        // Tenta extrair de qualquer mensagem do batch (todas devem ter o mesmo template)
+        for (const item of data) {
+            const msg = (item as any).mensagem;
+            if (msg && typeof msg === 'string' && msg.trim().startsWith('{')) {
+                try {
+                    const parsed = JSON.parse(msg);
+                    if (parsed.id != null) templateId = parseInt(String(parsed.id), 10);
+                    if (parsed.connectionId != null) connectionId = parseInt(String(parsed.connectionId), 10);
+                    if (templateId && templateId > 0 && connectionId && connectionId > 0) break;
+                } catch (e) {
+                    this.logger.warn(`⚠️ [Gosac Oficial] Falha ao parsear JSON da mensagem: ${e.message}`);
+                }
             }
         }
 
         if (!templateId || templateId <= 0 || !connectionId || connectionId <= 0) {
+            const sample = data[0] ? JSON.stringify((data[0] as any).mensagem || '').slice(0, 200) : 'vazio';
+            this.logger.warn(`⚠️ [Gosac Oficial] Template/connectionId ausentes. Amostra mensagem: ${sample}`);
             return {
                 success: false,
-                error: 'connectionId e templateId são obrigatórios. Selecione um template GOSAC Oficial que tenha connectionId (na lista de templates).',
+                error: 'connectionId e templateId são obrigatórios. Verifique se o template GOSAC foi selecionado corretamente na Nova Campanha e se a carteira tem id_ruler configurado.',
             };
         }
 

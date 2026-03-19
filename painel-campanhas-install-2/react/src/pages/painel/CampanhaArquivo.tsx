@@ -172,9 +172,12 @@ export default function CampanhaArquivo() {
       };
     }) : [];
 
-    // Templates GOSAC Oficial (estáticos) - só incluir os que têm connectionId (obrigatório na API)
+    // Templates GOSAC Oficial (estáticos) - só incluir os que têm connectionId > 0 (obrigatório na API)
     const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : [])
-      .filter((t: any) => t.connectionId != null && t.connectionId !== '')
+      .filter((t: any) => {
+        const cid = t.connectionId;
+        return cid != null && cid !== '' && Number(cid) > 0;
+      })
       .map((t: any) => ({
         id: `Gosac Oficial_${t.id || t.name}_${t.id_ambient || 'default'}`,
         name: t.name || t.id || '',

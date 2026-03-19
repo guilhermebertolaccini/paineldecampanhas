@@ -281,9 +281,12 @@ export default function NovaCampanha() {
       };
     }) : [];
 
-    // Templates GOSAC Oficial (estáticos) - só incluir os que têm connectionId (obrigatório na API)
+    // Templates GOSAC Oficial (estáticos) - só incluir os que têm connectionId > 0 (obrigatório na API)
     const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : [])
-      .filter((t: any) => t.connectionId != null && t.connectionId !== '')
+      .filter((t: any) => {
+        const cid = t.connectionId;
+        return cid != null && cid !== '' && Number(cid) > 0;
+      })
       .map((t: any) => ({
         id: `Gosac Oficial_${t.id || t.name}_${t.id_ambient || 'default'}`,
         name: t.name || t.id || '',
@@ -591,6 +594,19 @@ export default function NovaCampanha() {
       return;
     }
 
+    if (formData.templateSource === 'gosac_oficial') {
+      const tid = formData.gosacTemplateId ?? selectedTemplateObj?.templateId ?? selectedTemplateObj?.id;
+      const cid = formData.gosacConnectionId ?? selectedTemplateObj?.connectionId;
+      if (!tid || !cid || (typeof tid === 'number' && tid <= 0) || (typeof cid === 'number' && cid <= 0)) {
+        toast({
+          title: "Template GOSAC incompleto",
+          description: "O template selecionado não possui connectionId. Selecione outro template GOSAC Oficial na lista.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     if (formData.providers.length === 0) {
       toast({
         title: "Fornecedor obrigatório",
@@ -665,9 +681,9 @@ export default function NovaCampanha() {
         noah_channel_id: formData.noahChannelId || null,
         noah_template_id: formData.noahTemplateId || null,
         noah_language: formData.noahLanguage || 'pt_BR',
-        gosac_template_id: formData.gosacTemplateId ?? null,
-        gosac_connection_id: formData.gosacConnectionId ?? null,
-        gosac_variable_components: JSON.stringify(formData.gosacVariableComponents || []),
+        gosac_template_id: formData.gosacTemplateId ?? selectedTemplateObj?.templateId ?? selectedTemplateObj?.id ?? null,
+        gosac_connection_id: formData.gosacConnectionId ?? selectedTemplateObj?.connectionId ?? null,
+        gosac_variable_components: JSON.stringify(formData.gosacVariableComponents ?? selectedTemplateObj?.variableComponents ?? []),
         robbu_channel: formData.templateSource === 'robbu_oficial' ? 3 : null,
         variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
         record_limit: formData.record_limit || 0,

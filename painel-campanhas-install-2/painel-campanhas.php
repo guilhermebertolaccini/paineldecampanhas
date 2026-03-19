@@ -2943,12 +2943,15 @@ class Painel_Campanhas
             $message_content = 'Template da Ótima: ' . $template_code;
             $template_info = ['template_code' => $template_code, 'source' => $template_source];
         } elseif ($template_source === 'gosac_oficial' && !empty($template_code)) {
+            $gosac_tid = intval($_POST['gosac_template_id'] ?? 0);
+            $gosac_cid = intval($_POST['gosac_connection_id'] ?? 0);
+            error_log('🔵 [GOSAC] Recebido: gosac_template_id=' . ($_POST['gosac_template_id'] ?? '') . ' -> ' . $gosac_tid . ', gosac_connection_id=' . ($_POST['gosac_connection_id'] ?? '') . ' -> ' . $gosac_cid);
             $message_content = 'Template GOSAC Oficial: ' . $template_code;
             $template_info = [
                 'template_code' => $template_code,
                 'source' => 'gosac_oficial',
-                'template_id' => intval($_POST['gosac_template_id'] ?? 0),
-                'connection_id' => intval($_POST['gosac_connection_id'] ?? 0),
+                'template_id' => $gosac_tid,
+                'connection_id' => $gosac_cid,
                 'variable_components' => isset($_POST['gosac_variable_components']) ? json_decode(stripslashes($_POST['gosac_variable_components']), true) : [],
             ];
         } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
