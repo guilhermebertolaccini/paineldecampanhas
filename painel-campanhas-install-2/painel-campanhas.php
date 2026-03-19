@@ -5991,46 +5991,20 @@ class Painel_Campanhas
             } elseif ($provider === 'GOSAC_OFICIAL') {
                 global $wpdb;
                 $carteiras_table = $wpdb->prefix . 'pc_carteiras_v2';
-                $id_ruler = '';
-                $id_carteira_creds = '';
-
-                if (!empty($env_id)) {
-                    // Prioridade: nome da carteira (ex: "BV BOM PAGADOR") - identifica a carteira exata quando há múltiplas com mesmo id_carteira
-                    $carteira = $wpdb->get_row($wpdb->prepare(
-                        "SELECT id_ruler, id_carteira FROM $carteiras_table WHERE nome = %s AND ativo = 1 LIMIT 1",
-                        $env_id
-                    ), ARRAY_A);
-
-                    // Fallback: id interno (numérico)
-                    if (empty($carteira) && is_numeric($env_id) && intval($env_id) > 0) {
-                        $carteira = $wpdb->get_row($wpdb->prepare(
-                            "SELECT id_ruler, id_carteira FROM $carteiras_table WHERE id = %d AND ativo = 1 LIMIT 1",
-                            intval($env_id)
-                        ), ARRAY_A);
-                    }
-
-                    // Fallback: id_carteira (código)
-                    if (empty($carteira)) {
-                        $carteira = $wpdb->get_row($wpdb->prepare(
-                            "SELECT id_ruler, id_carteira FROM $carteiras_table WHERE id_carteira = %s AND ativo = 1 LIMIT 1",
-                            $env_id
-                        ), ARRAY_A);
-                    }
-
-                    if ($carteira) {
-                        $id_ruler = $carteira['id_ruler'] ?? '';
-                        $id_carteira_creds = $carteira['id_carteira'] ?? '';
-                    }
-                }
+                $nome = trim(urldecode((string) $env_id));
+                $carteira = $wpdb->get_row($wpdb->prepare(
+                    "SELECT id_carteira, id_ruler FROM $carteiras_table WHERE nome = %s AND ativo = 1 LIMIT 1",
+                    $nome
+                ), ARRAY_A);
 
                 $credentials = [
                     'token' => $static_credentials['gosac_oficial_token'] ?? '',
                     'url' => $static_credentials['gosac_oficial_url'] ?? '',
-                    'idRuler' => $id_ruler,
-                    'id_carteira' => $id_carteira_creds,
+                    'idRuler' => $carteira['id_ruler'] ?? '',
+                    'id_carteira' => $carteira['id_carteira'] ?? '',
                 ];
 
-                error_log('✅ [REST API] Credenciais Gosac Oficial retornadas. idRuler=' . $id_ruler . ', id_carteira=' . $id_carteira_creds);
+                error_log('✅ [REST API] GOSAC_OFICIAL nome=' . $nome . ' -> id_carteira=' . ($credentials['id_carteira'] ?? '') . ', idRuler=' . ($credentials['idRuler'] ?? ''));
             } elseif ($provider === 'ROBBU_OFICIAL') {
                 $credentials = [
                     'company' => $static_credentials['robbu_company'] ?? '',

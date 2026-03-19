@@ -5,7 +5,7 @@ export const wordpressConfig = {
     campaignData: (agendamentoId: string) =>
       `${wordpressConfig.url}/wp-json/campaigns/v1/data/${agendamentoId}`,
     credentials: (provider: string, envId: string) =>
-      `${wordpressConfig.url}/wp-json/api-manager/v1/credentials/${provider}/${envId}`,
+      `${wordpressConfig.url}/wp-json/api-manager/v1/credentials/${provider}/${encodeURIComponent(envId)}`,
     campaignConfig: (agendamentoId: string) =>
       `${wordpressConfig.url}/wp-json/campaigns/v1/config/${agendamentoId}`,
     webhookStatus: () =>
