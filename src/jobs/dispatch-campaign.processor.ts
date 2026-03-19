@@ -40,15 +40,18 @@ export class DispatchCampaignProcessor extends WorkerHost {
       this.logger.log(`Fetched ${data.length} records from WordPress`);
 
       // 3. Buscar credenciais
-      // NOAH_OFICIAL, ROBBU_OFICIAL e GOSAC_OFICIAL usam id_carteira (lookup id_ruler por carteira)
+      // GOSAC_OFICIAL: usa carteira_nome quando disponível - lookup por nome (ex: "BV BOM PAGADOR") identifica a carteira exata
+      // NOAH_OFICIAL, ROBBU_OFICIAL: usam id_carteira
       const useIdCarteira =
         provider === 'NOAH_OFICIAL' ||
         provider === 'ROBBU_OFICIAL' ||
         provider === 'GOSAC_OFICIAL';
       const envId =
-        useIdCarteira && data[0]?.id_carteira
-          ? data[0].id_carteira
-          : data[0]?.idgis_ambiente;
+        provider === 'GOSAC_OFICIAL' && data[0]?.carteira_nome
+          ? data[0].carteira_nome
+          : useIdCarteira && data[0]?.id_carteira
+            ? data[0].id_carteira
+            : data[0]?.idgis_ambiente;
       if (!envId) {
         throw new Error(
           useIdCarteira

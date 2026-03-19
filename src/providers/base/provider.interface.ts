@@ -3,6 +3,7 @@ export interface CampaignData {
   nome: string;
   idgis_ambiente: string;
   id_carteira?: string;
+  carteira_nome?: string; // nome da carteira - para GOSAC lookup por nome quando há múltiplas carteiras com mesmo id_carteira
   idcob_contrato: string;
   cpf_cnpj: string;
   mensagem: string;

@@ -386,12 +386,16 @@ class Painel_Campanhas
         if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'midia_campanha'"))) {
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN midia_campanha text DEFAULT NULL");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'carteira_id'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN carteira_id bigint(20) DEFAULT NULL");
+        }
 
         $query = $wpdb->prepare("
             SELECT 
                 CONCAT('55', telefone) as telefone,
                 nome,
                 COALESCE(id_carteira, '') as id_carteira,
+                COALESCE(carteira_id, '') as carteira_id,
                 idgis_ambiente,
                 idcob_contrato,
                 COALESCE(cpf_cnpj, '') as cpf_cnpj,
@@ -418,7 +422,6 @@ class Painel_Campanhas
         }
 
         // Formata os dados conforme esperado pelo microserviço (CampaignData interface)
-        // Agora usa id_carteira ao invés de idgis_ambiente
         $formatted_data = [];
         foreach ($results as $row) {
             // Se não tiver id_carteira, tenta buscar pelo idgis_ambiente
@@ -427,10 +430,17 @@ class Painel_Campanhas
                 $id_carteira = $this->get_id_carteira_from_idgis($row['idgis_ambiente']);
             }
 
+            // carteira_nome: para GOSAC - lookup por nome quando há múltiplas carteiras com mesmo id_carteira
+            $carteira_nome = '';
+            if (!empty($row['carteira_id'])) {
+                $carteira_nome = $this->get_carteira_nome_by_id($row['carteira_id']);
+            }
+
             $formatted_data[] = [
                 'telefone' => (string) $row['telefone'],
                 'nome' => (string) $row['nome'],
                 'id_carteira' => (string) $id_carteira,
+                'carteira_nome' => $carteira_nome,
                 'idgis_ambiente' => (string) $row['idgis_ambiente'],
                 'idcob_contrato' => (string) $row['idcob_contrato'],
                 'cpf_cnpj' => (string) $row['cpf_cnpj'],
@@ -2433,16 +2443,17 @@ class Painel_Campanhas
 
                 if (!empty($iscas)) {
                     foreach ($iscas as $isca) {
-                        $isca_id_carteira = $isca['id_carteira'] ?? '';
-                        if (!empty($isca_id_carteira)) {
-                            $resolved = $this->resolve_id_carteira_from_carteira_id($isca_id_carteira);
-                            if (!empty($resolved)) {
-                                $isca_id_carteira = $resolved;
-                            }
-                        }
-                        // Iscas sem id_carteira herdam da carteira selecionada na campanha
-                        if (empty($isca_id_carteira) && !empty($campaign_id_carteira)) {
+                        // Iscas: SEMPRE usa a carteira selecionada na campanha (primeira tela)
+                        if (!empty($campaign_id_carteira)) {
                             $isca_id_carteira = $campaign_id_carteira;
+                        } else {
+                            $isca_id_carteira = $isca['id_carteira'] ?? '';
+                            if (!empty($isca_id_carteira)) {
+                                $resolved = $this->resolve_id_carteira_from_carteira_id($isca_id_carteira);
+                                if (!empty($resolved)) {
+                                    $isca_id_carteira = $resolved;
+                                }
+                            }
                         }
                         $isca_record = [
                             'telefone' => $isca['telefone'],
@@ -2467,6 +2478,10 @@ class Painel_Campanhas
             $current_user_id = get_current_user_id();
             $agendamento_base_id = date('YmdHis', current_time('timestamp'));
             $total_inserted = 0;
+
+            if (empty($wpdb->get_results("SHOW COLUMNS FROM {$envios_table} LIKE 'carteira_id'"))) {
+                $wpdb->query("ALTER TABLE {$envios_table} ADD COLUMN carteira_id bigint(20) DEFAULT NULL");
+            }
 
             foreach ($distributed_records as $provider_data) {
                 $provider = $provider_data['provider'];
@@ -2506,6 +2521,9 @@ class Painel_Campanhas
                     if (empty($id_carteira) && !empty($campaign_id_carteira)) {
                         $id_carteira = $campaign_id_carteira;
                     }
+
+                    // carteira_id: id interno da carteira selecionada (para GOSAC: lookup correto quando há múltiplas com mesmo id_carteira)
+                    $carteira_id_insert = !empty($carteira) && ($id_carteira === $campaign_id_carteira) ? intval($carteira) : 0;
 
                     // Para templates da Ótima, GOSAC ou NOAH, armazena JSON no campo mensagem
                     $mensagem_para_armazenar = $mensagem_final;
@@ -2553,6 +2571,7 @@ class Painel_Campanhas
                         'nome' => $record['nome'] ?? '',
                         'idgis_ambiente' => intval($record['idgis_ambiente'] ?? 0),
                         'id_carteira' => $id_carteira,
+                        'carteira_id' => $carteira_id_insert,
                         'idcob_contrato' => intval($record['idcob_contrato'] ?? 0),
                         'cpf_cnpj' => $record['cpf_cnpj'] ?? '',
                         'mensagem' => $mensagem_para_armazenar,
@@ -2564,7 +2583,7 @@ class Painel_Campanhas
                         'data_cadastro' => current_time('mysql')
                     ];
 
-                    $wpdb->insert($envios_table, $insert_data, ['%s', '%s', '%d', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s']);
+                    $wpdb->insert($envios_table, $insert_data, ['%s', '%s', '%d', '%s', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s']);
                     $total_inserted++;
                 }
             }
@@ -2984,17 +3003,18 @@ class Painel_Campanhas
 
             if (!empty($iscas)) {
                 foreach ($iscas as $isca) {
-                    // cm_baits.id_carteira armazena id interno da carteira; converter para id_carteira (código)
-                    $isca_id_carteira = $isca['id_carteira'] ?? '';
-                    if (!empty($isca_id_carteira)) {
-                        $resolved = $this->resolve_id_carteira_from_carteira_id($isca_id_carteira);
-                        if (!empty($resolved)) {
-                            $isca_id_carteira = $resolved;
-                        }
-                    }
-                    // Iscas sem id_carteira herdam da carteira selecionada na campanha
-                    if (empty($isca_id_carteira) && !empty($campaign_id_carteira)) {
+                    // Iscas de teste: SEMPRE usa a carteira selecionada na campanha (primeira tela)
+                    if (!empty($campaign_id_carteira)) {
                         $isca_id_carteira = $campaign_id_carteira;
+                    } else {
+                        // Fallback: usa id_carteira da isca quando não há carteira selecionada
+                        $isca_id_carteira = $isca['id_carteira'] ?? '';
+                        if (!empty($isca_id_carteira)) {
+                            $resolved = $this->resolve_id_carteira_from_carteira_id($isca_id_carteira);
+                            if (!empty($resolved)) {
+                                $isca_id_carteira = $resolved;
+                            }
+                        }
                     }
                     $isca_record = [
                         'telefone' => $isca['telefone'],
@@ -3160,11 +3180,15 @@ class Painel_Campanhas
                     ]);
                 }
 
+                // carteira_id: id interno da carteira selecionada (para GOSAC: lookup correto de id_ruler quando há múltiplas carteiras com mesmo id_carteira)
+                $carteira_id_insert = !empty($carteira) && ($id_carteira === $campaign_id_carteira) ? intval($carteira) : null;
+
                 $all_insert_data[] = [
                     'telefone' => $telefone,
                     'nome' => $record['nome'] ?? '',
                     'idgis_ambiente' => $idgis_ambiente,
                     'id_carteira' => $id_carteira,
+                    'carteira_id' => $carteira_id_insert,
                     'idcob_contrato' => intval($record['idcob_contrato'] ?? 0),
                     'cpf_cnpj' => $record['cpf_cnpj'] ?? '',
                     'mensagem' => $mensagem_para_armazenar,
@@ -4468,6 +4492,9 @@ class Painel_Campanhas
         if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'midia_campanha'"))) {
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN midia_campanha text DEFAULT NULL");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'carteira_id'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN carteira_id bigint(20) DEFAULT NULL");
+        }
 
         // Prepara valores para INSERT múltiplo
         $values = [];
@@ -4476,13 +4503,15 @@ class Painel_Campanhas
             $id_carteira = isset($data['id_carteira']) ? $data['id_carteira'] : '';
             $idcob_contrato = isset($data['idcob_contrato']) ? $data['idcob_contrato'] : 0;
             $midia_campanha = isset($data['midia_campanha']) ? $data['midia_campanha'] : '';
+            $carteira_id = isset($data['carteira_id']) && $data['carteira_id'] !== null && $data['carteira_id'] !== '' ? intval($data['carteira_id']) : 0;
 
             $values[] = $wpdb->prepare(
-                "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %s, %d, %d, %s)",
+                "(%s, %s, %d, %s, %d, %d, %s, %s, %s, %s, %s, %s, %d, %d, %s)",
                 $data['telefone'],
                 $data['nome'],
                 $data['idgis_ambiente'],
                 $id_carteira,
+                $carteira_id,
                 $idcob_contrato,
                 $data['cpf_cnpj'],
                 $data['mensagem'],
@@ -4497,7 +4526,7 @@ class Painel_Campanhas
         }
 
         $sql = "INSERT INTO {$table} 
-                (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, midia_campanha, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
+                (telefone, nome, idgis_ambiente, id_carteira, carteira_id, idcob_contrato, cpf_cnpj, mensagem, midia_campanha, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
                 VALUES " . implode(', ', $values);
 
         error_log('🔵 [bulk_insert] Inserindo ' . count($data_array) . ' registros na tabela ' . $table);
@@ -5966,17 +5995,25 @@ class Painel_Campanhas
                 $id_carteira_creds = '';
 
                 if (!empty($env_id)) {
-                    // Prioridade: id_carteira (código da carteira) - usado pelo dispatch
+                    // Prioridade: nome da carteira (ex: "BV BOM PAGADOR") - identifica a carteira exata quando há múltiplas com mesmo id_carteira
                     $carteira = $wpdb->get_row($wpdb->prepare(
-                        "SELECT id_ruler, id_carteira FROM $carteiras_table WHERE id_carteira = %s AND ativo = 1 LIMIT 1",
+                        "SELECT id_ruler, id_carteira FROM $carteiras_table WHERE nome = %s AND ativo = 1 LIMIT 1",
                         $env_id
                     ), ARRAY_A);
 
-                    // Fallback: id interno (numérico) para compatibilidade
-                    if (empty($carteira) && is_numeric($env_id)) {
+                    // Fallback: id interno (numérico)
+                    if (empty($carteira) && is_numeric($env_id) && intval($env_id) > 0) {
                         $carteira = $wpdb->get_row($wpdb->prepare(
                             "SELECT id_ruler, id_carteira FROM $carteiras_table WHERE id = %d AND ativo = 1 LIMIT 1",
                             intval($env_id)
+                        ), ARRAY_A);
+                    }
+
+                    // Fallback: id_carteira (código)
+                    if (empty($carteira)) {
+                        $carteira = $wpdb->get_row($wpdb->prepare(
+                            "SELECT id_ruler, id_carteira FROM $carteiras_table WHERE id_carteira = %s AND ativo = 1 LIMIT 1",
+                            $env_id
                         ), ARRAY_A);
                     }
 
@@ -8336,6 +8373,23 @@ class Painel_Campanhas
     }
 
     // ========== FUNÇÕES HELPER PARA ID_CARTEIRA ==========
+
+    /**
+     * Retorna o nome da carteira pelo id interno.
+     */
+    private function get_carteira_nome_by_id($carteira_id)
+    {
+        if (empty($carteira_id)) {
+            return '';
+        }
+        global $wpdb;
+        $table = $wpdb->prefix . 'pc_carteiras_v2';
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT nome FROM $table WHERE id = %d AND ativo = 1 LIMIT 1",
+            intval($carteira_id)
+        ), ARRAY_A);
+        return ($row && !empty($row['nome'])) ? (string) $row['nome'] : '';
+    }
 
     /**
      * Converte carteira_id (id interno de pc_carteiras_v2) para id_carteira (código cliente).
