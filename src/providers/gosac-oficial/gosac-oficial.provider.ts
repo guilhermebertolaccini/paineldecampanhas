@@ -74,6 +74,17 @@ export class GosacOficialProvider extends BaseProvider {
             };
         }
 
+        // Extrai variables_map e variableComponents do JSON da mensagem
+        let variablesMap: Record<string, string> = {};
+        let variableComponents: { componentId: number; variable: string }[] = [];
+        if (data[0].mensagem && typeof data[0].mensagem === 'string' && data[0].mensagem.trim().startsWith('{')) {
+            try {
+                const parsed = JSON.parse(data[0].mensagem);
+                variablesMap = parsed.variables_map || {};
+                variableComponents = parsed.variableComponents || [];
+            } catch (_) {}
+        }
+
         // Formata contatos conforme doc: number, name, cpf, variables
         const contacts = data
             .filter((dado) => dado.nome && dado.telefone)
@@ -83,6 +94,21 @@ export class GosacOficialProvider extends BaseProvider {
                     name: dado.nome || '',
                 };
                 if ((dado as any).cpf_cnpj) base.cpf = String((dado as any).cpf_cnpj).replace(/\D/g, '').slice(0, 11);
+                // Monta variables para template (componentId, variable, value)
+                if (Object.keys(variablesMap).length > 0) {
+                    base.variables = [];
+                    for (const vc of variableComponents) {
+                        const field = variablesMap[vc.variable];
+                        const val = field ? ((dado as any)[field] ?? (dado as any)[field?.toUpperCase()] ?? '') : '';
+                        base.variables.push({ componentId: vc.componentId, variable: vc.variable, value: String(val) });
+                    }
+                    if (base.variables.length === 0 && Object.keys(variablesMap).length > 0) {
+                        for (const [varName, field] of Object.entries(variablesMap)) {
+                            const val = (dado as any)[field] ?? (dado as any)[(field as string).toUpperCase()] ?? '';
+                            base.variables.push({ componentId: 0, variable: varName, value: String(val) });
+                        }
+                    }
+                }
                 return base;
             });
 
@@ -101,16 +127,19 @@ export class GosacOficialProvider extends BaseProvider {
             idAmbient: String(idAmbient),
             idRuler: String(idRuler),
             name: `${campanha}_${now.toISOString().replace(/[:.]/g, '-')}`,
-            connectionId: connectionId ?? undefined,
-            templateId: templateId ?? undefined,
             contacts,
         };
+        if (connectionId && connectionId > 0) payload.connectionId = connectionId;
+        if (templateId && templateId > 0) payload.templateId = templateId;
+
+        const baseUrl = (credentials.url as string).replace(/\/$/, '');
+        const postUrl = `${baseUrl}/campaigns/official`;
 
         try {
             const createResponse = await this.executeWithRetry(
                 async () => {
                     const result = await firstValueFrom(
-                        this.httpService.post(credentials.url as string, payload, {
+                        this.httpService.post(postUrl, payload, {
                             headers: {
                                 'Content-Type': 'application/json',
                                 Accept: 'application/json',
@@ -125,7 +154,7 @@ export class GosacOficialProvider extends BaseProvider {
                 { provider: 'GOSAC_OFICIAL' },
             );
 
-            const campaignId = createResponse.data?.id || createResponse.data?.data?.id;
+            const campaignId = createResponse.data?.campaignId || createResponse.data?.id || createResponse.data?.data?.id;
 
             if (!campaignId) {
                 return {
@@ -141,7 +170,7 @@ export class GosacOficialProvider extends BaseProvider {
                 campaignId: campaignId.toString(),
                 data: {
                     campaignId,
-                    url: `${credentials.url}/${campaignId}/status/started`,
+                    url: `${baseUrl}/${campaignId}/status/started`,
                     token: credentials.token,
                     scheduledAt: new Date(Date.now() + 60000).toISOString(),
                 },

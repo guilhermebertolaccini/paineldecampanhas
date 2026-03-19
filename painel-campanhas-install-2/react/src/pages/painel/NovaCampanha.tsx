@@ -82,6 +82,9 @@ export default function NovaCampanha() {
     noahChannelId: "",
     noahTemplateId: "",
     noahLanguage: "pt_BR",
+    gosacTemplateId: null as number | null,
+    gosacConnectionId: null as number | null,
+    gosacVariableComponents: [] as { componentId: number; variable: string }[],
     message: "",
     midia_campanha: "",
     providers: [] as string[],
@@ -295,6 +298,7 @@ export default function NovaCampanha() {
       channelId: null,
       templateId: t.id,
       templateName: t.name || t.id,
+      connectionId: t.connectionId ?? null,
     }));
 
     // Templates Robbu Oficial (estáticos, vêm de endpoint separado)
@@ -627,6 +631,9 @@ export default function NovaCampanha() {
         noah_channel_id: formData.noahChannelId || null,
         noah_template_id: formData.noahTemplateId || null,
         noah_language: formData.noahLanguage || 'pt_BR',
+        gosac_template_id: formData.gosacTemplateId ?? null,
+        gosac_connection_id: formData.gosacConnectionId ?? null,
+        gosac_variable_components: JSON.stringify(formData.gosacVariableComponents || []),
         robbu_channel: formData.templateSource === 'robbu_oficial' ? 3 : null,
         variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
         providers_config: providersConfig,
@@ -655,6 +662,9 @@ export default function NovaCampanha() {
         noah_channel_id: formData.noahChannelId || null,
         noah_template_id: formData.noahTemplateId || null,
         noah_language: formData.noahLanguage || 'pt_BR',
+        gosac_template_id: formData.gosacTemplateId ?? null,
+        gosac_connection_id: formData.gosacConnectionId ?? null,
+        gosac_variable_components: JSON.stringify(formData.gosacVariableComponents || []),
         robbu_channel: formData.templateSource === 'robbu_oficial' ? 3 : null,
         variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
         record_limit: formData.record_limit || 0,
@@ -1027,6 +1037,9 @@ export default function NovaCampanha() {
                                     noahChannelId: selectedTemplate?.channelId ?? '',
                                     noahTemplateId: selectedTemplate?.templateId ?? '',
                                     noahLanguage: selectedTemplate?.language || 'pt_BR',
+                                    gosacTemplateId: selectedTemplate?.templateId ?? selectedTemplate?.id ?? null,
+                                    gosacConnectionId: selectedTemplate?.connectionId ?? null,
+                                    gosacVariableComponents: selectedTemplate?.variableComponents ?? [],
                                   });
 
                                   // Save template object for preview + variable extraction

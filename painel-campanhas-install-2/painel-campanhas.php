@@ -2938,7 +2938,13 @@ class Painel_Campanhas
             $template_info = ['template_code' => $template_code, 'source' => $template_source];
         } elseif ($template_source === 'gosac_oficial' && !empty($template_code)) {
             $message_content = 'Template GOSAC Oficial: ' . $template_code;
-            $template_info = ['template_code' => $template_code, 'source' => 'gosac_oficial'];
+            $template_info = [
+                'template_code' => $template_code,
+                'source' => 'gosac_oficial',
+                'template_id' => intval($_POST['gosac_template_id'] ?? 0),
+                'connection_id' => intval($_POST['gosac_connection_id'] ?? 0),
+                'variable_components' => isset($_POST['gosac_variable_components']) ? json_decode(stripslashes($_POST['gosac_variable_components']), true) : [],
+            ];
         } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
             $message_content = 'Template NOAH Oficial: ' . $template_code;
             $template_info = [
@@ -3177,6 +3183,19 @@ class Painel_Campanhas
                         'templateName' => $template_code,
                         'channel' => 3,
                         'templateParameters' => $robbu_params,
+                    ]);
+                } elseif ($template_source === 'gosac_oficial' && !empty($template_code)) {
+                    $gosac_template_id = intval($template_info['template_id'] ?? 0);
+                    $gosac_connection_id = intval($template_info['connection_id'] ?? 0);
+                    $variable_components = $template_info['variable_components'] ?? [];
+                    $mensagem_para_armazenar = json_encode([
+                        'template_source' => 'gosac_oficial',
+                        'template_code' => $template_code,
+                        'id' => $gosac_template_id,
+                        'connectionId' => $gosac_connection_id,
+                        'variables_map' => $variables_map,
+                        'variableComponents' => $variable_components,
+                        'original_message' => $mensagem_final,
                     ]);
                 }
 
@@ -9164,6 +9183,8 @@ class Painel_Campanhas
                     'id_ambient' => $id_ambient,
                     'templateName' => $tpl['name'] ?? $tpl['id'] ?? '',
                     'idRuler' => $tpl['idRuler'] ?? '',
+                    'connectionId' => $tpl['connectionId'] ?? null,
+                    'variableComponents' => $tpl['variableComponents'] ?? $tpl['variable_components'] ?? [],
                 ];
             }
         }

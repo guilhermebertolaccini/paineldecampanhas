@@ -190,6 +190,13 @@ export const scheduleCampaign = (data: Record<string, any>) => {
     payload.noah_template_id = data.noah_template_id ?? '';
     payload.noah_language = data.noah_language ?? 'pt_BR';
   }
+  if (data.template_source === 'gosac_oficial') {
+    payload.gosac_template_id = data.gosac_template_id ?? '';
+    payload.gosac_connection_id = data.gosac_connection_id ?? '';
+    payload.gosac_variable_components = typeof data.gosac_variable_components === 'string'
+      ? data.gosac_variable_components
+      : JSON.stringify(data.gosac_variable_components || []);
+  }
 
   return wpAjax('cm_schedule_campaign', payload, 'cmNonce');
 };
