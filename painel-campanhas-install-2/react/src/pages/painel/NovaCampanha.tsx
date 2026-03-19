@@ -38,6 +38,8 @@ import {
   getBasesCarteira,
   checkBaseUpdate,
   getTemplatesByWallet,
+  getGosacOficialTemplates,
+  getRobbuOficialTemplates,
   getOtimaTemplates,
   getOtimaBrokers,
   getIscas,
@@ -174,11 +176,25 @@ export default function NovaCampanha() {
     queryFn: getIscas,
   });
 
-  // Buscar templates externos por carteira (GOSAC direto)
+  // Buscar templates externos por carteira (GOSAC, NOAH)
   const { data: externalTemplatesData = [], isLoading: externalTemplatesLoading } = useQuery({
     queryKey: ['external-templates', formData.carteira],
     queryFn: () => getTemplatesByWallet(formData.carteira),
     enabled: !!formData.carteira,
+  });
+
+  // Templates GOSAC Oficial (estáticos)
+  const { data: gosacTemplatesData = [], isLoading: gosacTemplatesLoading } = useQuery({
+    queryKey: ['gosac-oficial-templates'],
+    queryFn: getGosacOficialTemplates,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Templates Robbu Oficial (estáticos, não dependem da carteira)
+  const { data: robbuTemplatesData = [], isLoading: robbuTemplatesLoading } = useQuery({
+    queryKey: ['robbu-oficial-templates'],
+    queryFn: getRobbuOficialTemplates,
+    staleTime: 5 * 60 * 1000,
   });
 
   // Buscar templates Ótima sob demanda (apenas após selecionar carteira)
@@ -262,10 +278,48 @@ export default function NovaCampanha() {
       };
     }) : [];
 
-    console.log('📋 [NovaCampanha] Templates locais:', local.length, 'Ótima:', otima.length, 'GOSAC:', external.length);
+    // Templates GOSAC Oficial (estáticos)
+    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : []).map((t: any) => ({
+      id: `Gosac Oficial_${t.id || t.name}_${t.id_ambient || 'default'}`,
+      name: t.name || t.id || '',
+      source: 'gosac_oficial',
+      provider: 'Gosac Oficial',
+      templateCode: t.name || t.id || '',
+      walletId: t.id_ambient || 'default',
+      walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
+      imageUrl: null,
+      content: t.content || '',
+      language: t.language || 'pt_BR',
+      category: t.category,
+      components: t.components,
+      channelId: null,
+      templateId: t.id,
+      templateName: t.name || t.id,
+    }));
 
-    return [...local, ...otima, ...external];
-  }, [localTemplatesData, otimaTemplatesData, externalTemplatesData, formData.carteira, carteiras]);
+    // Templates Robbu Oficial (estáticos, vêm de endpoint separado)
+    const robbu = (Array.isArray(robbuTemplatesData) ? robbuTemplatesData : []).map((t: any) => ({
+      id: `Robbu Oficial_${t.id || t.name}_static`,
+      name: t.name || t.id || '',
+      source: 'robbu_oficial',
+      provider: 'Robbu Oficial',
+      templateCode: t.templateName || t.name || t.id || '',
+      walletId: t.env_id || 'static',
+      walletName: 'Robbu Oficial',
+      imageUrl: null,
+      content: t.content || '',
+      language: t.language || 'pt_BR',
+      category: t.category,
+      components: t.components,
+      channelId: t.channelId ?? 3,
+      templateId: t.templateId,
+      templateName: t.templateName || t.name || t.id,
+    }));
+
+    console.log('📋 [NovaCampanha] Templates locais:', local.length, 'Ótima:', otima.length, 'Externos:', external.length, 'GOSAC:', gosac.length, 'Robbu:', robbu.length);
+
+    return [...local, ...otima, ...external, ...gosac, ...robbu];
+  }, [localTemplatesData, otimaTemplatesData, externalTemplatesData, gosacTemplatesData, robbuTemplatesData, formData.carteira, carteiras]);
 
   // Map provider IDs (from step 3 formData.providers) to template sources
   const PROVIDER_TO_SOURCE_MAP: Record<string, string[]> = {
@@ -331,7 +385,7 @@ export default function NovaCampanha() {
     });
   }, [templates, formData.providers, formData.carteira, carteiras]);
 
-  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading || otimaBrokersLoading;
+  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading || gosacTemplatesLoading || robbuTemplatesLoading || otimaBrokersLoading;
 
   // Buscar filtros quando base for selecionada
   const { data: availableFilters = [], isLoading: filtersLoading } = useQuery({
@@ -396,9 +450,9 @@ export default function NovaCampanha() {
     retryDelay: 1000,
   });
 
-  // Buscar conteúdo do template quando selecionado
+  // Buscar conteúdo do template quando selecionado (apenas templates locais)
   const { data: templateContent, refetch: refetchTemplate, isLoading: templateContentLoading } = useQuery({
-    queryKey: ['template-content', formData.template],
+    queryKey: ['template-content', formData.template, formData.templateSource],
     queryFn: () => {
       console.log('🔍 [useQuery template-content] formData.template:', formData.template);
       if (!formData.template || formData.template === '' || formData.template === '0') {
@@ -407,7 +461,8 @@ export default function NovaCampanha() {
       }
       return getTemplateContent(formData.template);
     },
-    enabled: !!formData.template && formData.template !== '' && formData.template !== '0' && step >= 3,
+    enabled: !!formData.template && formData.template !== '' && formData.template !== '0' && step >= 3
+      && formData.templateSource === 'local',
     retry: false,
   });
 
@@ -642,7 +697,8 @@ export default function NovaCampanha() {
         const isOtima = formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp';
         if (isOtima && !formData.brokerCode) return false;
         const isExternalProvider = isOtima || formData.templateSource === 'gosac_oficial' || formData.templateSource === 'noah_oficial' || formData.templateSource === 'robbu_oficial';
-        if (isExternalProvider) return boolean(formData.message.trim());
+        // GOSAC/NOAH/Robbu: templateCode (nome do template) é suficiente; message pode vir vazio da API
+        if (isExternalProvider) return boolean(formData.message.trim() || formData.templateCode);
         // Local templates (incl. Salesforce custom): accept if message loaded OR template selected
         return boolean(formData.message.trim() || formData.templateCode);
       }

@@ -306,7 +306,7 @@ class Painel_Campanhas
         // Webhook Robbu - recebe eventos do Invenio (status de mensagens, saúde das linhas, etc.)
         // URL para cadastrar na Robbu: https://SEU-SITE.com/wp-json/robbu-webhook/v2/receive
         register_rest_route('robbu-webhook/v2', '/receive', [
-            'methods' => 'POST',
+            'methods' => ['GET', 'POST'],
             'callback' => [$this, 'handle_robbu_webhook_receive'],
             'permission_callback' => '__return_true', // Robbu não envia autenticação; use firewall por IP se necessário
         ]);
@@ -6252,15 +6252,23 @@ class Painel_Campanhas
      */
     public function handle_robbu_webhook_receive($request)
     {
+        // GET: validação/ping (Robbu ou teste manual) - retorna 200 OK
+        if ($request->get_method() === 'GET') {
+            error_log('🔵 [Robbu Webhook] GET recebido (validação/ping) - IP: ' . ($_SERVER['REMOTE_ADDR'] ?? ''));
+            return new WP_REST_Response(['ok' => true, 'message' => 'Webhook Robbu ativo', 'method' => 'GET'], 200);
+        }
+
         $body = $request->get_json_params();
         if (!is_array($body)) {
             $raw = $request->get_body();
             $body = json_decode($raw, true);
         }
         if (!is_array($body)) {
-            error_log('🔴 [Robbu Webhook] Body inválido ou vazio');
+            error_log('🔴 [Robbu Webhook] POST com body inválido ou vazio - IP: ' . ($_SERVER['REMOTE_ADDR'] ?? ''));
             return new WP_REST_Response(['ok' => true, 'message' => 'Received'], 200);
         }
+
+        error_log('🔵 [Robbu Webhook] POST recebido - IP: ' . ($_SERVER['REMOTE_ADDR'] ?? '') . ' - Items: ' . (isset($body[0]) ? count($body) : 1));
 
         global $wpdb;
         $table_events = $wpdb->prefix . 'pc_robbu_webhook_events';
@@ -9062,66 +9070,104 @@ class Painel_Campanhas
 
         check_ajax_referer('pc_nonce', 'nonce');
 
-        $credentials = get_option('acm_provider_credentials', []);
-        $gosac_oficial_creds = $credentials['gosac_oficial'] ?? [];
+        $static_creds = get_option('acm_static_credentials', []);
+        $gosac_url = trim($static_creds['gosac_oficial_url'] ?? '');
+        $gosac_token = trim($static_creds['gosac_oficial_token'] ?? '');
 
-        if (empty($gosac_oficial_creds)) {
+        if (empty($gosac_url) || empty($gosac_token)) {
             wp_send_json_success([]);
             return;
         }
 
+        if (stripos($gosac_token, 'Bearer ') !== 0) {
+            $gosac_token = 'Bearer ' . $gosac_token;
+        }
+
         $all_templates = [];
+        global $wpdb;
+        $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
+        $carteiras = $wpdb->get_results("SELECT id, nome, id_carteira FROM $table_carteiras WHERE ativo = 1 AND id_carteira IS NOT NULL AND id_carteira != ''", ARRAY_A);
 
-        foreach ($gosac_oficial_creds as $env_id => $data) {
-            $url = rtrim($data['url'], '/') . '/templates/waba';
-            $token = $data['token'] ?? '';
+        $id_ambients = [];
+        if (!empty($carteiras)) {
+            foreach ($carteiras as $c) {
+                $id = trim($c['id_carteira'] ?? '');
+                if (!empty($id) && !in_array($id, $id_ambients)) {
+                    $id_ambients[] = $id;
+                }
+            }
+        }
+        if (empty($id_ambients)) {
+            $id_ambients = ['default'];
+        }
 
-            if (empty($url) || empty($token))
-                continue;
-
+        foreach ($id_ambients as $id_ambient) {
+            $url = rtrim($gosac_url, '/') . '/templates/waba?idAmbient=' . urlencode($id_ambient);
             $response = wp_remote_get($url, [
                 'headers' => [
-                    'Authorization' => $token,
+                    'Authorization' => $gosac_token,
                     'Content-Type' => 'application/json',
                     'Accept' => 'application/json',
                 ],
                 'timeout' => 15,
+                'sslverify' => false,
             ]);
 
             if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
-                error_log("🔴 [Gosac Oficial] erro ao buscar templates para $env_id: " . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
+                error_log("🔴 [Gosac Oficial] erro ao buscar templates para idAmbient=$id_ambient: " . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
                 continue;
             }
 
             $body = wp_remote_retrieve_body($response);
             $templates_data = json_decode($body, true);
+            $tpls = $this->extract_gosac_templates($templates_data);
 
-            if (is_array($templates_data)) {
-                // Se o retorno for um array com chave 'data', como na Ótima, ajustamos
-                $envs = isset($templates_data['data']) ? $templates_data['data'] : $templates_data;
-
-                if (is_array($envs)) {
-                    foreach ($envs as $env) {
-                        // O novo formato da Gosac retorna os templates dentro da chave 'templates' de cada ambiente
-                        $tpls = isset($env['templates']) && is_array($env['templates']) ? $env['templates'] : [];
-
-                        foreach ($tpls as $tpl) {
-                            $all_templates[] = [
-                                'id' => $tpl['id'] ?? '',
-                                'name' => $tpl['name'] ?? '',
-                                'status' => $tpl['status'] ?? '',
-                                'category' => $tpl['category'] ?? '',
-                                'language' => $tpl['language'] ?? '',
-                                'components' => $tpl['components'] ?? [],
-                                'env_id' => $env_id
-                            ];
-                        }
-                    }
-                }
+            foreach ($tpls as $tpl) {
+                $all_templates[] = [
+                    'id' => $tpl['id'] ?? $tpl['name'] ?? '',
+                    'name' => $tpl['name'] ?? $tpl['id'] ?? '',
+                    'content' => $tpl['content'] ?? '',
+                    'status' => $tpl['status'] ?? '',
+                    'category' => $tpl['category'] ?? '',
+                    'language' => $tpl['language'] ?? 'pt_BR',
+                    'components' => $tpl['components'] ?? [],
+                    'provider' => 'Gosac Oficial',
+                    'id_ambient' => $id_ambient,
+                    'templateName' => $tpl['name'] ?? $tpl['id'] ?? '',
+                    'idRuler' => $tpl['idRuler'] ?? '',
+                ];
             }
         }
 
         wp_send_json_success($all_templates);
+    }
+
+    private function extract_gosac_templates($templates_data)
+    {
+        $out = [];
+        if (!is_array($templates_data)) {
+            return $out;
+        }
+        $envs = isset($templates_data['data']) ? $templates_data['data'] : $templates_data;
+        if (!is_array($envs)) {
+            return $out;
+        }
+        foreach ($envs as $env) {
+            if (!is_array($env) || isset($env['error'])) {
+                continue;
+            }
+            $tpls = isset($env['templates']) && is_array($env['templates']) ? $env['templates'] : [];
+            if (empty($tpls) && isset($env['id']) && isset($env['name'])) {
+                $tpls = [$env];
+            }
+            foreach ($tpls as $t) {
+                if (is_array($t) && (isset($t['id']) || isset($t['name']))) {
+                    $t['idRuler'] = $env['idRuler'] ?? '';
+                    $out[] = $t;
+                }
+            }
+        }
+        return $out;
     }
 
     public function handle_get_all_connections_health()
@@ -9479,17 +9525,6 @@ class Painel_Campanhas
             }
         }
 
-        // Inject static ROBBU OFICIAL credentials
-        $robbu_token = trim($static_creds['robbu_invenio_token'] ?? '');
-        if (!empty($robbu_token)) {
-            if (!isset($credentials['robbu_oficial'])) {
-                $credentials['robbu_oficial'] = [];
-            }
-            if (!isset($credentials['robbu_oficial'][$id_ambient])) {
-                $credentials['robbu_oficial'][$id_ambient] = ['invenio_private_token' => $robbu_token];
-            }
-        }
-
         $all_templates = [];
 
         foreach ($credentials as $provider => $envs) {
@@ -9513,39 +9548,28 @@ class Painel_Campanhas
                             'Accept' => 'application/json',
                         ],
                         'timeout' => 15,
+                        'sslverify' => false,
                     ]);
 
                     if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
                         $body = wp_remote_retrieve_body($response);
                         $templates_data = json_decode($body, true);
-                        $env_items = isset($templates_data['data']) ? $templates_data['data'] : $templates_data;
-
-                        if (is_array($env_items)) {
-                            foreach ($env_items as $env_item) {
-                                // Skip errored environments (ECONNREFUSED, timeout, etc.)
-                                if (!is_array($env_item) || isset($env_item['error']) || empty($env_item['templates'])) {
-                                    continue;
-                                }
-
-                                $temps = $env_item['templates'];
-                                if (!is_array($temps))
-                                    continue;
-
-                                foreach ($temps as $template) {
-                                    $all_templates[] = [
-                                        'id' => $template['id'] ?? $template['name'] ?? '',
-                                        'name' => $template['name'] ?? '',
-                                        'content' => $template['content'] ?? '',
-                                        'category' => $template['category'] ?? '',
-                                        'language' => $template['language'] ?? '',
-                                        'status' => $template['status'] ?? '',
-                                        'provider' => 'Gosac Oficial',
-                                        'id_ambient' => $id_ambient,
-                                        'idRuler' => $env_item['idRuler'] ?? ''
-                                    ];
-                                }
-                            }
+                        $temps = $this->extract_gosac_templates($templates_data);
+                        foreach ($temps as $template) {
+                            $all_templates[] = [
+                                'id' => $template['id'] ?? $template['name'] ?? '',
+                                'name' => $template['name'] ?? $template['id'] ?? '',
+                                'content' => $template['content'] ?? '',
+                                'category' => $template['category'] ?? '',
+                                'language' => $template['language'] ?? 'pt_BR',
+                                'status' => $template['status'] ?? '',
+                                'provider' => 'Gosac Oficial',
+                                'id_ambient' => $id_ambient,
+                                'idRuler' => $template['idRuler'] ?? ''
+                            ];
                         }
+                    } else {
+                        error_log('🔴 [Gosac] getTemplatesByWallet falhou: ' . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
                     }
                 } elseif ($provider === 'noah_oficial') {
                     $base_url = rtrim($data['url'], '/');
@@ -9592,45 +9616,8 @@ class Painel_Campanhas
                             }
                         }
                     }
-                } elseif ($provider === 'robbu_oficial') {
-                    $token_privado = trim($data['invenio_private_token'] ?? '');
-                    if (empty($token_privado)) continue;
-
-                    $templates_url = 'http://s.robbu.com.br/wsInvenioAPI.ashx?token=' . urlencode($token_privado) . '&acao=buscartemplates';
-                    $response = wp_remote_get($templates_url, [
-                        'timeout' => 15,
-                        'sslverify' => false,
-                    ]);
-
-                    if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
-                        $body = wp_remote_retrieve_body($response);
-                        $items = json_decode($body, true);
-                        if (!is_array($items)) {
-                            $items = isset($items->data) ? $items->data : [];
-                        }
-                        if (!is_array($items)) {
-                            $items = [];
-                        }
-                        foreach ($items as $tpl) {
-                            if (!is_array($tpl)) continue;
-                            $id_canal = $tpl['IdCanal'] ?? 0;
-                            if ($id_canal != 3) continue;
-                            $all_templates[] = [
-                                'id' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
-                                'name' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
-                                'content' => $tpl['Template'] ?? '',
-                                'category' => '',
-                                'language' => $tpl['Linguagem'] ?? 'pt_BR',
-                                'status' => $tpl['StatusWhatsapp'] ?? '',
-                                'provider' => 'Robbu Oficial',
-                                'id_ambient' => $id_ambient,
-                                'templateName' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
-                                'templateId' => $tpl['IdCanal'] ?? 3,
-                                'channelId' => $tpl['IdCanal'] ?? 3,
-                            ];
-                        }
-                    }
                 }
+                // robbu_oficial: templates via pc_get_robbu_oficial_templates (não dependem da carteira)
             }
         }
 
@@ -9670,6 +9657,7 @@ class Painel_Campanhas
                     'id' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
                     'name' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
                     'templateName' => $tpl['NomeTemplateWhatsapp'] ?? $tpl['NomeTemplate'] ?? '',
+                    'content' => $tpl['Template'] ?? '',
                     'language' => $tpl['Linguagem'] ?? 'pt_BR',
                     'status' => $tpl['StatusWhatsapp'] ?? '',
                     'env_id' => 'static',

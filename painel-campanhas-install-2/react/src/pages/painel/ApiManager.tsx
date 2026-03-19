@@ -58,11 +58,17 @@ function RobbuWebhookCard() {
         </CardTitle>
         <CardDescription>
           URL para cadastrar no Invenio Center e receber eventos em tempo real (status de mensagens, saúde das linhas WhatsApp).
-          Acesse: Configurações → Webhook → Gerenciar
+          Acesse: inveniocenter.robbu.global → Configurações → Webhook → Gerenciar
         </CardDescription>
-        <p className="text-sm text-amber-700/90 dark:text-amber-400/90 mt-1">
-          <strong>Credenciais para envio:</strong> role até a seção &quot;Credenciais Estáticas&quot; abaixo → preencha <strong>Robbu Oficial</strong> (Company, Username, Password e Token Privado Invenio).
-        </p>
+        <div className="text-sm text-amber-700/90 dark:text-amber-400/90 mt-2 space-y-1">
+          <p><strong>Credenciais para envio:</strong> role até &quot;Credenciais Estáticas&quot; → preencha Robbu Oficial.</p>
+          <p><strong>Se não receber eventos:</strong></p>
+          <ul className="list-disc list-inside ml-2 space-y-0.5 text-xs">
+            <li>Aguarde ~60 min após cadastrar a URL (Robbu demora para ativar)</li>
+            <li>Libere os IPs da Robbu no firewall: 104.41.15.44, 104.41.14.184, 104.41.13.132, 104.41.12.97, 104.41.56.229, 104.41.30.250, 20.206.191.81, 191.235.52.x, 191.235.53.x, 191.235.54.x</li>
+            <li>Teste a URL no navegador (GET) — deve retornar 200 OK</li>
+          </ul>
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-2">

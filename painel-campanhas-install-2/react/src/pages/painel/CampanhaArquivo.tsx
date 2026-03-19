@@ -35,6 +35,8 @@ import {
   getOtimaTemplates,
   getOtimaBrokers,
   getTemplatesByWallet,
+  getGosacOficialTemplates,
+  getRobbuOficialTemplates,
 } from "@/lib/api";
 
 const providers = [
@@ -107,6 +109,20 @@ export default function CampanhaArquivo() {
     enabled: !!carteira,
   });
 
+  // Templates GOSAC Oficial (estáticos)
+  const { data: gosacTemplatesData = [], isLoading: gosacTemplatesLoading } = useQuery({
+    queryKey: ['gosac-oficial-templates'],
+    queryFn: getGosacOficialTemplates,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Templates Robbu Oficial (estáticos, não dependem da carteira)
+  const { data: robbuTemplatesData = [], isLoading: robbuTemplatesLoading } = useQuery({
+    queryKey: ['robbu-oficial-templates'],
+    queryFn: getRobbuOficialTemplates,
+    staleTime: 5 * 60 * 1000,
+  });
+
   // Processar e mesclar templates
   const templates = useMemo(() => {
     // Templates Locais
@@ -152,8 +168,39 @@ export default function CampanhaArquivo() {
         templateId: t.templateId,
         templateName: t.templateName || t.name,
         language: t.language || 'pt_BR',
+        content: t.content || '',
       };
     }) : [];
+
+    // Templates GOSAC Oficial (estáticos)
+    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : []).map((t: any) => ({
+      id: `Gosac Oficial_${t.id || t.name}_${t.id_ambient || 'default'}`,
+      name: t.name || t.id || '',
+      source: 'gosac_oficial',
+      templateCode: t.name || t.id || '',
+      walletId: t.id_ambient || 'default',
+      walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
+      channelId: null,
+      templateId: t.id,
+      templateName: t.name || t.id,
+      language: t.language || 'pt_BR',
+      content: t.content || '',
+    }));
+
+    // Templates Robbu Oficial (estáticos)
+    const robbu = (Array.isArray(robbuTemplatesData) ? robbuTemplatesData : []).map((t: any) => ({
+      id: `Robbu Oficial_${t.id || t.name}_static`,
+      name: t.name || t.id || '',
+      source: 'robbu_oficial',
+      templateCode: t.templateName || t.name || t.id || '',
+      walletId: t.env_id || 'static',
+      walletName: 'Robbu Oficial',
+      channelId: t.channelId ?? 3,
+      templateId: t.templateId,
+      templateName: t.templateName || t.name || t.id,
+      language: t.language || 'pt_BR',
+      content: t.content || '',
+    }));
 
     console.log('📋 [CampanhaArquivo] Templates locais:', local.length);
     console.log('📋 [CampanhaArquivo] Templates Ótima:', otima.length);
@@ -178,11 +225,13 @@ export default function CampanhaArquivo() {
       })
       : [];
 
-    // GOSAC/NOAH/ROBBU templates: show when provider is GOSAC_OFICIAL/NOAH_OFICIAL/ROBBU_OFICIAL or none selected
+    // GOSAC/NOAH templates: show when provider is GOSAC_OFICIAL/NOAH_OFICIAL or none selected, filter by wallet
     const EXTERNAL_PROVIDERS = ['GOSAC_OFICIAL', 'NOAH_OFICIAL', 'ROBBU_OFICIAL'];
     const externalProviderSelected = !provider || EXTERNAL_PROVIDERS.includes(provider);
     const externalFiltrados = externalProviderSelected
       ? external.filter(t => {
+        if (t.source === 'robbu_oficial') return false; // Robbu vem de robbuFiltrados
+        if (t.source === 'gosac_oficial') return false; // GOSAC vem de gosacFiltrados
         if (carteira && walletCode) {
           return String(t.walletId) === walletCode;
         }
@@ -190,8 +239,16 @@ export default function CampanhaArquivo() {
       })
       : [];
 
+    // GOSAC: sempre mostrar quando GOSAC_OFICIAL ou nenhum provider
+    const gosacFiltrados = (!provider || provider === 'GOSAC_OFICIAL') ? gosac : [];
+
+    // Robbu: sempre mostrar quando ROBBU_OFICIAL ou nenhum provider (estáticos, não dependem da carteira)
+    const robbuFiltrados = (!provider || provider === 'ROBBU_OFICIAL') ? robbu : [];
+
     console.log('📋 [CampanhaArquivo] Templates Ótima filtrados:', otimaFiltrados.length);
     console.log('📋 [CampanhaArquivo] Templates GOSAC/NOAH filtrados:', externalFiltrados.length);
+    console.log('📋 [CampanhaArquivo] Templates GOSAC:', gosacFiltrados.length);
+    console.log('📋 [CampanhaArquivo] Templates Robbu:', robbuFiltrados.length);
 
     // Filter local templates: show if no metadata (backward compat)
     // else strict match on provider AND wallet
@@ -208,10 +265,10 @@ export default function CampanhaArquivo() {
       return providerMatch && walletMatch;
     });
 
-    return [...localFiltrados, ...otimaFiltrados, ...externalFiltrados];
-  }, [localTemplatesData, otimaTemplatesData, externalTemplatesData, carteira, carteiras, provider]);
+    return [...localFiltrados, ...otimaFiltrados, ...externalFiltrados, ...gosacFiltrados, ...robbuFiltrados];
+  }, [localTemplatesData, otimaTemplatesData, externalTemplatesData, gosacTemplatesData, robbuTemplatesData, carteira, carteiras, provider]);
 
-  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading || otimaBrokersLoading;
+  const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading || gosacTemplatesLoading || robbuTemplatesLoading || otimaBrokersLoading;
 
   // Buscar bases da carteira selecionada
   const { data: basesCarteira = [] } = useQuery({

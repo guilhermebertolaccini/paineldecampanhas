@@ -264,8 +264,15 @@ export const getOtimaBrokers = () => {
   return wpAjax('pc_get_otima_brokers', {});
 };
 
-export const getGosacOficialTemplates = () => {
-  return wpAjax('pc_get_gosac_oficial_templates', {});
+/** Templates GOSAC Oficial (estáticos) */
+export const getGosacOficialTemplates = async (): Promise<any[]> => {
+  try {
+    const data = await wpAjax('pc_get_gosac_oficial_templates', {});
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.error('🔴 [Templates] getGosacOficialTemplates error:', err);
+    return [];
+  }
 };
 
 export const getGosacOficialConnections = () => {
@@ -274,6 +281,17 @@ export const getGosacOficialConnections = () => {
 
 export const getRobbuWebhookStats = () => {
   return wpAjax('pc_get_robbu_webhook_stats', {});
+};
+
+/** Templates Robbu Oficial (estáticos, não dependem da carteira) */
+export const getRobbuOficialTemplates = async (): Promise<any[]> => {
+  try {
+    const data = await wpAjax('pc_get_robbu_oficial_templates', {});
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.error('🔴 [Templates] getRobbuOficialTemplates error:', err);
+    return [];
+  }
 };
 
 
