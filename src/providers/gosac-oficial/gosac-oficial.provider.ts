@@ -49,28 +49,42 @@ export class GosacOficialProvider extends BaseProvider {
             };
         }
 
-        // Tenta extrair template do JSON da mensagem
-        let templateId = null;
+        // Extrai template e connectionId do JSON da mensagem (formato da API GOSAC)
+        let templateId: number | null = null;
+        let connectionId: number | null = null;
 
         if (data[0].mensagem && typeof data[0].mensagem === 'string' && data[0].mensagem.trim().startsWith('{')) {
             try {
                 const parsed = JSON.parse(data[0].mensagem);
-                if (parsed.id) {
-                    templateId = parsed.id;
-                }
+                if (parsed.id) templateId = parsed.id;
+                if (parsed.connectionId) connectionId = parsed.connectionId;
             } catch (e) {
                 this.logger.warn(`⚠️ [Gosac Oficial] Falha ao parsear JSON da mensagem: ${e.message}`);
             }
         }
 
-        // Formata contatos
+        // idAmbient e idRuler vêm da carteira (PHP busca por id_carteira e retorna nas credenciais)
+        const idAmbient = (credentials as any).id_carteira || (data[0] as any)?.id_carteira;
+        const idRuler = (credentials as any).idRuler;
+
+        if (!idAmbient || !idRuler) {
+            return {
+                success: false,
+                error: 'idAmbient e idRuler são obrigatórios. Configure id_carteira e id_ruler na carteira em Configurações.',
+            };
+        }
+
+        // Formata contatos conforme doc: number, name, cpf, variables
         const contacts = data
             .filter((dado) => dado.nome && dado.telefone)
-            .map((dado) => ({
-                name: dado.nome,
-                number: this.normalizePhoneNumber(dado.telefone),
-                hasWhatsapp: true,
-            }));
+            .map((dado) => {
+                const base: { number: string; name: string; cpf?: string; variables?: any[] } = {
+                    number: this.normalizePhoneNumber(dado.telefone),
+                    name: dado.nome || '',
+                };
+                if ((dado as any).cpf_cnpj) base.cpf = String((dado as any).cpf_cnpj).replace(/\D/g, '').slice(0, 11);
+                return base;
+            });
 
         if (contacts.length === 0) {
             return {
@@ -82,21 +96,15 @@ export class GosacOficialProvider extends BaseProvider {
         const now = new Date();
         const campanha = `campanha_oficial_${now.getTime()}`;
 
+        // Payload conforme doc POST /campaigns/official: idAmbient, idRuler, name, connectionId, templateId, contacts
         const payload: any = {
+            idAmbient: String(idAmbient),
+            idRuler: String(idRuler),
             name: `${campanha}_${now.toISOString().replace(/[:.]/g, '-')}`,
-            kind: 'whats',
-            connectionId: null, // Pode ser expandido se necessário
-            contacts: contacts,
-            defaultQueueId: 1,
-            scheduled: false,
-            scheduledAt: now.toISOString(),
-            speed: 'low',
-            templateId: templateId,
+            connectionId: connectionId ?? undefined,
+            templateId: templateId ?? undefined,
+            contacts,
         };
-
-        if ((credentials as any).idRuler) {
-            payload.idRuler = (credentials as any).idRuler;
-        }
 
         try {
             const createResponse = await this.executeWithRetry(

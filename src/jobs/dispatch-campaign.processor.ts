@@ -40,14 +40,18 @@ export class DispatchCampaignProcessor extends WorkerHost {
       this.logger.log(`Fetched ${data.length} records from WordPress`);
 
       // 3. Buscar credenciais
-      // NOAH_OFICIAL e ROBBU_OFICIAL usam id_carteira (credenciais dinâmicas por carteira)
+      // NOAH_OFICIAL, ROBBU_OFICIAL e GOSAC_OFICIAL usam id_carteira (lookup id_ruler por carteira)
+      const useIdCarteira =
+        provider === 'NOAH_OFICIAL' ||
+        provider === 'ROBBU_OFICIAL' ||
+        provider === 'GOSAC_OFICIAL';
       const envId =
-        (provider === 'NOAH_OFICIAL' || provider === 'ROBBU_OFICIAL') && data[0]?.id_carteira
+        useIdCarteira && data[0]?.id_carteira
           ? data[0].id_carteira
           : data[0]?.idgis_ambiente;
       if (!envId) {
         throw new Error(
-          provider === 'NOAH_OFICIAL' || provider === 'ROBBU_OFICIAL'
+          useIdCarteira
             ? 'id_carteira não encontrado nos dados'
             : 'idgis_ambiente não encontrado nos dados',
         );

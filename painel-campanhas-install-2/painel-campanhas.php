@@ -5963,26 +5963,26 @@ class Painel_Campanhas
                 global $wpdb;
                 $carteiras_table = $wpdb->prefix . 'pc_carteiras_v2';
                 $id_ruler = '';
+                $id_carteira_creds = '';
 
                 if (!empty($env_id)) {
-                    // Try exact match by numeric id first
-                    if (is_numeric($env_id)) {
+                    // Prioridade: id_carteira (código da carteira) - usado pelo dispatch
+                    $carteira = $wpdb->get_row($wpdb->prepare(
+                        "SELECT id_ruler, id_carteira FROM $carteiras_table WHERE id_carteira = %s AND ativo = 1 LIMIT 1",
+                        $env_id
+                    ), ARRAY_A);
+
+                    // Fallback: id interno (numérico) para compatibilidade
+                    if (empty($carteira) && is_numeric($env_id)) {
                         $carteira = $wpdb->get_row($wpdb->prepare(
-                            "SELECT id_ruler FROM $carteiras_table WHERE id = %d AND ativo = 1 LIMIT 1",
+                            "SELECT id_ruler, id_carteira FROM $carteiras_table WHERE id = %d AND ativo = 1 LIMIT 1",
                             intval($env_id)
                         ), ARRAY_A);
                     }
 
-                    // Fallback to id_carteira text match for backward compatibility
-                    if (empty($carteira)) {
-                        $carteira = $wpdb->get_row($wpdb->prepare(
-                            "SELECT id_ruler FROM $carteiras_table WHERE id_carteira = %s AND ativo = 1 LIMIT 1",
-                            $env_id
-                        ), ARRAY_A);
-                    }
-
-                    if ($carteira && !empty($carteira['id_ruler'])) {
-                        $id_ruler = $carteira['id_ruler'];
+                    if ($carteira) {
+                        $id_ruler = $carteira['id_ruler'] ?? '';
+                        $id_carteira_creds = $carteira['id_carteira'] ?? '';
                     }
                 }
 
@@ -5990,9 +5990,10 @@ class Painel_Campanhas
                     'token' => $static_credentials['gosac_oficial_token'] ?? '',
                     'url' => $static_credentials['gosac_oficial_url'] ?? '',
                     'idRuler' => $id_ruler,
+                    'id_carteira' => $id_carteira_creds,
                 ];
 
-                error_log('✅ [REST API] Credenciais Gosac Oficial retornadas com sucesso. idRuler=' . $id_ruler);
+                error_log('✅ [REST API] Credenciais Gosac Oficial retornadas. idRuler=' . $id_ruler . ', id_carteira=' . $id_carteira_creds);
             } elseif ($provider === 'ROBBU_OFICIAL') {
                 $credentials = [
                     'company' => $static_credentials['robbu_company'] ?? '',
