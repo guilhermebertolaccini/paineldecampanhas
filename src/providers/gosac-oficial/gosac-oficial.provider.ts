@@ -134,6 +134,8 @@ export class GosacOficialProvider extends BaseProvider {
 
         const baseUrl = (credentials.url as string).replace(/\/$/, '');
         const postUrl = `${baseUrl}/campaigns/official`;
+        const authToken = (credentials.token as string)?.trim();
+        const authHeader = authToken?.toLowerCase().startsWith('bearer ') ? authToken : `Bearer ${authToken}`;
 
         try {
             const createResponse = await this.executeWithRetry(
@@ -143,7 +145,7 @@ export class GosacOficialProvider extends BaseProvider {
                             headers: {
                                 'Content-Type': 'application/json',
                                 Accept: 'application/json',
-                                Authorization: credentials.token as string,
+                                Authorization: authHeader,
                             },
                             timeout: 30000,
                         }),
@@ -184,7 +186,11 @@ export class GosacOficialProvider extends BaseProvider {
         campaignId: string,
         credentials: ProviderCredentials,
     ): Promise<ProviderResponse> {
-        const url = `${credentials.url}/${campaignId}/status/started`;
+        const baseUrl = (credentials.url as string).replace(/\/$/, '');
+        const url = `${baseUrl}/${campaignId}/status/started`;
+        const authToken = (credentials.token as string)?.trim();
+        const authHeader = authToken?.toLowerCase().startsWith('bearer ') ? authToken : `Bearer ${authToken}`;
+
         try {
             const response = await this.executeWithRetry(
                 async () => {
@@ -195,7 +201,7 @@ export class GosacOficialProvider extends BaseProvider {
                             {
                                 headers: {
                                     'Content-Type': 'application/json',
-                                    Authorization: credentials.token as string,
+                                    Authorization: authHeader,
                                 },
                                 timeout: 60000,
                             },
