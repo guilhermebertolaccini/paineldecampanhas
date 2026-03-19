@@ -105,11 +105,12 @@ export class CampaignsService {
       );
 
       // WordPress REST pode retornar array direto ou wrapped em { data: [...] }
-      let records: CampaignData[] = Array.isArray(response.data)
-        ? response.data
-        : (response.data?.data && Array.isArray(response.data.data)
-          ? response.data.data
-          : []);
+      const raw = response.data as unknown;
+      const records: CampaignData[] = Array.isArray(raw)
+        ? raw
+        : (raw && typeof raw === 'object' && 'data' in raw && Array.isArray((raw as { data: unknown }).data))
+          ? (raw as { data: CampaignData[] }).data
+          : [];
 
       if (!records || records.length === 0) {
         throw new HttpException(
