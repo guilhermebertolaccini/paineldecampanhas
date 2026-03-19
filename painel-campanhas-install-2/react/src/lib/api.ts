@@ -191,8 +191,10 @@ export const scheduleCampaign = (data: Record<string, any>) => {
     payload.noah_language = data.noah_language ?? 'pt_BR';
   }
   if (data.template_source === 'gosac_oficial') {
-    payload.gosac_template_id = data.gosac_template_id ?? '';
-    payload.gosac_connection_id = data.gosac_connection_id ?? '';
+    const tid = data.gosac_template_id;
+    const cid = data.gosac_connection_id;
+    payload.gosac_template_id = (typeof tid === 'number' && tid > 0) ? tid : (typeof tid === 'string' && /^\d+$/.test(tid) ? parseInt(tid, 10) : '');
+    payload.gosac_connection_id = (typeof cid === 'number' && cid > 0) ? cid : (typeof cid === 'string' && /^\d+$/.test(cid) ? parseInt(cid, 10) : '');
     payload.gosac_variable_components = typeof data.gosac_variable_components === 'string'
       ? data.gosac_variable_components
       : JSON.stringify(data.gosac_variable_components || []);

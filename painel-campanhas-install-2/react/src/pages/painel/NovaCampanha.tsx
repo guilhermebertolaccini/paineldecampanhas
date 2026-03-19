@@ -290,26 +290,31 @@ export default function NovaCampanha() {
       };
     }) : [];
 
-    // Templates GOSAC Oficial (estáticos) - connectionId virá do select de Ilha separado
-    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : []).map((t: any) => ({
-        id: `Gosac Oficial_${t.id || t.name}_${t.id_ambient || 'default'}`,
-        name: t.name || t.id || '',
-        source: 'gosac_oficial',
-        provider: 'Gosac Oficial',
-        templateCode: t.name || t.id || '',
-        walletId: t.id_ambient || 'default',
-        walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
-        imageUrl: null,
-        content: t.content || '',
-        language: t.language || 'pt_BR',
-        category: t.category,
-        components: t.components,
-        channelId: null,
-        templateId: t.id,
-        templateName: t.name || t.id,
-        connectionId: t.connectionId ?? null,
-        variableComponents: t.variableComponents ?? [],
-      }));
+    // Templates GOSAC Oficial - templateId numérico (API exige), connectionId do select de Ilha
+    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : []).map((t: any) => {
+        const numId = (typeof t.templateId === 'number' && t.templateId > 0) ? t.templateId
+          : (typeof t.id === 'number' && t.id > 0) ? t.id
+          : (parseInt(String(t.id), 10) || 0);
+        return {
+          id: `Gosac Oficial_${t.id ?? t.name}_${t.id_ambient || 'default'}`,
+          name: t.name || t.id || '',
+          source: 'gosac_oficial',
+          provider: 'Gosac Oficial',
+          templateCode: t.name || t.id || '',
+          walletId: t.id_ambient || 'default',
+          walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
+          imageUrl: null,
+          content: t.content || '',
+          language: t.language || 'pt_BR',
+          category: t.category,
+          components: t.components,
+          channelId: null,
+          templateId: numId > 0 ? numId : t.id,
+          templateName: t.name || t.id,
+          connectionId: t.connectionId ?? null,
+          variableComponents: t.variableComponents ?? [],
+        };
+      });
 
     // Templates Robbu Oficial (estáticos, vêm de endpoint separado)
     const robbu = (Array.isArray(robbuTemplatesData) ? robbuTemplatesData : []).map((t: any) => ({
@@ -693,7 +698,16 @@ export default function NovaCampanha() {
         noah_channel_id: formData.noahChannelId || null,
         noah_template_id: formData.noahTemplateId || null,
         noah_language: formData.noahLanguage || 'pt_BR',
-        gosac_template_id: formData.gosacTemplateId ?? selectedTemplateObj?.templateId ?? selectedTemplateObj?.id ?? null,
+        gosac_template_id: (() => {
+          const v = formData.gosacTemplateId ?? selectedTemplateObj?.templateId;
+          if (typeof v === 'number' && v > 0) return v;
+          const sid = selectedTemplateObj?.id;
+          if (typeof sid === 'string' && sid.startsWith('Gosac Oficial_')) {
+            const m = sid.match(/^Gosac Oficial_(\d+)_/);
+            if (m) return parseInt(m[1], 10);
+          }
+          return (typeof v === 'number' && v > 0) ? v : null;
+        })(),
         gosac_connection_id: formData.gosacConnectionId ?? selectedTemplateObj?.connectionId ?? null,
         gosac_variable_components: JSON.stringify(formData.gosacVariableComponents ?? selectedTemplateObj?.variableComponents ?? []),
         robbu_channel: formData.templateSource === 'robbu_oficial' ? 3 : null,
@@ -1068,7 +1082,17 @@ export default function NovaCampanha() {
                                     noahChannelId: selectedTemplate?.channelId ?? '',
                                     noahTemplateId: selectedTemplate?.templateId ?? '',
                                     noahLanguage: selectedTemplate?.language || 'pt_BR',
-                                    gosacTemplateId: selectedTemplate?.templateId ?? selectedTemplate?.id ?? null,
+                                    gosacTemplateId: (() => {
+                                      const tid = selectedTemplate?.templateId;
+                                      if (typeof tid === 'number' && tid > 0) return tid;
+                                      const sid = selectedTemplate?.id;
+                                      if (typeof sid === 'string' && sid.startsWith('Gosac Oficial_')) {
+                                        const parts = sid.split('_');
+                                        const n = parseInt(parts[2], 10);
+                                        return !isNaN(n) && n > 0 ? n : null;
+                                      }
+                                      return typeof tid === 'number' ? tid : null;
+                                    })(),
                                     gosacConnectionId: selectedTemplate?.connectionId ?? null,
                                     gosacVariableComponents: selectedTemplate?.variableComponents ?? [],
                                   });
@@ -1139,8 +1163,8 @@ export default function NovaCampanha() {
                 </Popover>
               </div>
 
-              {/* GOSAC Oficial: seleção da ilha (conexão) por qual sai o disparo */}
-              {formData.templateSource === 'gosac_oficial' && (
+              {/* GOSAC Oficial: seleção da ilha (conexão) por qual sai o disparo - aparece quando GOSAC é fornecedor OU quando template GOSAC foi selecionado */}
+              {(formData.templateSource === 'gosac_oficial' || formData.providers.includes('GOSAC_OFICIAL')) && (
                 <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
                   <Label>Ilha / Conexão <span className="text-red-500">*</span></Label>
                   <Select

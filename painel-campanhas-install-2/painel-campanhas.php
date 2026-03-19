@@ -9189,8 +9189,14 @@ class Painel_Campanhas
 
             foreach ($tpls as $tpl) {
                 $conn_id = $tpl['connectionId'] ?? null;
+                $raw_id = $tpl['templateId'] ?? $tpl['id'] ?? $tpl['name'] ?? '';
+                $num_id = (is_numeric($raw_id) && (int) $raw_id > 0) ? (int) $raw_id : null;
+                if ($num_id === null && is_string($raw_id) && preg_match('/\d+/', $raw_id, $m)) {
+                    $num_id = (int) $m[0];
+                }
                 $all_templates[] = [
                     'id' => $tpl['id'] ?? $tpl['name'] ?? '',
+                    'templateId' => $num_id,
                     'name' => $tpl['name'] ?? $tpl['id'] ?? '',
                     'content' => $tpl['content'] ?? '',
                     'status' => $tpl['status'] ?? '',

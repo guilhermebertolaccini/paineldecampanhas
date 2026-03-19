@@ -182,22 +182,27 @@ export default function CampanhaArquivo() {
       };
     }) : [];
 
-    // Templates GOSAC Oficial (estáticos) - connectionId virá do select de Ilha separado
-    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : []).map((t: any) => ({
-        id: `Gosac Oficial_${t.id || t.name}_${t.id_ambient || 'default'}`,
-        name: t.name || t.id || '',
-        source: 'gosac_oficial',
-        templateCode: t.name || t.id || '',
-        walletId: t.id_ambient || 'default',
-        walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
-        channelId: null,
-        templateId: t.id,
-        templateName: t.name || t.id,
-        connectionId: t.connectionId ?? null,
-        variableComponents: t.variableComponents ?? [],
-        language: t.language || 'pt_BR',
-        content: t.content || '',
-      }));
+    // Templates GOSAC Oficial - templateId numérico (API exige)
+    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : []).map((t: any) => {
+        const numId = (typeof t.templateId === 'number' && t.templateId > 0) ? t.templateId
+          : (typeof t.id === 'number' && t.id > 0) ? t.id
+          : (parseInt(String(t.id), 10) || 0);
+        return {
+          id: `Gosac Oficial_${t.id ?? t.name}_${t.id_ambient || 'default'}`,
+          name: t.name || t.id || '',
+          source: 'gosac_oficial',
+          templateCode: t.name || t.id || '',
+          walletId: t.id_ambient || 'default',
+          walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
+          channelId: null,
+          templateId: numId > 0 ? numId : t.id,
+          templateName: t.name || t.id,
+          connectionId: t.connectionId ?? null,
+          variableComponents: t.variableComponents ?? [],
+          language: t.language || 'pt_BR',
+          content: t.content || '',
+        };
+      });
 
     // Templates Robbu Oficial (estáticos)
     const robbu = (Array.isArray(robbuTemplatesData) ? robbuTemplatesData : []).map((t: any) => ({
@@ -505,7 +510,7 @@ export default function CampanhaArquivo() {
     }
     if (templateSource === 'gosac_oficial' && selectedTemplate) {
       payload.gosac_template_id = selectedTemplate.templateId ?? selectedTemplate.id ?? '';
-      payload.gosac_connection_id = gosacConnectionId || selectedTemplate.connectionId ?? '';
+      payload.gosac_connection_id = gosacConnectionId || (selectedTemplate.connectionId ?? '');
       payload.gosac_variable_components = selectedTemplate.variableComponents
         ? JSON.stringify(selectedTemplate.variableComponents)
         : '[]';
