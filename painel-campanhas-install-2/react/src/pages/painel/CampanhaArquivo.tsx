@@ -36,6 +36,7 @@ import {
   getOtimaBrokers,
   getTemplatesByWallet,
   getGosacOficialTemplates,
+  getGosacOficialConnections,
   getRobbuOficialTemplates,
 } from "@/lib/api";
 
@@ -71,6 +72,7 @@ export default function CampanhaArquivo() {
   const [templateVariables, setTemplateVariables] = useState<Record<string, VarMapping>>({});
   const [selectedTemplateObj, setSelectedTemplateObj] = useState<any>(null);
   const [openTemplateDropdown, setOpenTemplateDropdown] = useState(false);
+  const [gosacConnectionId, setGosacConnectionId] = useState<string>("");
 
   // Buscar carteiras (deve vir antes do useMemo que a usa)
   const { data: carteiras = [] } = useQuery({
@@ -114,6 +116,14 @@ export default function CampanhaArquivo() {
     queryKey: ['gosac-oficial-templates'],
     queryFn: getGosacOficialTemplates,
     staleTime: 5 * 60 * 1000,
+  });
+
+  // Conexões (ilhas) GOSAC Oficial
+  const { data: gosacConnectionsData = [], isLoading: gosacConnectionsLoading } = useQuery({
+    queryKey: ['gosac-oficial-connections', carteira],
+    queryFn: () => getGosacOficialConnections({ carteira }),
+    enabled: !!carteira && (provider === 'GOSAC_OFICIAL' || selectedTemplateObj?.source === 'gosac_oficial'),
+    staleTime: 2 * 60 * 1000,
   });
 
   // Templates Robbu Oficial (estáticos, não dependem da carteira)
@@ -172,13 +182,8 @@ export default function CampanhaArquivo() {
       };
     }) : [];
 
-    // Templates GOSAC Oficial (estáticos) - só incluir os que têm connectionId > 0 (obrigatório na API)
-    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : [])
-      .filter((t: any) => {
-        const cid = t.connectionId;
-        return cid != null && cid !== '' && Number(cid) > 0;
-      })
-      .map((t: any) => ({
+    // Templates GOSAC Oficial (estáticos) - connectionId virá do select de Ilha separado
+    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : []).map((t: any) => ({
         id: `Gosac Oficial_${t.id || t.name}_${t.id_ambient || 'default'}`,
         name: t.name || t.id || '',
         source: 'gosac_oficial',
@@ -423,6 +428,15 @@ export default function CampanhaArquivo() {
       return;
     }
 
+    if (selectedTemplate?.source === 'gosac_oficial' && !gosacConnectionId) {
+      toast({
+        title: "Ilha obrigatória",
+        description: "Selecione a ilha (conexão) por qual o disparo será enviado",
+        variant: "destructive",
+      });
+      return;
+    }
+
     if (!provider) {
       toast({
         title: "Fornecedor obrigatório",
@@ -491,7 +505,7 @@ export default function CampanhaArquivo() {
     }
     if (templateSource === 'gosac_oficial' && selectedTemplate) {
       payload.gosac_template_id = selectedTemplate.templateId ?? selectedTemplate.id ?? '';
-      payload.gosac_connection_id = selectedTemplate.connectionId ?? '';
+      payload.gosac_connection_id = gosacConnectionId || selectedTemplate.connectionId ?? '';
       payload.gosac_variable_components = selectedTemplate.variableComponents
         ? JSON.stringify(selectedTemplate.variableComponents)
         : '[]';
@@ -794,6 +808,59 @@ export default function CampanhaArquivo() {
                   </PopoverContent>
                 </Popover>
             </div>
+
+            {(() => {
+              const selectedTpl = templates.find((t) => t.id === template);
+              const isGosac = selectedTpl?.source === 'gosac_oficial';
+              if (isGosac) {
+                return (
+                  <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
+                    <Label>Ilha / Conexão <span className="text-red-500">*</span></Label>
+                    <Select
+                      value={gosacConnectionId}
+                      onValueChange={setGosacConnectionId}
+                      disabled={gosacConnectionsLoading || !carteira}
+                    >
+                      <SelectTrigger>
+                        <SelectValue
+                          placeholder={
+                            !carteira
+                              ? "Selecione a carteira primeiro"
+                              : gosacConnectionsLoading
+                                ? "Carregando ilhas..."
+                                : "Selecione a ilha por qual sairá o disparo"
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {Array.isArray(gosacConnectionsData) && gosacConnectionsData.length === 0 && !gosacConnectionsLoading && carteira && (
+                          <div className="py-2 px-3 text-xs text-muted-foreground italic">
+                            Nenhuma ilha encontrada. Verifique id_carteira e id_ruler na carteira.
+                          </div>
+                        )}
+                        {Array.isArray(gosacConnectionsData) &&
+                          gosacConnectionsData.map((c: any) => (
+                            <SelectItem key={c.id} value={String(c.id)}>
+                              <div className="flex items-center gap-1.5">
+                                <span>{c.name || `Ilha ${c.id}`}</span>
+                                {c.status && (
+                                  <Badge variant={c.status === 'CONNECTED' ? 'default' : 'secondary'} className="text-[10px] py-0 px-1">
+                                    {c.status}
+                                  </Badge>
+                                )}
+                              </div>
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Selecione a ilha (conexão) pela qual o disparo será enviado.
+                    </p>
+                  </div>
+                );
+              }
+              return null;
+            })()}
 
             {(() => {
               const selectedTpl = templates.find((t) => t.id === template);

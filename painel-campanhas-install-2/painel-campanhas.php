@@ -9797,54 +9797,91 @@ class Painel_Campanhas
 
         check_ajax_referer('pc_nonce', 'nonce');
 
-        $credentials = get_option('acm_provider_credentials', []);
-        $gosac_oficial_creds = $credentials['gosac_oficial'] ?? [];
+        $static_creds = get_option('acm_static_credentials', []);
+        $gosac_url = trim($static_creds['gosac_oficial_url'] ?? '');
+        $gosac_token = trim($static_creds['gosac_oficial_token'] ?? '');
 
-        if (empty($gosac_oficial_creds)) {
+        if (empty($gosac_url) || empty($gosac_token)) {
             wp_send_json_success([]);
             return;
         }
 
+        if (stripos($gosac_token, 'Bearer ') !== 0) {
+            $gosac_token = 'Bearer ' . $gosac_token;
+        }
+
+        $id_ambient = sanitize_text_field($_POST['id_ambient'] ?? $_GET['id_ambient'] ?? '');
+        $id_ruler = sanitize_text_field($_POST['id_ruler'] ?? $_GET['id_ruler'] ?? '');
+        $carteira_id = intval($_POST['carteira'] ?? $_GET['carteira'] ?? 0);
+
+        if ($carteira_id > 0) {
+            global $wpdb;
+            $table = $wpdb->prefix . 'pc_carteiras_v2';
+            $carteira = $wpdb->get_row($wpdb->prepare(
+                "SELECT id_carteira, id_ruler FROM $table WHERE id = %d AND ativo = 1 LIMIT 1",
+                $carteira_id
+            ), ARRAY_A);
+            if ($carteira) {
+                $id_ambient = $id_ambient ?: trim($carteira['id_carteira'] ?? '');
+                $id_ruler = $id_ruler ?: trim($carteira['id_ruler'] ?? '');
+            }
+        }
+
+        if (empty($id_ambient)) {
+            wp_send_json_success([]);
+            return;
+        }
+
+        $url = rtrim($gosac_url, '/') . '/connections/official?idAmbient=' . urlencode($id_ambient);
+        if (!empty($id_ruler)) {
+            $url .= '&idRuler=' . urlencode($id_ruler);
+        }
+
+        $response = wp_remote_get($url, [
+            'headers' => [
+                'Authorization' => $gosac_token,
+                'Content-Type' => 'application/json',
+                'Accept' => 'application/json',
+            ],
+            'timeout' => 15,
+            'sslverify' => false,
+        ]);
+
+        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+            error_log("🔴 [Gosac Oficial] erro ao buscar conexões: " . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
+            wp_send_json_success([]);
+            return;
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        $connections_data = json_decode($body, true);
         $all_connections = [];
 
-        foreach ($gosac_oficial_creds as $env_id => $data) {
-            $url = rtrim($data['url'], '/') . '/connections/official';
-            $token = $data['token'] ?? '';
-
-            if (empty($url) || empty($token))
-                continue;
-
-            $response = wp_remote_get($url, [
-                'headers' => [
-                    'Authorization' => $token,
-                    'Content-Type' => 'application/json',
-                    'Accept' => 'application/json',
-                ],
-                'timeout' => 15,
-            ]);
-
-            if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
-                error_log("🔴 [Gosac Oficial] erro ao buscar conexões para $env_id");
-                continue;
+        if (is_array($connections_data)) {
+            $raw = isset($connections_data['data']) ? $connections_data['data'] : $connections_data;
+            if (!is_array($raw)) {
+                $raw = [];
             }
-
-            $body = wp_remote_retrieve_body($response);
-            $connections_data = json_decode($body, true);
-
-            if (is_array($connections_data)) {
-                $conns = isset($connections_data['data']) ? $connections_data['data'] : $connections_data;
-
-                if (is_array($conns)) {
-                    foreach ($conns as $conn) {
+            foreach ($raw as $item) {
+                if (!is_array($item)) continue;
+                if (!empty($item['connections']) && is_array($item['connections'])) {
+                    foreach ($item['connections'] as $conn) {
                         $all_connections[] = [
                             'id' => $conn['id'] ?? '',
-                            'name' => $conn['name'] ?? '',
+                            'name' => $conn['name'] ?? ($conn['phoneNumber'] ?? ''),
                             'status' => $conn['status'] ?? '',
                             'messagingLimit' => $conn['messagingLimit'] ?? '',
                             'accountRestriction' => $conn['accountRestriction'] ?? '',
-                            'env_id' => $env_id
                         ];
                     }
+                } elseif (isset($item['id'])) {
+                    $all_connections[] = [
+                        'id' => $item['id'] ?? '',
+                        'name' => $item['name'] ?? ($item['phoneNumber'] ?? ''),
+                        'status' => $item['status'] ?? '',
+                        'messagingLimit' => $item['messagingLimit'] ?? '',
+                        'accountRestriction' => $item['accountRestriction'] ?? '',
+                    ];
                 }
             }
         }

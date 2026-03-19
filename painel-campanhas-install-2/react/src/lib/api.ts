@@ -282,8 +282,8 @@ export const getGosacOficialTemplates = async (): Promise<any[]> => {
   }
 };
 
-export const getGosacOficialConnections = () => {
-  return wpAjax('pc_get_gosac_oficial_connections', {});
+export const getGosacOficialConnections = (params?: { carteira?: string; id_ambient?: string; id_ruler?: string }) => {
+  return wpAjax('pc_get_gosac_oficial_connections', params || {});
 };
 
 export const getRobbuWebhookStats = () => {

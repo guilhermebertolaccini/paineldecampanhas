@@ -39,6 +39,7 @@ import {
   checkBaseUpdate,
   getTemplatesByWallet,
   getGosacOficialTemplates,
+  getGosacOficialConnections,
   getRobbuOficialTemplates,
   getOtimaTemplates,
   getOtimaBrokers,
@@ -193,6 +194,14 @@ export default function NovaCampanha() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // Conexões (ilhas) GOSAC Oficial - para selecionar por qual canal sai o disparo
+  const { data: gosacConnectionsData = [], isLoading: gosacConnectionsLoading } = useQuery({
+    queryKey: ['gosac-oficial-connections', formData.carteira],
+    queryFn: () => getGosacOficialConnections({ carteira: formData.carteira }),
+    enabled: !!formData.carteira && (formData.templateSource === 'gosac_oficial' || formData.providers.includes('GOSAC_OFICIAL')),
+    staleTime: 2 * 60 * 1000,
+  });
+
   // Templates Robbu Oficial (estáticos, não dependem da carteira)
   const { data: robbuTemplatesData = [], isLoading: robbuTemplatesLoading } = useQuery({
     queryKey: ['robbu-oficial-templates'],
@@ -281,13 +290,8 @@ export default function NovaCampanha() {
       };
     }) : [];
 
-    // Templates GOSAC Oficial (estáticos) - só incluir os que têm connectionId > 0 (obrigatório na API)
-    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : [])
-      .filter((t: any) => {
-        const cid = t.connectionId;
-        return cid != null && cid !== '' && Number(cid) > 0;
-      })
-      .map((t: any) => ({
+    // Templates GOSAC Oficial (estáticos) - connectionId virá do select de Ilha separado
+    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : []).map((t: any) => ({
         id: `Gosac Oficial_${t.id || t.name}_${t.id_ambient || 'default'}`,
         name: t.name || t.id || '',
         source: 'gosac_oficial',
@@ -597,10 +601,18 @@ export default function NovaCampanha() {
     if (formData.templateSource === 'gosac_oficial') {
       const tid = formData.gosacTemplateId ?? selectedTemplateObj?.templateId ?? selectedTemplateObj?.id;
       const cid = formData.gosacConnectionId ?? selectedTemplateObj?.connectionId;
-      if (!tid || !cid || (typeof tid === 'number' && tid <= 0) || (typeof cid === 'number' && cid <= 0)) {
+      if (!tid || (typeof tid === 'number' && tid <= 0)) {
         toast({
-          title: "Template GOSAC incompleto",
-          description: "O template selecionado não possui connectionId. Selecione outro template GOSAC Oficial na lista.",
+          title: "Template GOSAC obrigatório",
+          description: "Selecione um template GOSAC Oficial.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!cid || (typeof cid === 'number' && cid <= 0)) {
+        toast({
+          title: "Ilha obrigatória",
+          description: "Selecione a ilha (conexão) por qual o disparo será enviado.",
           variant: "destructive",
         });
         return;
@@ -1126,6 +1138,53 @@ export default function NovaCampanha() {
                   </PopoverContent>
                 </Popover>
               </div>
+
+              {/* GOSAC Oficial: seleção da ilha (conexão) por qual sai o disparo */}
+              {formData.templateSource === 'gosac_oficial' && (
+                <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
+                  <Label>Ilha / Conexão <span className="text-red-500">*</span></Label>
+                  <Select
+                    value={formData.gosacConnectionId ? String(formData.gosacConnectionId) : ''}
+                    onValueChange={(v) => setFormData({ ...formData, gosacConnectionId: v ? parseInt(v, 10) : null })}
+                    disabled={gosacConnectionsLoading || !formData.carteira}
+                  >
+                    <SelectTrigger>
+                      <SelectValue
+                        placeholder={
+                          !formData.carteira
+                            ? 'Selecione a carteira primeiro'
+                            : gosacConnectionsLoading
+                              ? 'Carregando ilhas...'
+                              : 'Selecione a ilha por qual sairá o disparo'
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.isArray(gosacConnectionsData) && gosacConnectionsData.length === 0 && !gosacConnectionsLoading && formData.carteira && (
+                        <div className="py-2 px-3 text-xs text-muted-foreground italic">
+                          Nenhuma ilha encontrada. Verifique id_carteira e id_ruler na carteira.
+                        </div>
+                      )}
+                      {Array.isArray(gosacConnectionsData) &&
+                        gosacConnectionsData.map((c: any) => (
+                          <SelectItem key={c.id} value={String(c.id)}>
+                            <div className="flex items-center gap-1.5">
+                              <span>{c.name || `Ilha ${c.id}`}</span>
+                              {c.status && (
+                                <Badge variant={c.status === 'CONNECTED' ? 'default' : 'secondary'} className="text-[10px] py-0 px-1">
+                                  {c.status}
+                                </Badge>
+                              )}
+                            </div>
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Selecione a ilha (conexão) pela qual o disparo será enviado. A carteira deve ter id_carteira e id_ruler configurados.
+                  </p>
+                </div>
+              )}
 
               {(formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp') && (
                 <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
