@@ -486,6 +486,11 @@ export const createCpfCampaign = (data: Record<string, any>) => {
   if (templateSource === 'robbu_oficial') {
     payload.robbu_channel = data.robbu_channel ?? 3;
   }
+  if (templateSource === 'gosac_oficial') {
+    payload.gosac_template_id = data.gosac_template_id ?? '';
+    payload.gosac_connection_id = data.gosac_connection_id ?? '';
+    payload.gosac_variable_components = data.gosac_variable_components ?? '[]';
+  }
 
   if (data.variables_map) {
     payload.variables_map = JSON.stringify(data.variables_map);

@@ -179,7 +179,8 @@ export abstract class BaseProvider implements IProvider {
 
   protected handleError(error: any, context?: { agendamentoId?: string; provider?: string }): ProviderResponse {
     const errorType = this.classifyError(error);
-    const errorMessage = error.response?.data?.message || error.message || 'Unknown error';
+    const raw = error.response?.data?.message ?? error.message ?? 'Unknown error';
+    const errorMessage = Array.isArray(raw) ? raw.join('; ') : String(raw);
     
     this.logger.error(`Provider error (${errorType}): ${errorMessage}`, error.stack, context);
     

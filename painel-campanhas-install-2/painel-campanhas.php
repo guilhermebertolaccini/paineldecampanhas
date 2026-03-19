@@ -2537,11 +2537,17 @@ class Painel_Campanhas
                             'variables_map' => $variables_map
                         ]);
                     } elseif ($template_source === 'gosac_oficial' && !empty($template_code)) {
+                        $gosac_template_id = intval($_POST['gosac_template_id'] ?? 0);
+                        $gosac_connection_id = intval($_POST['gosac_connection_id'] ?? 0);
+                        $gosac_variable_components = isset($_POST['gosac_variable_components']) ? json_decode(stripslashes($_POST['gosac_variable_components']), true) : [];
                         $mensagem_para_armazenar = json_encode([
                             'template_code' => $template_code,
                             'template_source' => 'gosac_oficial',
+                            'id' => $gosac_template_id,
+                            'connectionId' => $gosac_connection_id,
+                            'variables_map' => $variables_map,
+                            'variableComponents' => is_array($gosac_variable_components) ? $gosac_variable_components : [],
                             'original_message' => $mensagem_final,
-                            'variables_map' => $variables_map
                         ]);
                     } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
                         $mensagem_para_armazenar = json_encode([
@@ -9134,23 +9140,31 @@ class Painel_Campanhas
         $all_templates = [];
         global $wpdb;
         $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
-        $carteiras = $wpdb->get_results("SELECT id, nome, id_carteira FROM $table_carteiras WHERE ativo = 1 AND id_carteira IS NOT NULL AND id_carteira != ''", ARRAY_A);
+        $carteiras = $wpdb->get_results("SELECT id, nome, id_carteira, id_ruler FROM $table_carteiras WHERE ativo = 1 AND id_carteira IS NOT NULL AND id_carteira != ''", ARRAY_A);
 
-        $id_ambients = [];
+        $pairs = [];
         if (!empty($carteiras)) {
             foreach ($carteiras as $c) {
-                $id = trim($c['id_carteira'] ?? '');
-                if (!empty($id) && !in_array($id, $id_ambients)) {
-                    $id_ambients[] = $id;
+                $id_ambient = trim($c['id_carteira'] ?? '');
+                $id_ruler = trim($c['id_ruler'] ?? '');
+                if (empty($id_ambient)) continue;
+                $key = $id_ambient . '|' . $id_ruler;
+                if (!isset($pairs[$key])) {
+                    $pairs[$key] = ['id_ambient' => $id_ambient, 'id_ruler' => $id_ruler, 'nome' => $c['nome'] ?? ''];
                 }
             }
         }
-        if (empty($id_ambients)) {
-            $id_ambients = ['default'];
+        if (empty($pairs)) {
+            $pairs['default'] = ['id_ambient' => 'default', 'id_ruler' => '', 'nome' => ''];
         }
 
-        foreach ($id_ambients as $id_ambient) {
+        foreach ($pairs as $pair) {
+            $id_ambient = $pair['id_ambient'];
+            $id_ruler = $pair['id_ruler'];
             $url = rtrim($gosac_url, '/') . '/templates/waba?idAmbient=' . urlencode($id_ambient);
+            if (!empty($id_ruler)) {
+                $url .= '&idRuler=' . urlencode($id_ruler);
+            }
             $response = wp_remote_get($url, [
                 'headers' => [
                     'Authorization' => $gosac_token,
@@ -9171,6 +9185,7 @@ class Painel_Campanhas
             $tpls = $this->extract_gosac_templates($templates_data);
 
             foreach ($tpls as $tpl) {
+                $conn_id = $tpl['connectionId'] ?? null;
                 $all_templates[] = [
                     'id' => $tpl['id'] ?? $tpl['name'] ?? '',
                     'name' => $tpl['name'] ?? $tpl['id'] ?? '',
@@ -9182,9 +9197,10 @@ class Painel_Campanhas
                     'provider' => 'Gosac Oficial',
                     'id_ambient' => $id_ambient,
                     'templateName' => $tpl['name'] ?? $tpl['id'] ?? '',
-                    'idRuler' => $tpl['idRuler'] ?? '',
-                    'connectionId' => $tpl['connectionId'] ?? null,
+                    'idRuler' => $tpl['idRuler'] ?? $id_ruler,
+                    'connectionId' => $conn_id,
                     'variableComponents' => $tpl['variableComponents'] ?? $tpl['variable_components'] ?? [],
+                    'carteira_nome' => $pair['nome'] ?? '',
                 ];
             }
         }

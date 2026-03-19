@@ -49,18 +49,25 @@ export class GosacOficialProvider extends BaseProvider {
             };
         }
 
-        // Extrai template e connectionId do JSON da mensagem (formato da API GOSAC)
+        // Extrai template e connectionId do JSON da mensagem (API exige ambos como números)
         let templateId: number | null = null;
         let connectionId: number | null = null;
 
         if (data[0].mensagem && typeof data[0].mensagem === 'string' && data[0].mensagem.trim().startsWith('{')) {
             try {
                 const parsed = JSON.parse(data[0].mensagem);
-                if (parsed.id) templateId = parsed.id;
-                if (parsed.connectionId) connectionId = parsed.connectionId;
+                if (parsed.id != null) templateId = parseInt(String(parsed.id), 10);
+                if (parsed.connectionId != null) connectionId = parseInt(String(parsed.connectionId), 10);
             } catch (e) {
                 this.logger.warn(`⚠️ [Gosac Oficial] Falha ao parsear JSON da mensagem: ${e.message}`);
             }
+        }
+
+        if (!templateId || templateId <= 0 || !connectionId || connectionId <= 0) {
+            return {
+                success: false,
+                error: 'connectionId e templateId são obrigatórios. Selecione um template GOSAC Oficial que tenha connectionId (na lista de templates).',
+            };
         }
 
         // idAmbient e idRuler vêm da carteira (PHP busca por id_carteira e retorna nas credenciais)
@@ -122,15 +129,15 @@ export class GosacOficialProvider extends BaseProvider {
         const now = new Date();
         const campanha = `campanha_oficial_${now.getTime()}`;
 
-        // Payload conforme doc POST /campaigns/official: idAmbient, idRuler, name, connectionId, templateId, contacts
+        // Payload conforme doc POST /campaigns/official - connectionId e templateId obrigatórios
         const payload: any = {
             idAmbient: String(idAmbient),
             idRuler: String(idRuler),
             name: `${campanha}_${now.toISOString().replace(/[:.]/g, '-')}`,
+            connectionId,
+            templateId,
             contacts,
         };
-        if (connectionId && connectionId > 0) payload.connectionId = connectionId;
-        if (templateId && templateId > 0) payload.templateId = templateId;
 
         const baseUrl = (credentials.url as string).replace(/\/$/, '');
         const postUrl = `${baseUrl}/campaigns/official`;

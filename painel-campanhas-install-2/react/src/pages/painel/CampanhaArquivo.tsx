@@ -172,20 +172,24 @@ export default function CampanhaArquivo() {
       };
     }) : [];
 
-    // Templates GOSAC Oficial (estáticos)
-    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : []).map((t: any) => ({
-      id: `Gosac Oficial_${t.id || t.name}_${t.id_ambient || 'default'}`,
-      name: t.name || t.id || '',
-      source: 'gosac_oficial',
-      templateCode: t.name || t.id || '',
-      walletId: t.id_ambient || 'default',
-      walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
-      channelId: null,
-      templateId: t.id,
-      templateName: t.name || t.id,
-      language: t.language || 'pt_BR',
-      content: t.content || '',
-    }));
+    // Templates GOSAC Oficial (estáticos) - só incluir os que têm connectionId (obrigatório na API)
+    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : [])
+      .filter((t: any) => t.connectionId != null && t.connectionId !== '')
+      .map((t: any) => ({
+        id: `Gosac Oficial_${t.id || t.name}_${t.id_ambient || 'default'}`,
+        name: t.name || t.id || '',
+        source: 'gosac_oficial',
+        templateCode: t.name || t.id || '',
+        walletId: t.id_ambient || 'default',
+        walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
+        channelId: null,
+        templateId: t.id,
+        templateName: t.name || t.id,
+        connectionId: t.connectionId ?? null,
+        variableComponents: t.variableComponents ?? [],
+        language: t.language || 'pt_BR',
+        content: t.content || '',
+      }));
 
     // Templates Robbu Oficial (estáticos)
     const robbu = (Array.isArray(robbuTemplatesData) ? robbuTemplatesData : []).map((t: any) => ({
@@ -481,6 +485,13 @@ export default function CampanhaArquivo() {
     }
     if (templateSource === 'robbu_oficial') {
       payload.robbu_channel = 3;
+    }
+    if (templateSource === 'gosac_oficial' && selectedTemplate) {
+      payload.gosac_template_id = selectedTemplate.templateId ?? selectedTemplate.id ?? '';
+      payload.gosac_connection_id = selectedTemplate.connectionId ?? '';
+      payload.gosac_variable_components = selectedTemplate.variableComponents
+        ? JSON.stringify(selectedTemplate.variableComponents)
+        : '[]';
     }
 
     createMutation.mutate(payload);

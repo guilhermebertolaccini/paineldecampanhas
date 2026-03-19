@@ -23,6 +23,13 @@ export abstract class BaseProviderProcessor extends WorkerHost {
   protected readonly logger: Logger;
   protected abstract providerName: string;
 
+  /** Garante que errorMessage seja string (Prisma não aceita array). */
+  protected toErrorMessage(err: unknown): string {
+    if (err == null) return 'Erro desconhecido';
+    if (Array.isArray(err)) return err.join('; ');
+    return String(err);
+  }
+
   constructor(
     protected readonly provider: BaseProvider,
     protected readonly prisma: PrismaService,
@@ -109,12 +116,13 @@ export abstract class BaseProviderProcessor extends WorkerHost {
           data: result.data, // Inclui dados retornados pelo provider (ex: automationId do Salesforce)
         };
       } else {
+        const errStr = this.toErrorMessage(result.error);
         // Atualiza campanha como FAILED
         await this.prisma.campaign.update({
           where: { id: campaignId },
           data: {
             status: 'FAILED',
-            errorMessage: result.error || 'Erro desconhecido',
+            errorMessage: errStr,
             failedMessages: data.length,
           },
         });
@@ -124,27 +132,28 @@ export abstract class BaseProviderProcessor extends WorkerHost {
           where: { campaignId },
           data: {
             status: 'FAILED',
-            lastError: result.error || 'Erro desconhecido',
+            lastError: errStr,
           },
         });
 
-        this.logger.error(`❌ Campaign ${campaignId} failed: ${result.error}`);
+        this.logger.error(`❌ Campaign ${campaignId} failed: ${errStr}`);
         
         // Envia webhook de erro para WordPress
         await this.webhookService.sendStatusUpdate({
           agendamento_id: agendamentoId,
           status: 'erro_envio',
-          resposta_api: result.error || 'Erro desconhecido',
+          resposta_api: errStr,
           data_disparo: new Date().toISOString(),
           total_enviados: 0,
           total_falhas: data.length,
           provider: this.providerName,
         });
         
-        throw new Error(result.error || `Erro ao enviar campanha ${this.providerName}`);
+        throw new Error(errStr || `Erro ao enviar campanha ${this.providerName}`);
       }
     } catch (error: any) {
-      this.logger.error(`Error processing ${this.providerName} send: ${error.message}`, error.stack);
+      const errStr = this.toErrorMessage(error?.message ?? error);
+      this.logger.error(`Error processing ${this.providerName} send: ${errStr}`, error?.stack);
       
       // Atualiza campanha como FAILED em caso de erro
       try {
@@ -152,7 +161,7 @@ export abstract class BaseProviderProcessor extends WorkerHost {
           where: { id: campaignId },
           data: {
             status: 'FAILED',
-            errorMessage: error.message,
+            errorMessage: errStr,
             failedMessages: data.length,
           },
         });
@@ -164,7 +173,7 @@ export abstract class BaseProviderProcessor extends WorkerHost {
       await this.webhookService.sendStatusUpdate({
         agendamento_id: agendamentoId,
         status: 'erro_envio',
-        resposta_api: error.message,
+        resposta_api: errStr,
         data_disparo: new Date().toISOString(),
         total_enviados: 0,
         total_falhas: data.length,
