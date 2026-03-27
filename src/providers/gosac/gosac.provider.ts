@@ -125,17 +125,15 @@ export class GosacProvider extends BaseProvider {
         };
       }
 
-      // PASSO 2: Retorna sucesso, mas indica que precisa agendar o PUT
-      // O PUT será feito via BullMQ delayed job (2 minutos depois)
+      // A API GoSAC costuma iniciar o disparo na própria criação; não disparamos PUT /status/started aqui
+      // (evita falso erro quando a campanha já está em Start).
       return {
         success: true,
-        message: 'Campanha criada e agendada para iniciar em 2 minutos',
+        message: 'Campanha criada na GoSAC com sucesso',
         campaignId: campaignId.toString(),
         data: {
           campaignId,
-          url: `${credentials.url}/${campaignId}/status/started`,
-          token: credentials.token,
-          scheduledAt: new Date(Date.now() + 120000).toISOString(), // 2 minutos
+          body: createResponse.data,
         },
       };
     } catch (error: any) {

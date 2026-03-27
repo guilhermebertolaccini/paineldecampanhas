@@ -545,7 +545,9 @@ export default function CampanhaArquivo() {
       template_code: salesforceOnly ? null : (selectedTemplate?.templateCode || null),
       template_source: templateSource,
       broker_code: salesforceOnly ? null : (brokerCode || selectedTemplate?.brokerCode || null),
-      customer_code: salesforceOnly ? null : (selectedTemplate?.customerCode || null),
+      customer_code: salesforceOnly
+        ? null
+        : (selectedTemplate?.customerCode || walletIdForOtima || selectedCarteiraObj?.id_carteira || null),
       variables_map: salesforceOnly ? null : (Object.keys(templateVariables).length > 0 ? templateVariables : null),
       provider: provider.toUpperCase(),
       match_field: matchField,

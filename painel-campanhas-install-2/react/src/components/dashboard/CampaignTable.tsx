@@ -31,11 +31,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cancelCampanha } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { Progress } from "@/components/ui/progress";
 
 export interface Campaign {
   id: string;
   name: string;
   status: "pending" | "approved" | "sent" | "denied" | "scheduled" | "cancelled" | string;
+  /** Status bruto do MySQL (ex.: processando) — útil para UI de progresso. */
+  statusRaw?: string;
   provider: string;
   /** Valor exato da coluna fornecedor no MySQL (para cancelamento). */
   fornecedor?: string;
@@ -46,6 +49,11 @@ export interface Campaign {
   user: string;
   motivoCancelamento?: string;
   canceladoPor?: string;
+  totalMessages?: number;
+  totalProcessed?: number;
+  messagesSent?: number;
+  messagesError?: number;
+  progressPercent?: number;
 }
 
 interface CampaignTableProps {
@@ -64,6 +72,50 @@ const statusConfig: Record<
   scheduled: { label: "Agendado", variant: "secondary" },
   cancelled: { label: "Cancelada", variant: "destructive" },
 };
+
+function CampaignProgressRow({ c }: { c: Campaign }) {
+  const total = c.totalMessages ?? c.quantity ?? 0;
+  const processed = c.totalProcessed ?? 0;
+  const sent = c.messagesSent ?? 0;
+  const err = c.messagesError ?? 0;
+  const pct = typeof c.progressPercent === "number" ? Math.min(100, Math.max(0, c.progressPercent)) : 0;
+  const isRunning =
+    c.status === "scheduled" ||
+    String(c.statusRaw ?? "")
+      .toLowerCase()
+      .includes("processando");
+  if (total <= 0) {
+    return <span className="text-muted-foreground text-xs">—</span>;
+  }
+  const hint =
+    isRunning && pct < 100
+      ? `${processed} de ${total} linhas com status final (enviado ou erro). As demais ainda estão na fila ou em processamento.`
+      : err > 0
+        ? `${sent} enviadas, ${err} com erro, total ${total} contatos.`
+        : undefined;
+  return (
+    <div className="min-w-[200px] max-w-[260px] space-y-1">
+      <Progress value={pct} className="h-2" />
+      <div className="flex flex-wrap items-center gap-x-1 text-[11px] text-muted-foreground leading-tight">
+        <span>
+          Processado: {pct}% ({processed} de {total} mensagens)
+        </span>
+        {hint && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" className="text-foreground/70 hover:text-foreground underline-offset-2 hover:underline">
+                Detalhe
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-xs text-xs">
+              {hint}
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function motivoFeedback(c: Campaign): string | null {
   const s = String(c.status).toLowerCase();
@@ -120,8 +172,9 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
             <TableHead className="font-semibold">Carteira</TableHead>
             <TableHead className="font-semibold">Status</TableHead>
               <TableHead className="font-semibold">Fornecedor</TableHead>
-              <TableHead className="font-semibold text-right">Quantidade</TableHead>
-              <TableHead className="font-semibold">Criado em</TableHead>
+            <TableHead className="font-semibold text-right">Quantidade</TableHead>
+            <TableHead className="font-semibold min-w-[220px]">Progresso</TableHead>
+            <TableHead className="font-semibold">Criado em</TableHead>
               <TableHead className="font-semibold">Usuário</TableHead>
               <TableHead className="font-semibold min-w-[120px]">Observações</TableHead>
               {showActions && <TableHead className="font-semibold w-[100px]">Ações</TableHead>}
@@ -172,6 +225,9 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
                   <TableCell className="text-muted-foreground">{campaign.provider}</TableCell>
                   <TableCell className="text-right font-medium">
                     {campaign.quantity.toLocaleString("pt-BR")}
+                  </TableCell>
+                  <TableCell>
+                    <CampaignProgressRow c={campaign} />
                   </TableCell>
                   <TableCell className="text-muted-foreground">{campaign.createdAt}</TableCell>
                   <TableCell className="text-muted-foreground">{campaign.user}</TableCell>

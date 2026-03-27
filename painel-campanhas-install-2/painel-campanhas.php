@@ -123,6 +123,7 @@ class Painel_Campanhas
             'erro_credenciais' => 'denied',
             'erro_validacao' => 'denied',
             'mkc_erro' => 'denied',
+            'erro_inicio' => 'denied',
         ];
 
         return $map[$s] ?? str_replace('_', '-', $s);
@@ -9458,6 +9459,8 @@ class Painel_Campanhas
                 MAX(t1.status) AS status,
                 MIN(t1.data_cadastro) AS data_cadastro,
                 COUNT(t1.id) AS total_clients,
+                SUM(CASE WHEN LOWER(TRIM(COALESCE(t1.status, ''))) IN ('enviado', 'mkc_executado') THEN 1 ELSE 0 END) AS cnt_enviado,
+                SUM(CASE WHEN LOWER(TRIM(COALESCE(t1.status, ''))) IN ('negado', 'erro', 'erro_envio', 'erro_credenciais', 'erro_validacao', 'mkc_erro', 'erro_inicio') THEN 1 ELSE 0 END) AS cnt_erro,
                 COALESCE(MAX(u.display_name), 'Usuário Desconhecido') AS scheduled_by,
                 MAX(t1.motivo_cancelamento) AS motivo_cancelamento,
                 MAX(t1.cancelado_por) AS cancelado_por_id,
@@ -9512,7 +9515,7 @@ class Painel_Campanhas
 
         $campanhas = $wpdb->get_results($query, ARRAY_A);
 
-        // Formata as campanhas
+        // Formata as campanhas (+ progresso por linhas em envios_pendentes)
         $formatted = array_map(function ($camp) {
             $cancel_id = !empty($camp['cancelado_por_id']) ? (int) $camp['cancelado_por_id'] : 0;
             $cancel_name = '';
@@ -9521,19 +9524,34 @@ class Painel_Campanhas
                 $cancel_name = $u ? ($u->display_name ?: $u->user_login) : '';
             }
 
+            $total = max(0, (int) ($camp['total_clients'] ?? 0));
+            $sent = (int) ($camp['cnt_enviado'] ?? 0);
+            $err = (int) ($camp['cnt_erro'] ?? 0);
+            $processed = $sent + $err;
+            if ($total > 0 && $processed > $total) {
+                $processed = $total;
+            }
+            $progress_percent = $total > 0 ? (int) min(100, (int) round(100 * $processed / $total)) : 0;
+
             return [
                 'id' => $camp['agendamento_id'] . '-' . $camp['provider'],
                 'name' => $camp['agendamento_id'],
                 'status' => $this->map_campanha_status_ui($camp['status']),
+                'statusRaw' => (string) ($camp['status'] ?? ''),
                 'provider' => strtoupper($camp['provider']),
                 'fornecedor' => $camp['provider'],
-                'quantity' => intval($camp['total_clients']),
+                'quantity' => $total,
                 'createdAt' => date('d/m/Y', strtotime($camp['data_cadastro'])),
                 'user' => $camp['scheduled_by'],
                 'motivoCancelamento' => $camp['motivo_cancelamento'] ?? '',
                 'canceladoPor' => $cancel_name,
                 'idCarteira' => isset($camp['id_carteira']) ? (string) $camp['id_carteira'] : '',
                 'nomeCarteira' => isset($camp['nome_carteira']) ? (string) $camp['nome_carteira'] : '',
+                'totalMessages' => $total,
+                'totalProcessed' => $processed,
+                'messagesSent' => $sent,
+                'messagesError' => $err,
+                'progressPercent' => $progress_percent,
             ];
         }, $campanhas);
 

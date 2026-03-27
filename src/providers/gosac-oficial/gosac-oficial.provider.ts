@@ -182,13 +182,11 @@ export class GosacOficialProvider extends BaseProvider {
 
             return {
                 success: true,
-                message: 'Campanha oficial criada e agendada',
+                message: 'Campanha oficial criada na GoSAC com sucesso',
                 campaignId: campaignId.toString(),
                 data: {
                     campaignId,
-                    url: `${baseUrl}/${campaignId}/status/started`,
-                    token: credentials.token,
-                    scheduledAt: new Date(Date.now() + 60000).toISOString(),
+                    body: createResponse.data,
                 },
             };
         } catch (error: any) {

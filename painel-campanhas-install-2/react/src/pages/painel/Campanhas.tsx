@@ -32,6 +32,16 @@ export default function Campanhas() {
       fornecedor: providerFilter !== 'all' ? providerFilter : '',
       search: search || '',
     }),
+    refetchInterval: (q) => {
+      const rows = q.state.data as Campaign[] | undefined;
+      if (!Array.isArray(rows) || rows.length === 0) return false;
+      const emAndamento = rows.some(
+        (c) =>
+          c.status === "scheduled" ||
+          String(c.statusRaw ?? "").toLowerCase() === "processando",
+      );
+      return emAndamento ? 12000 : false;
+    },
   });
 
   const filteredCampaigns = campaigns.filter((campaign: Campaign) => {
