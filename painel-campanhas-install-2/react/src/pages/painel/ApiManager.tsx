@@ -32,17 +32,45 @@ import {
   deleteCustomProvider,
   runSalesforceImport,
   getRobbuWebhookStats,
+  getRobbuWebhookConfig,
+  saveRobbuWebhookSecret,
 } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 function RobbuWebhookCard() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [robbuSecretDraft, setRobbuSecretDraft] = useState("");
+
+  const { data: robbuCfg, isLoading: robbuCfgLoading } = useQuery({
+    queryKey: ['robbu-webhook-config'],
+    queryFn: getRobbuWebhookConfig,
+  });
+
+  const robbuSecretMutation = useMutation({
+    mutationFn: saveRobbuWebhookSecret,
+    onSuccess: (data: { message?: string }) => {
+      toast({ title: data?.message ?? "Configuração salva" });
+      setRobbuSecretDraft("");
+      queryClient.invalidateQueries({ queryKey: ['robbu-webhook-config'] });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Erro ao salvar segredo",
+        description: error?.message ?? "Tente novamente",
+        variant: "destructive",
+      });
+    },
+  });
+
   const { data: stats, isLoading, refetch } = useQuery({
     queryKey: ['robbu-webhook-stats'],
     queryFn: getRobbuWebhookStats,
     refetchInterval: 30000,
   });
+
+  const baseWebhookUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/wp-json/robbu-webhook/v2/receive`;
 
   const totalEvents = stats?.total_events ?? 0;
   const lastEventAt = stats?.last_event_at ?? null;
@@ -68,32 +96,91 @@ function RobbuWebhookCard() {
           <ul className="list-disc list-inside ml-2 space-y-0.5 text-xs">
             <li>Aguarde ~60 min após cadastrar a URL (Robbu demora para ativar)</li>
             <li>Libere os IPs da Robbu no firewall: 104.41.15.44, 104.41.14.184, 104.41.13.132, 104.41.12.97, 104.41.56.229, 104.41.30.250, 20.206.191.81, 191.235.52.x, 191.235.53.x, 191.235.54.x</li>
-            <li>Teste a URL no navegador (GET) — deve retornar 200 OK</li>
+            <li>
+              Teste no navegador (GET) com o token na URL:{" "}
+              <code className="text-[10px]">.../receive?token=SEU_SEGREDO</code> — deve retornar 200 OK
+            </li>
           </ul>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="rounded-lg border border-amber-300/80 bg-white/70 dark:bg-slate-900/50 p-4 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="font-semibold text-sm text-amber-900 dark:text-amber-200">Segredo do webhook</h4>
+            {robbuCfgLoading ? (
+              <Skeleton className="h-5 w-24" />
+            ) : robbuCfg?.robbu_webhook_secret_configured ? (
+              <Badge variant="default" className="bg-emerald-600">Configurado</Badge>
+            ) : (
+              <Badge variant="destructive">Obrigatório — rota bloqueada até salvar</Badge>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            O mesmo valor deve ser enviado pela Robbu como header <code className="text-[10px]">X-Robbu-Token</code>,{" "}
+            <code className="text-[10px]">Authorization: Bearer …</code> ou na query{" "}
+            <code className="text-[10px]">?token=…</code> na URL cadastrada.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Input
+              type="password"
+              autoComplete="new-password"
+              placeholder={robbuCfg?.robbu_webhook_secret_configured ? "Novo segredo (deixe vazio para manter)" : "Cole um segredo forte (ex.: 32+ caracteres aleatórios)"}
+              value={robbuSecretDraft}
+              onChange={(e) => setRobbuSecretDraft(e.target.value)}
+              className="font-mono text-sm flex-1"
+            />
+            <div className="flex gap-2 shrink-0">
+              <Button
+                type="button"
+                size="sm"
+                disabled={robbuSecretMutation.isPending}
+                onClick={() => {
+                  robbuSecretMutation.mutate({ robbu_webhook_secret: robbuSecretDraft });
+                }}
+              >
+                {robbuSecretMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                <span className="ml-2">Salvar segredo</span>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={robbuSecretMutation.isPending || !robbuCfg?.robbu_webhook_secret_configured}
+                onClick={() => {
+                  if (!confirm("Remover o segredo? O webhook passará a responder 503 até configurar de novo.")) return;
+                  robbuSecretMutation.mutate({ robbu_webhook_secret_clear: true });
+                }}
+              >
+                Remover
+              </Button>
+            </div>
+          </div>
+        </div>
+
         <div className="space-y-2">
-          <Label>URL do Webhook</Label>
+          <Label>URL base do Webhook</Label>
           <div className="flex gap-2">
             <Input
               readOnly
-              value={`${window.location.origin}/wp-json/robbu-webhook/v2/receive`}
+              value={baseWebhookUrl}
               className="font-mono text-sm"
             />
             <Button
               variant="outline"
               size="sm"
               onClick={() => {
-                navigator.clipboard.writeText(`${window.location.origin}/wp-json/robbu-webhook/v2/receive`);
-                toast({ title: "URL copiada para a área de transferência!" });
+                navigator.clipboard.writeText(baseWebhookUrl);
+                toast({ title: "URL base copiada" });
               }}
             >
               Copiar
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            Libere os IPs da Robbu no firewall se necessário. Após cadastrar, aguarde ~60 min para começar a receber eventos.
+            Se a Robbu não permitir headers customizados, cadastre a URL completa com query:{" "}
+            <span className="font-mono break-all">{baseWebhookUrl}?token=</span>
+            <strong className="font-medium text-foreground"> + o segredo que você salvou acima</strong>.
+            Libere os IPs da Robbu no firewall. Após cadastrar, aguarde ~60 min para eventos.
           </p>
         </div>
 
@@ -419,6 +506,7 @@ export default function ApiManager() {
     onSuccess: (data: any) => {
       console.log('🔵 [ApiManager] Salesforce Import Data received:', data);
       setSfImportResult(data);
+      void queryClient.invalidateQueries({ queryKey: ["salesforce-sync-status"] });
       if (data?.errors?.length > 0) {
         toast({
           title: `Importação concluída com avisos`,
@@ -585,7 +673,7 @@ export default function ApiManager() {
             Importação Manual Salesforce
           </CardTitle>
           <CardDescription>
-            Executa o mesmo processo do cron diário (11h00 São Paulo) para ingerir dados do Salesforce Marketing Cloud na tabela <code>salesforce_returns</code>.
+            Executa o mesmo processo do cron diário (09:00, fuso do WordPress) para ingerir dados do Salesforce Marketing Cloud na tabela <code>salesforce_returns</code>.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

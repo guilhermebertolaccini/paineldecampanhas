@@ -1,8 +1,16 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Database, Filter, MessageSquare, Truck, Send, Loader2, AlertCircle, Check, ChevronsUpDown, ImagePlus, X, RefreshCw } from "lucide-react";
-import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables, collectPlaceholdersSourceText, buildInitialVariableMappingFromOtimaWpp } from "@/components/campaign/TemplateVariableMapper";
+import {
+  TemplateVariableMapper,
+  VarMapping,
+  extractVariables,
+  resolveVariables,
+  collectPlaceholdersSourceText,
+  buildInitialVariableMappingFromOtimaWpp,
+  listOtimaWppVariableKeysFromTemplate,
+} from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -30,6 +38,7 @@ import { FilterBuilder, FilterItem } from "@/components/campaign/FilterBuilder";
 import {
   getAvailableBases,
   getFilters,
+  clearBaseColumnsCache,
   getCountDetailed,
   getMessages,
   getTemplateContent,
@@ -47,6 +56,7 @@ import {
   saveRecurring,
   uploadCampaignMedia,
 } from "@/lib/api";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const providers = [
   { id: "OTIMA_RCS", name: "Ótima RCS", available: true },
@@ -62,10 +72,19 @@ const providers = [
   { id: "TECH_IA", name: "Tech IA", available: true },
 ];
 
+function userCanManageOptions(): boolean {
+  if (typeof window === "undefined") return false;
+  const w = window as unknown as {
+    pcAjax?: { canManageOptions?: boolean; currentUser?: { isAdmin?: boolean } };
+  };
+  return Boolean(w.pcAjax?.canManageOptions ?? w.pcAjax?.currentUser?.isAdmin);
+}
+
 export default function NovaCampanha() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [clearingBaseColumns, setClearingBaseColumns] = useState(false);
   const otimaTemplatesErrorShownRef = useRef<unknown>(null);
   const [step, setStep] = useState(1);
   const [filters, setFilters] = useState<FilterItem[]>([]);
@@ -289,6 +308,29 @@ export default function NovaCampanha() {
     }
     return list;
   }, [otimaBrokersData, formData.templateSource]);
+
+  /** Ótima WPP: prioriza chaves de `variable_sample` (ex. `-var1-`) na ordem da API; inclui extras já no estado. */
+  const otimaWppMapperVariableKeys = useMemo(() => {
+    if (formData.templateSource !== "otima_wpp") return [];
+    const fromTpl = listOtimaWppVariableKeysFromTemplate(selectedTemplateObj);
+    const fromState = Object.keys(templateVariables);
+    if (fromTpl.length === 0) return fromState;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const k of fromTpl) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    for (const k of fromState) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    return out;
+  }, [formData.templateSource, selectedTemplateObj, templateVariables]);
 
   // Processar e mesclar templates
   const templates = useMemo(() => {
@@ -561,6 +603,24 @@ export default function NovaCampanha() {
     retryDelay: 1000,
   });
 
+  const refreshColumnsCache = useCallback(async () => {
+    if (!formData.base) return;
+    setClearingBaseColumns(true);
+    try {
+      await clearBaseColumnsCache(formData.base);
+      await queryClient.invalidateQueries({ queryKey: ["filters", formData.base] });
+      toast({
+        title: "Colunas atualizadas",
+        description: "Cache da base limpo; filtros recarregados.",
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Falha ao limpar cache.";
+      toast({ variant: "destructive", title: "Erro", description: msg });
+    } finally {
+      setClearingBaseColumns(false);
+    }
+  }, [formData.base, queryClient, toast]);
+
   // Calcular contagem quando filtros mudarem
   const { data: countData = { total: 0, recent_excluded: 0, blocked: 0, effective: 0 }, isLoading: countLoading } = useQuery({
     queryKey: ['count', formData.base, filters, formData.exclude_recent_phones],
@@ -767,6 +827,13 @@ export default function NovaCampanha() {
 
     const formattedFilters = buildFilterPayload(filters);
 
+    if (formData.templateSource === "otima_wpp" && Object.keys(templateVariables).length > 0) {
+      console.log(
+        "[NovaCampanha] variables_map (payload schedule/saveRecurring → WP → Nest whatsapp-otima: chaves = placeholders API, valores = { type: 'field'|'text', value: string }):",
+        JSON.stringify(templateVariables),
+      );
+    }
+
     if (formData.is_recurring) {
       const recurringData = {
         nome_campanha: formData.name,
@@ -963,7 +1030,27 @@ export default function NovaCampanha() {
               </div>
 
               <div className="space-y-2">
-                <Label>Base de Dados</Label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Label className="mb-0">Base de Dados</Label>
+                  {userCanManageOptions() && formData.base ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 text-muted-foreground"
+                          disabled={clearingBaseColumns}
+                          onClick={() => void refreshColumnsCache()}
+                          aria-label="Atualizar colunas da base"
+                        >
+                          <RefreshCw className={`h-4 w-4 ${clearingBaseColumns ? "animate-spin" : ""}`} />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">Atualizar colunas</TooltipContent>
+                    </Tooltip>
+                  ) : null}
+                </div>
                 {!formData.carteira ? (
                   <div className="rounded-xl border-2 border-dashed border-border p-8 text-center">
                     <p className="text-sm text-muted-foreground">
@@ -1039,11 +1126,34 @@ export default function NovaCampanha() {
         {step === 2 && (
           <>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Filter className="h-5 w-5 text-primary" />
-                Filtros Avançados
-              </CardTitle>
-              <CardDescription>Defina os filtros para segmentar sua base (opcional)</CardDescription>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1.5">
+                  <CardTitle className="flex items-center gap-2">
+                    <Filter className="h-5 w-5 text-primary" />
+                    Filtros Avançados
+                  </CardTitle>
+                  <CardDescription>Defina os filtros para segmentar sua base (opcional)</CardDescription>
+                </div>
+                {userCanManageOptions() && formData.base ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 shrink-0 gap-1.5"
+                        disabled={clearingBaseColumns}
+                        onClick={() => void refreshColumnsCache()}
+                        aria-label="Atualizar colunas da base"
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${clearingBaseColumns ? "animate-spin" : ""}`} />
+                        Atualizar colunas
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">Limpa o cache e recarrega as colunas desta base</TooltipContent>
+                  </Tooltip>
+                ) : null}
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <FilterBuilder
@@ -1286,11 +1396,13 @@ export default function NovaCampanha() {
                                   setSelectedTemplateObj(selectedTemplate ?? null);
 
                                   const otimaWppMap = buildInitialVariableMappingFromOtimaWpp(selectedTemplate);
+                                  const contentToParse =
+                                    collectPlaceholdersSourceText(selectedTemplate ?? null) || '';
+
                                   if (otimaWppMap) {
                                     setTemplateVariables(otimaWppMap);
                                   } else {
-                                    const rawContent = collectPlaceholdersSourceText(selectedTemplate);
-                                    const detectedVars = extractVariables(rawContent);
+                                    const detectedVars = extractVariables(contentToParse);
                                     const initMap: Record<string, VarMapping> = {};
                                     detectedVars.forEach((vVar: string) => {
                                       initMap[vVar] = { type: 'field', value: 'nome' };
@@ -1305,9 +1417,13 @@ export default function NovaCampanha() {
                                     refetchTemplate();
                                   } else {
                                     console.log('ℹ️ [Template Select] Template externo, usando conteúdo pré-carregado');
+                                    const messageFallback =
+                                      (typeof selectedTemplate?.content === 'string'
+                                        ? selectedTemplate.content
+                                        : '') || contentToParse;
                                     setFormData(prev => ({
                                       ...prev,
-                                      message: selectedTemplate?.content || rawContent || '',
+                                      message: messageFallback,
                                     }));
                                   }
 
@@ -1439,7 +1555,11 @@ export default function NovaCampanha() {
               {/* Variable Mapper — only for Ótima templates */}
               {(formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp') && (
                 <TemplateVariableMapper
-                  variables={Object.keys(templateVariables)}
+                  variables={
+                    formData.templateSource === "otima_wpp" && otimaWppMapperVariableKeys.length > 0
+                      ? otimaWppMapperVariableKeys
+                      : Object.keys(templateVariables)
+                  }
                   mapping={templateVariables}
                   onChange={setTemplateVariables}
                 />

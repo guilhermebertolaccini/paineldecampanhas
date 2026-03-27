@@ -29,6 +29,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { cancelCampanha } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Progress } from "@/components/ui/progress";
@@ -49,6 +50,12 @@ export interface Campaign {
   user: string;
   motivoCancelamento?: string;
   canceladoPor?: string;
+  /** Métricas do WP (snake_case) — preferidas quando presentes */
+  total_messages?: number;
+  processed_messages?: number;
+  error_messages?: number;
+  progress_percent?: number;
+  /** Aliases camelCase (retrocompat) */
   totalMessages?: number;
   totalProcessed?: number;
   messagesSent?: number;
@@ -73,33 +80,61 @@ const statusConfig: Record<
   cancelled: { label: "Cancelada", variant: "destructive" },
 };
 
-function CampaignProgressRow({ c }: { c: Campaign }) {
-  const total = c.totalMessages ?? c.quantity ?? 0;
-  const processed = c.totalProcessed ?? 0;
+function campaignProgressMetrics(c: Campaign) {
+  const total = c.total_messages ?? c.totalMessages ?? c.quantity ?? 0;
+  const processed = c.processed_messages ?? c.totalProcessed ?? 0;
+  const err = c.error_messages ?? c.messagesError ?? 0;
   const sent = c.messagesSent ?? 0;
-  const err = c.messagesError ?? 0;
-  const pct = typeof c.progressPercent === "number" ? Math.min(100, Math.max(0, c.progressPercent)) : 0;
+  const pctRaw = c.progress_percent ?? c.progressPercent ?? 0;
+  const pct = typeof pctRaw === "number" && !Number.isNaN(pctRaw) ? Math.min(100, Math.max(0, pctRaw)) : 0;
+  return { total, processed, err, sent, pct };
+}
+
+/** Barra visível durante processamento, após envios parciais/total ou campanha concluída (enviado). */
+function shouldShowCampaignProgress(c: Campaign): boolean {
+  const { total, processed, pct } = campaignProgressMetrics(c);
+  if (total <= 0) return false;
+  const raw = String(c.statusRaw ?? "").toLowerCase();
+  const ui = String(c.status).toLowerCase();
+
+  if (raw.includes("processando")) return true;
+  if (ui === "sent") return true;
+  if (processed > 0 || pct > 0) return true;
+  return false;
+}
+
+function CampaignProgressRow({ c }: { c: Campaign }) {
+  const { total, processed, err, sent, pct } = campaignProgressMetrics(c);
   const isRunning =
     c.status === "scheduled" ||
     String(c.statusRaw ?? "")
       .toLowerCase()
       .includes("processando");
-  if (total <= 0) {
+
+  if (!shouldShowCampaignProgress(c)) {
     return <span className="text-muted-foreground text-xs">—</span>;
   }
+
+  const pctLabel = Number.isInteger(pct) ? String(pct) : pct.toFixed(1);
   const hint =
     isRunning && pct < 100
-      ? `${processed} de ${total} linhas com status final (enviado ou erro). As demais ainda estão na fila ou em processamento.`
+      ? `${processed} de ${total} linhas já saíram da fila (enviadas, com erro ou finalizadas). Demais ainda em pendente/agendamento/processamento.`
       : err > 0
-        ? `${sent} enviadas, ${err} com erro, total ${total} contatos.`
+        ? `${sent} enviadas, ${err} falha(s), ${total} contatos no total.`
         : undefined;
+
   return (
-    <div className="min-w-[200px] max-w-[260px] space-y-1">
-      <Progress value={pct} className="h-2" />
-      <div className="flex flex-wrap items-center gap-x-1 text-[11px] text-muted-foreground leading-tight">
+    <div className="min-w-[200px] max-w-[280px] space-y-1">
+      <Progress value={Math.round(pct)} className="h-2" />
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-1 text-[11px] text-muted-foreground leading-tight">
         <span>
-          Processado: {pct}% ({processed} de {total} mensagens)
+          Processado: {pctLabel}% ({processed.toLocaleString("pt-BR")} / {total.toLocaleString("pt-BR")} msgs)
         </span>
+        {err > 0 && (
+          <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-5 font-normal">
+            {err.toLocaleString("pt-BR")} falha{err !== 1 ? "s" : ""}
+          </Badge>
+        )}
         {hint && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -123,7 +158,24 @@ function motivoFeedback(c: Campaign): string | null {
     return null;
   }
   const por = c.canceladoPor?.trim() ? c.canceladoPor : "—";
-  return `Motivo: ${c.motivoCancelamento.trim()} — Cancelado por: ${por}`;
+  return `Motivo: ${c.motivoCancelamento.trim()} — Por: ${por}`;
+}
+
+function userCanManageOptions(): boolean {
+  if (typeof window === "undefined") return false;
+  return Boolean((window as unknown as { pcAjax?: { canManageOptions?: boolean } }).pcAjax?.canManageOptions);
+}
+
+/** Alinhado ao PHP: assinante não cancela em `processando`; admin pode. */
+function canCancelCampaign(c: Campaign): boolean {
+  const fornecedor = c.fornecedor ?? c.provider;
+  if (!fornecedor) return false;
+  const raw = String(c.statusRaw ?? "").toLowerCase().trim();
+  const admin = userCanManageOptions();
+  if (raw === "processando") {
+    return admin;
+  }
+  return ["pendente_aprovacao", "pendente", "agendado_mkc"].includes(raw);
 }
 
 export function CampaignTable({ campaigns, showActions = true }: CampaignTableProps) {
@@ -158,9 +210,6 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
     setCancelTarget(c);
     setCancelMotivo("");
   };
-
-  const canCancel = (c: Campaign) =>
-    (c.status === "pending" || c.status === "scheduled") && !!(c.fornecedor ?? c.provider);
 
   return (
     <>
@@ -202,23 +251,30 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
                     )}
                   </TableCell>
                   <TableCell>
-                    <div className="flex items-center gap-2">
-                      <StatusBadge status={campaign.status} />
+                    <div className="flex flex-col gap-2 min-w-[140px]">
+                      <div className="flex items-center gap-2">
+                        <StatusBadge status={campaign.status} />
+                        {feedback && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                className="text-muted-foreground hover:text-foreground shrink-0"
+                                aria-label="Ver motivo e responsável"
+                              >
+                                <Info className="h-4 w-4" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="max-w-sm">
+                              <p className="text-xs">{feedback}</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                      </div>
                       {feedback && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              className="text-muted-foreground hover:text-foreground"
-                              aria-label="Ver motivo"
-                            >
-                              <Info className="h-4 w-4" />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top" className="max-w-sm">
-                            <p className="text-xs">{feedback}</p>
-                          </TooltipContent>
-                        </Tooltip>
+                        <Alert variant="destructive" className="py-2 px-3 border-destructive/40">
+                          <AlertDescription className="text-xs leading-snug m-0">{feedback}</AlertDescription>
+                        </Alert>
                       )}
                     </div>
                   </TableCell>
@@ -253,7 +309,7 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
                             <Eye className="mr-2 h-4 w-4" />
                             Ver detalhes
                           </DropdownMenuItem>
-                          {canCancel(campaign) && (
+                          {canCancelCampaign(campaign) && (
                             <DropdownMenuItem onClick={() => openCancel(campaign)}>
                               <Ban className="mr-2 h-4 w-4" />
                               Cancelar campanha

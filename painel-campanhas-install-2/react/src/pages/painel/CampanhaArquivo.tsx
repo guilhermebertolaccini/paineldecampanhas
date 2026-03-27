@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Upload, FileText, CheckCircle, AlertCircle, Loader2, X, Check, ChevronsUpDown, RefreshCw } from "lucide-react";
-import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables, collectPlaceholdersSourceText, buildInitialVariableMappingFromOtimaWpp } from "@/components/campaign/TemplateVariableMapper";
+import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables, collectPlaceholdersSourceText, buildInitialVariableMappingFromOtimaWpp, listOtimaWppVariableKeysFromTemplate } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -1002,9 +1002,30 @@ export default function CampanhaArquivo() {
               const selectedTpl = templates.find((t) => t.id === template) as any;
               const isOtima = selectedTpl?.source === 'otima_rcs' || selectedTpl?.source === 'otima_wpp';
               if (!isOtima) return null;
+              let mapperKeys = Object.keys(templateVariables);
+              if (selectedTpl?.source === 'otima_wpp') {
+                const fromTpl = listOtimaWppVariableKeysFromTemplate(selectedTpl);
+                if (fromTpl.length > 0) {
+                  const seen = new Set<string>();
+                  const out: string[] = [];
+                  for (const k of fromTpl) {
+                    if (!seen.has(k)) {
+                      seen.add(k);
+                      out.push(k);
+                    }
+                  }
+                  for (const k of Object.keys(templateVariables)) {
+                    if (!seen.has(k)) {
+                      seen.add(k);
+                      out.push(k);
+                    }
+                  }
+                  mapperKeys = out;
+                }
+              }
               return (
                 <TemplateVariableMapper
-                  variables={Object.keys(templateVariables)}
+                  variables={mapperKeys}
                   mapping={templateVariables}
                   onChange={setTemplateVariables}
                 />

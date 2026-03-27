@@ -204,6 +204,8 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_get_static_credentials', [$this, 'handle_get_static_credentials']);
         add_action('wp_ajax_pc_get_otima_customers', [$this, 'handle_get_otima_customers']);
         add_action('wp_ajax_pc_save_microservice_config', [$this, 'handle_save_microservice_config']);
+        add_action('wp_ajax_pc_get_robbu_webhook_config', [$this, 'handle_get_robbu_webhook_config']);
+        add_action('wp_ajax_pc_save_robbu_webhook_secret', [$this, 'handle_save_robbu_webhook_secret']);
         add_action('wp_ajax_pc_save_static_credentials', [$this, 'handle_save_static_credentials']);
         add_action('wp_ajax_pc_evolution_save_config', ['PC_Evolution_WA_Validator', 'ajax_save_config']);
         add_action('wp_ajax_pc_evolution_get_config', ['PC_Evolution_WA_Validator', 'ajax_get_config']);
@@ -278,6 +280,7 @@ class Painel_Campanhas
         // AJAX para Tracking Salesforce
         add_action('wp_ajax_pc_get_salesforce_tracking', [$this, 'handle_get_salesforce_tracking']);
         add_action('wp_ajax_pc_get_salesforce_sync_status', [$this, 'handle_get_salesforce_sync_status']);
+        add_action('wp_ajax_pc_clear_base_cache', [$this, 'handle_clear_base_cache']);
         add_action('wp_ajax_pc_download_salesforce_csv', [$this, 'handle_download_salesforce_csv']);
 
         // AJAX para Relatórios Multi-Tabela
@@ -299,6 +302,7 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_get_dashboard_stats', [$this, 'handle_get_dashboard_stats']);
         add_action('wp_ajax_pc_get_campanhas', [$this, 'handle_get_campanhas']);
         add_action('wp_ajax_pc_cancel_campanha', [$this, 'handle_cancel_campanha']);
+        add_action('wp_ajax_pc_cancel_campaign', [$this, 'handle_cancel_campanha']);
         add_action('wp_ajax_pc_get_available_bases', [$this, 'handle_get_available_bases']);
 
         // AJAX para Blocklist
@@ -369,12 +373,11 @@ class Painel_Campanhas
             'permission_callback' => [$this, 'check_api_key_rest'],
         ]);
 
-        // Webhook Robbu - recebe eventos do Invenio (status de mensagens, saúde das linhas, etc.)
-        // URL para cadastrar na Robbu: https://SEU-SITE.com/wp-json/robbu-webhook/v2/receive
+        // Webhook Robbu — autenticação: header X-Robbu-Token, Bearer ou ?token= (segredo em API Manager)
         register_rest_route('robbu-webhook/v2', '/receive', [
             'methods' => ['GET', 'POST'],
             'callback' => [$this, 'handle_robbu_webhook_receive'],
-            'permission_callback' => '__return_true', // Robbu não envia autenticação; use firewall por IP se necessário
+            'permission_callback' => [$this, 'check_robbu_webhook_permission'],
         ]);
         register_rest_route('campaigns/v1', '/config/(?P<agendamento_id>[^/]+)', [
             'methods' => 'GET',
@@ -418,22 +421,15 @@ class Painel_Campanhas
             return new WP_Error('no_master_key', 'Master API Key não configurada.', ['status' => 503]);
         }
 
+        // Autenticação apenas via header (api_key na query foi removida — evita vazamento em logs/Referer)
         $provided_key = $request->get_header('x-api-key') ?: $request->get_header('x_api_key');
-
-        if (empty($provided_key)) {
-            $provided_key = $request->get_param('api_key');
-        }
-
-        if (empty($provided_key) && isset($_GET['api_key'])) {
-            $provided_key = $_GET['api_key'];
-        }
 
         $provided_key = trim($provided_key ?: '');
 
         if (empty($provided_key)) {
-            error_log('🔴 [REST API] X-API-KEY header ou api_key query param não fornecidos');
+            error_log('🔴 [REST API] Header X-API-KEY não fornecido');
             error_log('🔴 [REST API] Headers recebidos: ' . json_encode(array_keys($request->get_headers())));
-            return new WP_Error('no_key_provided', 'API Key não fornecida no header X-API-KEY nem na URL.', ['status' => 401]);
+            return new WP_Error('no_key_provided', 'API Key não fornecida no header X-API-KEY.', ['status' => 401]);
         }
 
         if ($provided_key !== $master_key) {
@@ -815,7 +811,15 @@ class Painel_Campanhas
             $elapsed = round(microtime(true) - $start, 2);
             @file_put_contents($log_file, "[{$timestamp}] Completed in {$elapsed}s. Output: " . substr($output, 0, 500) . "\n", FILE_APPEND);
 
-            update_option('pc_last_salesforce_tracking_run', current_time('mysql'));
+            $import_ok = is_string($output)
+                && strpos($output, '[DONE]') !== false
+                && stripos($output, '[DB ERROR]') === false
+                && stripos($output, 'Error: wp-load.php') === false;
+            if ($import_ok) {
+                update_option('pc_last_salesforce_tracking_run', current_time('mysql'));
+            } else {
+                @file_put_contents($log_file, "[{$timestamp}] WARN: import não marcou sucesso; pc_last_salesforce_tracking_run não atualizado.\n", FILE_APPEND);
+            }
         } catch (\Throwable $e) {
             @file_put_contents($log_file, "[{$timestamp}] FATAL: " . $e->getMessage() . "\n", FILE_APPEND);
         }
@@ -830,7 +834,7 @@ class Painel_Campanhas
             return;
         }
         $v = (int) get_option('pc_salesforce_cron_schedule_v', 0);
-        if ($v >= 3) {
+        if ($v >= 4) {
             if (!wp_next_scheduled('pc_salesforce_import_cron')) {
                 $this->schedule_salesforce_cron_next_9am();
             }
@@ -838,7 +842,7 @@ class Painel_Campanhas
         }
         wp_clear_scheduled_hook('pc_salesforce_import_cron');
         $this->schedule_salesforce_cron_next_9am();
-        update_option('pc_salesforce_cron_schedule_v', 3);
+        update_option('pc_salesforce_cron_schedule_v', 4);
     }
 
     private function schedule_salesforce_cron_next_9am()
@@ -868,11 +872,53 @@ class Painel_Campanhas
             return;
         }
         $last = get_option('pc_last_salesforce_tracking_run', '');
+        $last_str = is_string($last) ? $last : '';
         $next = wp_next_scheduled('pc_salesforce_import_cron');
+
+        $stale_after_24h = true;
+        if ($last_str !== '') {
+            $ts = strtotime($last_str);
+            if ($ts && (time() - $ts) < DAY_IN_SECONDS) {
+                $stale_after_24h = false;
+            }
+        }
+
+        $next_label = '';
+        if ($next) {
+            $next_ts = (int) $next;
+            $next_label = wp_date('d/m', $next_ts) . ' às ' . wp_date('H:i', $next_ts);
+        }
+
         wp_send_json_success([
-            'lastRunMysql' => is_string($last) ? $last : '',
+            'lastRunMysql' => $last_str,
             'nextScheduledUnix' => $next ? (int) $next : null,
+            'nextRunLabel' => $next_label,
+            'staleAfter24h' => $stale_after_24h,
         ]);
+    }
+
+    /**
+     * AJAX: remove o transient de colunas da base (filtros) — apenas administradores.
+     */
+    public function handle_clear_base_cache()
+    {
+        check_ajax_referer('pc_nonce', 'nonce');
+        if (!is_user_logged_in() || !current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+        $table_name = sanitize_text_field($_POST['table_name'] ?? '');
+        if ($table_name === '') {
+            wp_send_json_error('Informe o nome da base (table_name).');
+            return;
+        }
+        if (!$this->validate_table_name($table_name)) {
+            wp_send_json_error('Nome de tabela inválido ou não encontrado.');
+            return;
+        }
+        $cache_key = 'pc_cols_' . md5($table_name);
+        delete_transient($cache_key);
+        wp_send_json_success(['message' => 'Cache de colunas limpo.', 'cache_key' => $cache_key]);
     }
 
     public function init()
@@ -1126,6 +1172,7 @@ class Painel_Campanhas
             'csvNonce' => wp_create_nonce('pc_csv_download'),
             'adminPostUrl' => admin_url('admin-post.php'),
             'homeUrl' => home_url(),
+            'canManageOptions' => current_user_can('manage_options'),
         ]);
     }
 
@@ -1235,6 +1282,129 @@ class Painel_Campanhas
         update_option('acm_microservice_config', $config);
 
         wp_send_json_success(['message' => 'Configuração do microserviço salva com sucesso!']);
+    }
+
+    /**
+     * Config do webhook Robbu (sem expor o segredo).
+     */
+    public function handle_get_robbu_webhook_config()
+    {
+        $this->pc_forbid_subscriber_ajax();
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        $configured = trim((string) get_option('acm_robbu_webhook_secret', '')) !== '';
+
+        wp_send_json_success([
+            'robbu_webhook_secret_configured' => $configured,
+        ]);
+    }
+
+    /**
+     * Salva acm_robbu_webhook_secret. Corpo vazio mantém o segredo atual; robbu_webhook_secret_clear=1 remove.
+     */
+    public function handle_save_robbu_webhook_secret()
+    {
+        $this->pc_forbid_subscriber_ajax();
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        $clear = !empty($_POST['robbu_webhook_secret_clear']);
+        if ($clear) {
+            update_option('acm_robbu_webhook_secret', '');
+            wp_send_json_success([
+                'message' => 'Segredo removido. O webhook ficará indisponível até você definir um novo segredo.',
+            ]);
+            return;
+        }
+
+        $raw = isset($_POST['robbu_webhook_secret']) ? trim((string) wp_unslash($_POST['robbu_webhook_secret'])) : '';
+
+        if ($raw === '') {
+            $existing = trim((string) get_option('acm_robbu_webhook_secret', ''));
+            if ($existing === '') {
+                wp_send_json_error('Defina um segredo forte. Sem ele, a rota do webhook permanece bloqueada.');
+                return;
+            }
+            wp_send_json_success(['message' => 'Segredo existente mantido (campo em branco).']);
+            return;
+        }
+
+        update_option('acm_robbu_webhook_secret', $raw);
+        wp_send_json_success(['message' => 'Segredo do webhook Robbu salvo com sucesso.']);
+    }
+
+    /**
+     * Extrai token de entrada para o webhook Robbu (ordem: X-Robbu-Token → Bearer → query token).
+     */
+    private function extract_robbu_webhook_incoming_token(WP_REST_Request $request)
+    {
+        $h = $request->get_header('X-Robbu-Token');
+        if (!is_string($h) || $h === '') {
+            $h = $request->get_header('x-robbu-token');
+        }
+        if (is_string($h) && $h !== '') {
+            return trim($h);
+        }
+
+        $auth = $request->get_header('authorization');
+        if (!is_string($auth) || $auth === '') {
+            $auth = $request->get_header('Authorization');
+        }
+        if (is_string($auth) && $auth !== '' && preg_match('/^\s*Bearer\s+(\S+)\s*$/i', $auth, $m)) {
+            return trim($m[1]);
+        }
+
+        $q = $request->get_param('token');
+        if (is_string($q) && $q !== '') {
+            return trim($q);
+        }
+
+        if (!empty($_GET['token']) && is_string($_GET['token'])) {
+            return trim(wp_unslash($_GET['token']));
+        }
+
+        return '';
+    }
+
+    /**
+     * permission_callback REST: exige acm_robbu_webhook_secret configurado e token válido (hash_equals).
+     */
+    public function check_robbu_webhook_permission($request)
+    {
+        if (!($request instanceof WP_REST_Request)) {
+            return new WP_Error('invalid_request', 'Requisição inválida.', ['status' => 400]);
+        }
+
+        $secret = trim((string) get_option('acm_robbu_webhook_secret', ''));
+        if ($secret === '') {
+            error_log('🔴 [Robbu Webhook] CRÍTICO: acm_robbu_webhook_secret não configurado — rota bloqueada (API Manager).');
+            return new WP_Error(
+                'robbu_webhook_misconfigured',
+                'Webhook Robbu: configure o segredo em API Manager (Painel → API Manager → Webhook Robbu).',
+                ['status' => 503]
+            );
+        }
+
+        $incoming = $this->extract_robbu_webhook_incoming_token($request);
+        if ($incoming === '') {
+            return new WP_Error('robbu_webhook_unauthorized', 'Token do webhook ausente.', ['status' => 401]);
+        }
+
+        if (!hash_equals($secret, $incoming)) {
+            error_log('🔴 [Robbu Webhook] Token inválido — IP: ' . ($_SERVER['REMOTE_ADDR'] ?? ''));
+            return new WP_Error('robbu_webhook_unauthorized', 'Token do webhook inválido.', ['status' => 401]);
+        }
+
+        return true;
     }
 
     public function handle_save_static_credentials()
@@ -2186,8 +2356,7 @@ class Painel_Campanhas
         $filters = [];
 
         foreach ($allowed_filters as $column => $type) {
-            // Verifica se a coluna existe
-            $column_exists = $wpdb->get_var($wpdb->prepare(
+            $column_exists = (int) $wpdb->get_var($wpdb->prepare(
                 "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS 
                  WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = %s",
                 DB_NAME,
@@ -2195,23 +2364,13 @@ class Painel_Campanhas
                 $column
             ));
 
-            if ($column_exists) {
-                // Busca valores únicos
-                $values = $wpdb->get_col(
-                    "SELECT DISTINCT `{$column}` 
-                     FROM `{$table_name}` 
-                     WHERE `{$column}` IS NOT NULL 
-                     AND `{$column}` != '' 
-                     ORDER BY `{$column}` ASC
-                     LIMIT 100"
-                );
-
-                if (!empty($values)) {
-                    $filters[$column] = [
-                        'type' => $type,
-                        'values' => $values
-                    ];
-                }
+            if ($column_exists > 0) {
+                // Sem SELECT DISTINCT em views milionárias — valor digitado livremente no fluxo CPF
+                $filters[$column] = [
+                    'type' => $type,
+                    'values' => [],
+                    'free_text' => true,
+                ];
             }
         }
 
@@ -3651,19 +3810,28 @@ class Painel_Campanhas
             return;
         }
 
+        $cache_key = 'pc_cols_' . md5($table_name);
+        $cached = get_transient($cache_key);
+        if ($cached !== false && is_array($cached)) {
+            wp_send_json_success($cached);
+            return;
+        }
+
         $filters = PC_Campaign_Filters::get_filterable_columns($table_name);
 
         if (is_wp_error($filters)) {
             wp_send_json_error($filters->get_error_message());
         }
 
-        // Garante que sempre retorna um array
         if (!is_array($filters)) {
             error_log('⚠️ [get_filters] Filtros não é array, convertendo. Tipo: ' . gettype($filters));
             $filters = [];
         }
 
-        error_log('🔍 [get_filters] Retornando ' . count($filters) . ' filtros para tabela: ' . $table_name);
+        // 12–24 h: metadados mudam raramente; invalidação natural ao expirar
+        set_transient($cache_key, $filters, 18 * HOUR_IN_SECONDS);
+
+        error_log('🔍 [get_filters] Cache MISS — gravado transient; ' . count($filters) . ' filtros para: ' . $table_name);
 
         wp_send_json_success($filters);
     }
@@ -6850,9 +7018,9 @@ class Painel_Campanhas
     }
 
     /**
-     * Webhook Robbu/Invenio - recebe eventos em tempo real.
-     * URL para cadastrar: https://SEU-SITE.com/wp-json/robbu-webhook/v2/receive
-     * IPs Robbu (liberar no firewall se necessário): 104.41.15.44, 104.41.14.184, 104.41.13.132, etc.
+     * Webhook Robbu/Invenio — eventos em tempo real.
+     * Autenticação: X-Robbu-Token, Authorization: Bearer … ou ?token=… (mesmo valor salvo em acm_robbu_webhook_secret).
+     * IPs Robbu (firewall): 104.41.15.44, 104.41.14.184, 104.41.13.132, etc.
      */
     public function handle_robbu_webhook_receive($request)
     {
@@ -8563,13 +8731,8 @@ class Painel_Campanhas
             $all_vals = array_merge($vals, [$per_page, $offset]);
             $rows = $wpdb->get_results($wpdb->prepare($data_q, ...$all_vals), ARRAY_A);
 
+            // Não executar SELECT DISTINCT em tabelas/views grandes — filtro por texto livre (coluna + valor)
             $filter_options = [];
-            foreach ($text_cols as $tc) {
-                $distinct = $wpdb->get_col("SELECT DISTINCT `{$tc}` FROM `{$table_name}` WHERE `{$tc}` IS NOT NULL AND `{$tc}` != '' ORDER BY `{$tc}` ASC LIMIT 100");
-                if (!empty($distinct)) {
-                    $filter_options[$tc] = $distinct;
-                }
-            }
 
             wp_send_json_success([
                 'records' => $rows ?: [],
@@ -9450,7 +9613,12 @@ class Painel_Campanhas
         $search = sanitize_text_field($_POST['search'] ?? $_GET['search'] ?? '');
         $current_user_id = get_current_user_id();
 
-        // Query base
+        // Estados ainda na fila / aguardando worker (não contam como "processadas" para a barra)
+        $sql_waiting = "LOWER(TRIM(COALESCE(t1.status, ''))) IN ('pendente','pendente_aprovacao','agendado_mkc','processando')";
+        $sql_error = "LOWER(TRIM(COALESCE(t1.status, ''))) IN ('negado','erro','erro_envio','erro_credenciais','erro_validacao','mkc_erro','erro_inicio')";
+        $sql_sent = "LOWER(TRIM(COALESCE(t1.status, ''))) IN ('enviado','mkc_executado')";
+
+        // Query base — métricas por agendamento_id + fornecedor (uma linha = um destinatário)
         $query = "
             SELECT
                 t1.agendamento_id,
@@ -9458,9 +9626,10 @@ class Painel_Campanhas
                 t1.fornecedor AS provider,
                 MAX(t1.status) AS status,
                 MIN(t1.data_cadastro) AS data_cadastro,
-                COUNT(t1.id) AS total_clients,
-                SUM(CASE WHEN LOWER(TRIM(COALESCE(t1.status, ''))) IN ('enviado', 'mkc_executado') THEN 1 ELSE 0 END) AS cnt_enviado,
-                SUM(CASE WHEN LOWER(TRIM(COALESCE(t1.status, ''))) IN ('negado', 'erro', 'erro_envio', 'erro_credenciais', 'erro_validacao', 'mkc_erro', 'erro_inicio') THEN 1 ELSE 0 END) AS cnt_erro,
+                COUNT(t1.id) AS total_messages,
+                SUM(CASE WHEN {$sql_waiting} THEN 0 ELSE 1 END) AS processed_messages,
+                SUM(CASE WHEN {$sql_error} THEN 1 ELSE 0 END) AS error_messages,
+                SUM(CASE WHEN {$sql_sent} THEN 1 ELSE 0 END) AS cnt_enviado,
                 COALESCE(MAX(u.display_name), 'Usuário Desconhecido') AS scheduled_by,
                 MAX(t1.motivo_cancelamento) AS motivo_cancelamento,
                 MAX(t1.cancelado_por) AS cancelado_por_id,
@@ -9524,14 +9693,28 @@ class Painel_Campanhas
                 $cancel_name = $u ? ($u->display_name ?: $u->user_login) : '';
             }
 
-            $total = max(0, (int) ($camp['total_clients'] ?? 0));
-            $sent = (int) ($camp['cnt_enviado'] ?? 0);
-            $err = (int) ($camp['cnt_erro'] ?? 0);
-            $processed = $sent + $err;
-            if ($total > 0 && $processed > $total) {
-                $processed = $total;
+            $total = max(0, (int) ($camp['total_messages'] ?? 0));
+            $processed = max(0, (int) ($camp['processed_messages'] ?? 0));
+            $err = max(0, (int) ($camp['error_messages'] ?? 0));
+            $sent = max(0, (int) ($camp['cnt_enviado'] ?? 0));
+
+            if ($total > 0) {
+                $processed = min($processed, $total);
             }
-            $progress_percent = $total > 0 ? (int) min(100, (int) round(100 * $processed / $total)) : 0;
+
+            // Campanha cancelada antes de qualquer envio/erro: barra em 0% (evita 100% enganoso)
+            $agg_raw = strtolower(trim((string) ($camp['status'] ?? '')));
+            if ($total > 0 && $agg_raw === 'cancelada' && $sent === 0 && $err === 0) {
+                $processed = 0;
+            }
+
+            $progress_percent = 0.0;
+            if ($total > 0) {
+                $progress_percent = round(100.0 * ($processed / $total), 2);
+                if ($progress_percent > 100.0) {
+                    $progress_percent = 100.0;
+                }
+            }
 
             return [
                 'id' => $camp['agendamento_id'] . '-' . $camp['provider'],
@@ -9547,6 +9730,10 @@ class Painel_Campanhas
                 'canceladoPor' => $cancel_name,
                 'idCarteira' => isset($camp['id_carteira']) ? (string) $camp['id_carteira'] : '',
                 'nomeCarteira' => isset($camp['nome_carteira']) ? (string) $camp['nome_carteira'] : '',
+                'total_messages' => $total,
+                'processed_messages' => $processed,
+                'error_messages' => $err,
+                'progress_percent' => $progress_percent,
                 'totalMessages' => $total,
                 'totalProcessed' => $processed,
                 'messagesSent' => $sent,
@@ -9559,8 +9746,10 @@ class Painel_Campanhas
     }
 
     /**
-     * Cancela campanha (pendente, aguardando aprovação ou agendada MKC). Motivo obrigatório.
-     * Admin: qualquer campanha. Demais usuários: só linhas com current_user_id = próprio.
+     * Cancela campanha (motivo obrigatório). Grava motivo_cancelamento e cancelado_por em envios_pendentes.
+     * Admin (manage_options): qualquer campanha; pode cancelar também em processamento.
+     * Demais usuários: só linhas com current_user_id = criador; não cancelam em status processando.
+     * Aceita motivo via POST motivo ou motivo_cancelamento (pc_cancel_campaign).
      */
     public function handle_cancel_campanha()
     {
@@ -9578,22 +9767,24 @@ class Painel_Campanhas
 
         $agendamento_id = sanitize_text_field($_POST['agendamento_id'] ?? '');
         $fornecedor = sanitize_text_field($_POST['fornecedor'] ?? '');
-        $motivo = sanitize_textarea_field($_POST['motivo'] ?? '');
+        $motivo_raw = $_POST['motivo_cancelamento'] ?? $_POST['motivo'] ?? '';
+        $motivo = sanitize_textarea_field(is_string($motivo_raw) ? wp_unslash($motivo_raw) : '');
 
         if ($agendamento_id === '' || $fornecedor === '') {
-            wp_send_json_error('Informe o identificador da campanha e o fornecedor.');
+            wp_send_json_error(['message' => 'Informe o identificador da campanha e o fornecedor.'], 400);
             return;
         }
 
         if (strlen(trim($motivo)) < 3) {
-            wp_send_json_error('Informe o motivo do cancelamento (mínimo 3 caracteres).');
+            wp_send_json_error(['message' => 'Informe o motivo do cancelamento (mínimo 3 caracteres).'], 400);
             return;
         }
 
         $uid = get_current_user_id();
         $is_admin = current_user_can('manage_options');
 
-        $allowed_status = ['pendente_aprovacao', 'pendente', 'agendado_mkc', 'processando'];
+        $allowed_owner = ['pendente_aprovacao', 'pendente', 'agendado_mkc'];
+        $allowed_admin = array_merge($allowed_owner, ['processando']);
 
         $check_sql = "SELECT id, status, current_user_id FROM `{$table}` WHERE agendamento_id = %s AND fornecedor = %s";
         $check_params = [$agendamento_id, $fornecedor];
@@ -9604,14 +9795,25 @@ class Painel_Campanhas
         $rows = $wpdb->get_results($wpdb->prepare($check_sql, $check_params), ARRAY_A);
 
         if (empty($rows)) {
-            wp_send_json_error('Campanha não encontrada ou você não tem permissão para cancelá-la.');
+            wp_send_json_error(
+                ['message' => 'Campanha não encontrada ou você não tem permissão para cancelá-la (apenas o criador ou um administrador).'],
+                403
+            );
             return;
         }
 
+        $allowed = $is_admin ? $allowed_admin : $allowed_owner;
         foreach ($rows as $row) {
             $st = strtolower(trim($row['status'] ?? ''));
-            if (!in_array($st, $allowed_status, true)) {
-                wp_send_json_error('Só é possível cancelar campanhas pendentes, aguardando aprovação ou agendadas (status atual: ' . esc_html($row['status']) . ').');
+            if (!in_array($st, $allowed, true)) {
+                wp_send_json_error(
+                    [
+                        'message' => $is_admin
+                            ? 'Não é possível cancelar no status atual: ' . esc_html($row['status'] ?? '')
+                            : 'Só é possível cancelar campanhas pendentes, em aprovação ou agendadas (não em processamento ou finalizadas). Status atual: ' . esc_html($row['status'] ?? ''),
+                    ],
+                    400
+                );
                 return;
             }
         }
@@ -11681,6 +11883,10 @@ class Painel_Campanhas
             $trace("Salesforce Import Complete. Rows inserted/updated: {$total_inserted}, Pages processed: {$pages_processed}, Errors: " . count($errors));
             $trace("Calling wp_send_json_success() now.");
 
+            if (empty($errors)) {
+                update_option('pc_last_salesforce_tracking_run', current_time('mysql'));
+            }
+
             wp_send_json_success(array(
                 'rows_inserted' => $total_inserted,
                 'pages_processed' => $pages_processed,
@@ -11690,7 +11896,7 @@ class Painel_Campanhas
                     'auth_url' => $sf_auth_url . '/v2/token',
                     'rest_base_url' => $sf_rest_url,
                     'tested_url' => $sf_rest_url . '/data/v1/customobjectdata/key/' . $sf_de_key . '/rowset?$page=1&$pageSize=200',
-                    'token' => $access_token,
+                    'token_obtained' => !empty($access_token),
                 ),
             ));
 
@@ -11865,15 +12071,24 @@ class PC_Campaign_Filters
         'placa'
     ];
 
-    public static function get_filterable_columns($table_name)
+    /**
+     * Extrai DATA_TYPE a partir do campo Type do SHOW COLUMNS (ex.: varchar(100) → varchar).
+     */
+    private static function parse_data_type_from_show_column_type($type_field)
+    {
+        $t = strtolower(trim((string) $type_field));
+        if (preg_match('/^([a-z]+)/', $t, $m)) {
+            return $m[1];
+        }
+        return $t;
+    }
+
+    /**
+     * Metadados de colunas sem ler linhas da tabela/view (compatível com bases milionárias).
+     */
+    private static function fetch_columns_metadata_only($table_name)
     {
         global $wpdb;
-
-        if (empty($table_name)) {
-            return new WP_Error('invalid_table', 'Nome de tabela inválido');
-        }
-
-        error_log('🔍 [get_filterable_columns] Buscando filtros para tabela: ' . $table_name);
 
         $columns_info = $wpdb->get_results($wpdb->prepare(
             "SELECT COLUMN_NAME, DATA_TYPE
@@ -11884,72 +12099,84 @@ class PC_Campaign_Filters
             $table_name
         ), ARRAY_A);
 
-        if (empty($columns_info)) {
-            error_log('🔴 [get_filterable_columns] Nenhuma coluna encontrada para tabela: ' . $table_name);
-            return new WP_Error('no_columns', 'Não foi possível obter colunas da tabela');
+        if (!empty($columns_info)) {
+            return $columns_info;
         }
 
-        error_log('🔍 [get_filterable_columns] Total de colunas na tabela: ' . count($columns_info));
+        // Fallback: SHOW COLUMNS (também só catálogo; não varre dados)
+        $safe = str_replace('`', '', $table_name);
+        if (!preg_match('/^[a-zA-Z0-9_]+$/', $safe)) {
+            return [];
+        }
 
-        $numeric_types = ['int', 'bigint', 'decimal', 'float', 'double', 'tinyint', 'smallint', 'mediumint', 'real'];
-        $categorical_threshold = 50;
+        $rows = $wpdb->get_results('SHOW COLUMNS FROM `' . $safe . '`', ARRAY_A);
+        if (empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $r) {
+            if (empty($r['Field'])) {
+                continue;
+            }
+            $out[] = [
+                'COLUMN_NAME' => $r['Field'],
+                'DATA_TYPE' => self::parse_data_type_from_show_column_type($r['Type'] ?? ''),
+            ];
+        }
+
+        return $out;
+    }
+
+    public static function get_filterable_columns($table_name)
+    {
+        if (empty($table_name)) {
+            return new WP_Error('invalid_table', 'Nome de tabela inválido');
+        }
+
+        $columns_info = self::fetch_columns_metadata_only($table_name);
+
+        if (empty($columns_info)) {
+            return new WP_Error('no_columns', 'Não foi possível obter colunas da tabela (metadados)');
+        }
+
+        $numeric_types = ['int', 'integer', 'bigint', 'decimal', 'float', 'double', 'tinyint', 'smallint', 'mediumint', 'real', 'bit'];
+        $binary_types = ['blob', 'tinyblob', 'mediumblob', 'longblob', 'binary', 'varbinary'];
         $filters = [];
 
         foreach ($columns_info as $column) {
             $column_name = $column['COLUMN_NAME'];
             $data_type = strtolower($column['DATA_TYPE']);
 
-            // Pula colunas excluídas
-            if (in_array(strtoupper($column_name), self::$excluded_columns)) {
+            if (in_array(strtoupper($column_name), self::$excluded_columns, true)) {
                 continue;
             }
 
-            // Formata o label (capitaliza e substitui _ por espaço)
+            if (in_array($data_type, $binary_types, true)) {
+                continue;
+            }
+
             $label = ucwords(strtolower(str_replace('_', ' ', $column_name)));
 
-            $is_numeric = in_array($data_type, $numeric_types);
-            $distinct_count = $wpdb->get_var(
-                "SELECT COUNT(DISTINCT `{$column_name}`)
-                 FROM `{$table_name}`
-                 WHERE `{$column_name}` IS NOT NULL"
-            );
+            $is_numeric = in_array($data_type, $numeric_types, true);
 
-            if ($distinct_count === null || $distinct_count == 0) {
-                // Pula colunas vazias
-                continue;
-            }
-
-            if ($is_numeric && $distinct_count > $categorical_threshold) {
-                // Filtro numérico (range)
+            if ($is_numeric) {
                 $filters[] = [
                     'column' => $column_name,
                     'label' => $label,
                     'type' => 'numeric',
-                    'data_type' => $data_type
+                    'data_type' => $data_type,
                 ];
             } else {
-                // Filtro categórico (select)
-                $values = $wpdb->get_col(
-                    "SELECT DISTINCT `{$column_name}`
-                     FROM `{$table_name}`
-                     WHERE `{$column_name}` IS NOT NULL
-                     AND `{$column_name}` != ''
-                     ORDER BY `{$column_name}` ASC
-                     LIMIT 100"
-                );
-
-                if (!empty($values)) {
-                    $filters[] = [
-                        'column' => $column_name,
-                        'label' => $label,
-                        'type' => 'select',
-                        'options' => $values
-                    ];
-                }
+                // Texto/data/json/enum: operadores de texto + input livre (sem SELECT DISTINCT na view)
+                $filters[] = [
+                    'column' => $column_name,
+                    'label' => $label,
+                    'type' => 'text',
+                    'data_type' => $data_type,
+                ];
             }
         }
-
-        error_log('✅ [get_filterable_columns] Total de filtros disponíveis: ' . count($filters));
 
         return $filters;
     }

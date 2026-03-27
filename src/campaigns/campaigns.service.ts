@@ -27,19 +27,25 @@ export class CampaignsService {
     });
   }
 
+  private static readonly CAMPAIGN_MESSAGE_BATCH_SIZE = 5000;
+
   async createCampaignMessages(campaignId: string, data: CampaignData[]) {
     if (data.length === 0) {
       return;
     }
 
-    await this.prisma.campaignMessage.createMany({
-      data: data.map((item) => ({
-        campaignId,
-        phone: item.telefone,
-        name: item.nome || null,
-        status: 'PENDING',
-      })),
-    });
+    const batchSize = CampaignsService.CAMPAIGN_MESSAGE_BATCH_SIZE;
+    const rows = data.map((item) => ({
+      campaignId,
+      phone: item.telefone,
+      name: item.nome || null,
+      status: 'PENDING' as const,
+    }));
+
+    for (let i = 0; i < rows.length; i += batchSize) {
+      const chunk = rows.slice(i, i + batchSize);
+      await this.prisma.campaignMessage.createMany({ data: chunk });
+    }
   }
 
   async getCampaignByAgendamentoId(agendamentoId: string) {
@@ -91,11 +97,10 @@ export class CampaignsService {
   async fetchDataFromWordPress(agendamentoId: string): Promise<CampaignData[]> {
     try {
       const base_url = wordpressConfig.endpoints.campaignData(agendamentoId);
-      const url = `${base_url}?api_key=${encodeURIComponent(wordpressConfig.apiKey)}`;
       this.logger.log(`Fetching campaign data from WordPress: ${base_url}`);
 
       const response = await firstValueFrom(
-        this.httpService.get<CampaignData[]>(url, {
+        this.httpService.get<CampaignData[]>(base_url, {
           headers: {
             'X-API-KEY': wordpressConfig.apiKey,
             'Content-Type': 'application/json',
@@ -136,11 +141,10 @@ export class CampaignsService {
   async fetchCredentials(provider: string, envId: string): Promise<any> {
     try {
       const base_url = wordpressConfig.endpoints.credentials(provider.toLowerCase(), envId);
-      const url = `${base_url}?api_key=${encodeURIComponent(wordpressConfig.apiKey)}`;
       this.logger.log(`Fetching credentials from WordPress: ${base_url}`);
 
       const response = await firstValueFrom(
-        this.httpService.get(url, {
+        this.httpService.get(base_url, {
           headers: {
             'X-API-KEY': wordpressConfig.apiKey,
             'Content-Type': 'application/json',
@@ -204,11 +208,10 @@ export class CampaignsService {
   async fetchThrottlingConfig(agendamentoId: string): Promise<any> {
     try {
       const base_url = wordpressConfig.endpoints.campaignConfig(agendamentoId);
-      const url = `${base_url}?api_key=${encodeURIComponent(wordpressConfig.apiKey)}`;
       this.logger.log(`Fetching throttling config from WordPress: ${base_url}`);
 
       const response = await firstValueFrom(
-        this.httpService.get(url, {
+        this.httpService.get(base_url, {
           headers: {
             'X-API-KEY': wordpressConfig.apiKey,
             'Content-Type': 'application/json',

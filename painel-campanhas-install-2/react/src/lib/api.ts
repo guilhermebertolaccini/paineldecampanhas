@@ -171,10 +171,27 @@ export const cancelCampanha = (params: {
   fornecedor: string;
   motivo: string;
 }) => {
+  const m = params.motivo.trim();
   return wpAjax('pc_cancel_campanha', {
     agendamento_id: params.agendamento_id,
     fornecedor: params.fornecedor,
-    motivo: params.motivo,
+    motivo: m,
+    motivo_cancelamento: m,
+  });
+};
+
+/** Alias da action `pc_cancel_campaign` (mesmo handler PHP). */
+export const cancelCampaign = (params: {
+  agendamento_id: string;
+  fornecedor: string;
+  motivo_cancelamento: string;
+}) => {
+  const m = params.motivo_cancelamento.trim();
+  return wpAjax('pc_cancel_campaign', {
+    agendamento_id: params.agendamento_id,
+    fornecedor: params.fornecedor,
+    motivo_cancelamento: m,
+    motivo: m,
   });
 };
 
@@ -255,6 +272,11 @@ export const denyCampaign = (agendamentoId: string, fornecedor: string, motivo?:
 export const getFilters = (base: string) => {
   // Usa cmNonce para handlers de campanha (cm_*)
   return wpAjax('cm_get_filters', { table_name: base }, 'cmNonce');
+};
+
+/** Limpa o transient `pc_cols_*` da base (somente admin no PHP). */
+export const clearBaseColumnsCache = (table_name: string) => {
+  return wpAjax('pc_clear_base_cache', { table_name });
 };
 
 export const getCount = (data: Record<string, any>) => {
@@ -710,6 +732,26 @@ export const getMicroserviceConfig = () => {
 
 export const saveMicroserviceConfig = (data: Record<string, any>) => {
   return wpAjax('pc_save_microservice_config', data);
+};
+
+/** Segredo do webhook Robbu — valor nunca retornado ao browser */
+export const getRobbuWebhookConfig = async () => {
+  const { z } = await import('zod');
+  const Schema = z.object({ robbu_webhook_secret_configured: z.boolean() });
+  const raw = await wpAjax('pc_get_robbu_webhook_config', {});
+  return Schema.parse(raw);
+};
+
+export const saveRobbuWebhookSecret = (data: {
+  robbu_webhook_secret?: string;
+  robbu_webhook_secret_clear?: boolean;
+}) => {
+  if (data.robbu_webhook_secret_clear) {
+    return wpAjax('pc_save_robbu_webhook_secret', { robbu_webhook_secret_clear: '1' });
+  }
+  return wpAjax('pc_save_robbu_webhook_secret', {
+    robbu_webhook_secret: data.robbu_webhook_secret ?? '',
+  });
 };
 
 export const getStaticCredentials = async () => {

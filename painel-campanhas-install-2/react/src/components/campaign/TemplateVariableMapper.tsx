@@ -23,14 +23,36 @@ export type VarMapping = {
 };
 
 /**
- * Ótima WPP HSM: variable_sample usa chaves como "-var4-" (formato da API).
+ * Ótima WPP HSM: `variable_sample` costuma vir como objeto `{"-var1-":"exemplo"}` ou, às vezes, string JSON.
  */
-export function buildInitialVariableMappingFromOtimaWpp(template: unknown): Record<string, VarMapping> | null {
+function parseOtimaWppVariableSample(template: unknown): Record<string, unknown> | null {
     if (!template || typeof template !== "object") return null;
     const t = template as Record<string, any>;
     if (t.source !== "otima_wpp") return null;
-    const vs = t.variable_sample ?? t.variableSample;
+    let vs: unknown = t.variable_sample ?? t.variableSample;
+    if (typeof vs === "string") {
+        const s = vs.trim();
+        if (!s) return null;
+        try {
+            vs = JSON.parse(s) as unknown;
+        } catch {
+            return null;
+        }
+    }
     if (!vs || typeof vs !== "object" || Array.isArray(vs)) return null;
+    return vs as Record<string, unknown>;
+}
+
+/** Chaves na ordem retornada pela API (objeto ou JSON parseado) — ex.: `-var1-`, `-var2-`. */
+export function listOtimaWppVariableKeysFromTemplate(template: unknown): string[] {
+    const vs = parseOtimaWppVariableSample(template);
+    if (!vs) return [];
+    return Object.keys(vs);
+}
+
+export function buildInitialVariableMappingFromOtimaWpp(template: unknown): Record<string, VarMapping> | null {
+    const vs = parseOtimaWppVariableSample(template);
+    if (!vs) return null;
     const keys = Object.keys(vs);
     if (keys.length === 0) return null;
     const init: Record<string, VarMapping> = {};
@@ -117,7 +139,11 @@ export function TemplateVariableMapper({ variables, mapping, onChange }: Props) 
                             ) : (
                                 <Input
                                     className="h-8 text-xs flex-1 min-w-[160px]"
-                                    placeholder={`Texto fixo para {{${varName}}}...`}
+                                    placeholder={
+                                        varName.startsWith("-") && varName.endsWith("-")
+                                            ? `Texto fixo para ${varName}…`
+                                            : `Texto fixo para {{${varName}}}…`
+                                    }
                                     value={current.value}
                                     onChange={(e) => update(varName, { value: e.target.value })}
                                 />

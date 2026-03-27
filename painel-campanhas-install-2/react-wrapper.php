@@ -132,6 +132,7 @@ usort($js_files, function($a, $b) {
             'restUrl' => rest_url('campaigns/v1/'),
             'restNonce' => wp_create_nonce('wp_rest'),
             'validadorMetricasRest' => rest_url('api/v1/validador/metricas'),
+            'canManageOptions' => current_user_can('manage_options'),
             'currentUser' => [
                 'id' => get_current_user_id(),
                 'name' => $pc_user->display_name ?? '',
