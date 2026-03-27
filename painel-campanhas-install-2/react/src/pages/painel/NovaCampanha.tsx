@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Database, Filter, MessageSquare, Truck, Send, Loader2, AlertCircle, Check, ChevronsUpDown, ImagePlus, X, RefreshCw } from "lucide-react";
-import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables, collectPlaceholdersSourceText } from "@/components/campaign/TemplateVariableMapper";
+import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables, collectPlaceholdersSourceText, buildInitialVariableMappingFromOtimaWpp } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -265,21 +265,37 @@ export default function NovaCampanha() {
       imageUrl: null,
     }));
 
-    // Templates Ótima (WPP + RCS)
-    let otima = (Array.isArray(otimaTemplatesData) ? otimaTemplatesData : []).map((t: any) => ({
-      id: String(t.id),
-      name: t.name || '',
-      source: t.source || 'external',
-      provider: t.source === 'otima_rcs' ? 'Ótima RCS' : 'Ótima WPP',
-      templateCode: t.template_code || '',
-      brokerCode: t.broker_code || '',
-      customerCode: t.customer_code || '',
-      walletId: t.wallet_id,
-      walletName: t.wallet_name || null,
-      imageUrl: t.image_url || null,
-      content: t.content || '',
-      raw_data: t.raw_data || t,
-    }));
+    // Templates Ótima (WPP + RCS) — WPP: payload espelha a API (template_code, variable_sample, …)
+    let otima = (Array.isArray(otimaTemplatesData) ? otimaTemplatesData : []).map((t: any) => {
+      const isRcs = t.source === 'otima_rcs';
+      const isWpp = t.source === 'otima_wpp';
+      const code = t.template_code || '';
+      const stableId =
+        t.id != null && String(t.id) !== ''
+          ? String(t.id)
+          : isWpp && code
+            ? `wpp_${code}`
+            : `otima_${t.wallet_id || 'x'}_${code || Math.random().toString(36).slice(2, 9)}`;
+      return {
+        id: stableId,
+        name: isWpp ? (code || t.name || 'Template WhatsApp') : (t.name || ''),
+        source: t.source || 'external',
+        provider: isRcs ? 'Ótima RCS' : 'Ótima WPP',
+        templateCode: code,
+        brokerCode: t.broker_code || '',
+        customerCode: t.customer_code || '',
+        walletId: t.wallet_id,
+        walletName: t.wallet_name || null,
+        imageUrl: t.image_url || null,
+        content: t.content || '',
+        variable_sample: t.variable_sample ?? null,
+        variableSample: t.variable_sample ?? null,
+        category: t.category,
+        status: t.status,
+        accounts: t.accounts,
+        raw_data: t.raw_data && typeof t.raw_data === 'object' ? t.raw_data : t,
+      };
+    });
 
     // Templates Ótima já vêm filtrados pelo backend (carteira_id + id_carteira); filtrar de novo aqui pode esconder itens por divergência de tipo.
 
@@ -1196,13 +1212,18 @@ export default function NovaCampanha() {
                                   // Save template object for preview + variable extraction
                                   setSelectedTemplateObj(selectedTemplate ?? null);
 
-                                  // RCS + WPP HSM: placeholders podem estar em rich_card ou em components[].text
-                                  const rawContent = collectPlaceholdersSourceText(selectedTemplate);
-                                  const detectedVars = extractVariables(rawContent);
-                                  // Initialize each variable with default mapping (field: nome)
-                                  const initMap: Record<string, VarMapping> = {};
-                                  detectedVars.forEach((vVar: string) => { initMap[vVar] = { type: 'field', value: 'nome' }; });
-                                  setTemplateVariables(initMap);
+                                  const otimaWppMap = buildInitialVariableMappingFromOtimaWpp(selectedTemplate);
+                                  if (otimaWppMap) {
+                                    setTemplateVariables(otimaWppMap);
+                                  } else {
+                                    const rawContent = collectPlaceholdersSourceText(selectedTemplate);
+                                    const detectedVars = extractVariables(rawContent);
+                                    const initMap: Record<string, VarMapping> = {};
+                                    detectedVars.forEach((vVar: string) => {
+                                      initMap[vVar] = { type: 'field', value: 'nome' };
+                                    });
+                                    setTemplateVariables(initMap);
+                                  }
 
                                   // Só busca conteúdo se for template local
                                   if (selectedTemplate?.source === 'local') {

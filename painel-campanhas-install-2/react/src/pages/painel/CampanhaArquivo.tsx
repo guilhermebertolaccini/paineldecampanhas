@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Upload, FileText, CheckCircle, AlertCircle, Loader2, X, Check, ChevronsUpDown, RefreshCw } from "lucide-react";
-import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables, collectPlaceholdersSourceText } from "@/components/campaign/TemplateVariableMapper";
+import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables, collectPlaceholdersSourceText, buildInitialVariableMappingFromOtimaWpp } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -177,19 +177,36 @@ export default function CampanhaArquivo() {
     }));
 
     // Templates Ótima (já vem com wallet_id do backend)
-    const otima = Array.isArray(otimaTemplatesData) ? otimaTemplatesData.map((t: any) => ({
-      id: `otima_${t.template_code}_${t.wallet_id}`,
-      name: t.name || t.template_code || '',
-      source: t.source || 'otima_rcs', // Backend retorna otima_rcs ou otima_wpp
-      templateCode: t.template_code || '',
-      brokerCode: t.broker_code || '',
-      customerCode: t.customer_code || '',
-      walletId: t.wallet_id,
-      walletName: t.wallet_name,
-      imageUrl: t.image_url || null,
-      content: t.content || '',
-      raw_data: t.raw_data || t,
-    })) : [];
+    const otima = Array.isArray(otimaTemplatesData)
+      ? otimaTemplatesData.map((t: any) => {
+          const isWpp = t.source === "otima_wpp";
+          const code = t.template_code || "";
+          const id =
+            t.id != null && String(t.id) !== ""
+              ? String(t.id)
+              : isWpp && code
+                ? `wpp_${code}_${t.wallet_id || ""}`
+                : `otima_${code}_${t.wallet_id || ""}`;
+          return {
+            id,
+            name: isWpp ? (code || t.name || "Template WhatsApp") : (t.name || t.template_code || ""),
+            source: t.source || "otima_rcs",
+            templateCode: code,
+            brokerCode: t.broker_code || "",
+            customerCode: t.customer_code || "",
+            walletId: t.wallet_id,
+            walletName: t.wallet_name,
+            imageUrl: t.image_url || null,
+            content: t.content || "",
+            variable_sample: t.variable_sample ?? null,
+            variableSample: t.variable_sample ?? null,
+            category: t.category,
+            status: t.status,
+            accounts: t.accounts,
+            raw_data: t.raw_data && typeof t.raw_data === "object" ? t.raw_data : t,
+          };
+        })
+      : [];
 
     // Templates Externos (GOSAC Oficial + NOAH Oficial)
     const external = Array.isArray(externalTemplatesData) ? externalTemplatesData.map((t: any) => {
@@ -822,13 +839,18 @@ export default function CampanhaArquivo() {
                                   }
                                   // Save for preview
                                   setSelectedTemplateObj(selectedTpl ?? null);
-                                  const rawContent = collectPlaceholdersSourceText(selectedTpl);
-                                  const detectedVars = extractVariables(rawContent);
-                                  const initMap: Record<string, VarMapping> = {};
-                                  detectedVars.forEach(vVar => {
-                                    initMap[vVar] = { type: 'field', value: 'nome' };
-                                  });
-                                  setTemplateVariables(initMap);
+                                  const otimaWppMap = buildInitialVariableMappingFromOtimaWpp(selectedTpl);
+                                  if (otimaWppMap) {
+                                    setTemplateVariables(otimaWppMap);
+                                  } else {
+                                    const rawContent = collectPlaceholdersSourceText(selectedTpl);
+                                    const detectedVars = extractVariables(rawContent);
+                                    const initMap: Record<string, VarMapping> = {};
+                                    detectedVars.forEach((vVar) => {
+                                      initMap[vVar] = { type: "field", value: "nome" };
+                                    });
+                                    setTemplateVariables(initMap);
+                                  }
                                   setOpenTemplateDropdown(false);
                                 }}
                               >

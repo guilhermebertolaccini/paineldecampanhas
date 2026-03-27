@@ -22,6 +22,24 @@ export type VarMapping = {
     value: string;
 };
 
+/**
+ * Ótima WPP HSM: variable_sample usa chaves como "-var4-" (formato da API).
+ */
+export function buildInitialVariableMappingFromOtimaWpp(template: unknown): Record<string, VarMapping> | null {
+    if (!template || typeof template !== "object") return null;
+    const t = template as Record<string, any>;
+    if (t.source !== "otima_wpp") return null;
+    const vs = t.variable_sample ?? t.variableSample;
+    if (!vs || typeof vs !== "object" || Array.isArray(vs)) return null;
+    const keys = Object.keys(vs);
+    if (keys.length === 0) return null;
+    const init: Record<string, VarMapping> = {};
+    for (const k of keys) {
+        init[k] = { type: "text", value: String(vs[k] ?? "") };
+    }
+    return init;
+}
+
 interface Props {
     variables: string[];                                     // ["var1", "var2", ...]
     mapping: Record<string, VarMapping>;
@@ -49,11 +67,15 @@ export function TemplateVariableMapper({ variables, mapping, onChange }: Props) 
             <div className="space-y-2">
                 {variables.map((varName) => {
                     const current = mapping[varName] ?? { type: "field", value: "nome" };
+                    const label =
+                        varName.startsWith("-") && varName.endsWith("-")
+                            ? varName
+                            : `{{${varName}}}`;
                     return (
                         <div key={varName} className="flex items-center gap-2 flex-wrap">
                             {/* Var label */}
-                            <Badge variant="outline" className="font-mono text-[11px] shrink-0 min-w-[56px] justify-center">
-                                {`{{${varName}}}`}
+                            <Badge variant="outline" className="font-mono text-[11px] shrink-0 min-w-[56px] justify-center max-w-[140px] truncate" title={varName}>
+                                {label}
                             </Badge>
 
                             {/* Type toggle */}
@@ -174,8 +196,8 @@ export function collectPlaceholdersSourceText(template: unknown): string {
  */
 export function extractVariables(text: string): string[] {
     if (!text) return [];
-    // {{name}}, {name}, [name], -name- (Ótima bulk), var1
-    const regex = /\{\{([\w.-]+)\}\}|\{([\w.-]+)\}|\[([\w.-]+)\]|-([\w.-]+)-|\b(var\d+)\b/g;
+    // {{name}}, {name}, [name], -var4- (Ótima HSM), var1
+    const regex = /\{\{([\w.-]+)\}\}|\{([\w.-]+)\}|\[([\w.-]+)\]|(-[\w.-]+-)|\b(var\d+)\b/g;
     const vars: string[] = [];
     let match;
     while ((match = regex.exec(text)) !== null) {

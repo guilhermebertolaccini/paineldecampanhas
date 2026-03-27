@@ -140,6 +140,8 @@ usort($js_files, function($a, $b) {
                 'roles' => $pc_roles,
             ],
             'currentPage' => $current_page ?? 'home',
+            'salesforceLastTrackingRun' => (string) get_option('pc_last_salesforce_tracking_run', ''),
+            'nextSalesforceCronUnix' => wp_next_scheduled('pc_salesforce_import_cron') ?: null,
             'debug' => [
                 'siteUrl' => $site_url,
                 'homeUrl' => home_url(),

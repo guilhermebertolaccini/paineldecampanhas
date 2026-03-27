@@ -26,6 +26,8 @@ interface PendingCampaign {
   created_at: string;
   total_clients: number;
   scheduled_by: string;
+  id_carteira?: string;
+  nome_carteira?: string;
 }
 
 export default function AprovarCampanhas() {
@@ -199,7 +201,16 @@ export default function AprovarCampanhas() {
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="grid gap-4 sm:grid-cols-3">
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-lg bg-muted/50 p-3">
+                    <p className="text-xs text-muted-foreground mb-1">Carteira</p>
+                    <p className="font-semibold text-sm leading-snug">
+                      {campaign.nome_carteira?.trim() || "—"}
+                    </p>
+                    {campaign.id_carteira ? (
+                      <p className="text-[10px] text-muted-foreground font-mono mt-1">ID: {campaign.id_carteira}</p>
+                    ) : null}
+                  </div>
                   <div className="rounded-lg bg-muted/50 p-3">
                     <p className="text-xs text-muted-foreground mb-1">Fornecedor</p>
                     <p className="font-semibold">{campaign.provider.toUpperCase()}</p>
@@ -265,6 +276,15 @@ export default function AprovarCampanhas() {
                 <div>
                   <p className="text-xs text-muted-foreground mb-1">Usuário</p>
                   <p className="font-medium">{selectedCampaign.scheduled_by}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">Carteira</p>
+                  <p className="font-medium">
+                    {selectedCampaign.nome_carteira?.trim() || "—"}
+                  </p>
+                  {selectedCampaign.id_carteira ? (
+                    <p className="text-[10px] text-muted-foreground font-mono">ID: {selectedCampaign.id_carteira}</p>
+                  ) : null}
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground mb-1">Fornecedor</p>

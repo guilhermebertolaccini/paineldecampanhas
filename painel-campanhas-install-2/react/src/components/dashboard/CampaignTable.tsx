@@ -39,6 +39,8 @@ export interface Campaign {
   provider: string;
   /** Valor exato da coluna fornecedor no MySQL (para cancelamento). */
   fornecedor?: string;
+  nomeCarteira?: string;
+  idCarteira?: string;
   quantity: number;
   createdAt: string;
   user: string;
@@ -114,8 +116,9 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
         <Table>
           <TableHeader>
             <TableRow className="bg-muted/50 hover:bg-muted/50">
-              <TableHead className="font-semibold">Campanha</TableHead>
-              <TableHead className="font-semibold">Status</TableHead>
+            <TableHead className="font-semibold">Campanha</TableHead>
+            <TableHead className="font-semibold">Carteira</TableHead>
+            <TableHead className="font-semibold">Status</TableHead>
               <TableHead className="font-semibold">Fornecedor</TableHead>
               <TableHead className="font-semibold text-right">Quantidade</TableHead>
               <TableHead className="font-semibold">Criado em</TableHead>
@@ -134,6 +137,17 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
                   style={{ animationDelay: `${index * 50}ms` }}
                 >
                   <TableCell className="font-medium">{campaign.name}</TableCell>
+                  <TableCell className="text-muted-foreground text-sm max-w-[220px]">
+                    {campaign.nomeCarteira ? (
+                      <span className="line-clamp-2 font-medium text-foreground" title={campaign.nomeCarteira}>
+                        {campaign.nomeCarteira}
+                      </span>
+                    ) : campaign.idCarteira ? (
+                      <span className="font-mono text-xs">{campaign.idCarteira}</span>
+                    ) : (
+                      "—"
+                    )}
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <StatusBadge status={campaign.status} />

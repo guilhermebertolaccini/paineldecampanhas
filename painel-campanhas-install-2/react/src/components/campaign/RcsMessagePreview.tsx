@@ -10,7 +10,14 @@ interface Props {
 
 function applyVars(text: string, vars: Record<string, string>): string {
     if (!text) return "";
-    return text.replace(/\{\{([\w.-]+)\}\}|\{([\w.-]+)\}|\[([\w.-]+)\]|-([\w.-]+)-|\b(var\d+)\b/g, (match, g1, g2, g3, g4, g5) => {
+    let out = text;
+    const keys = Object.keys(vars).sort((a, b) => b.length - a.length);
+    for (const k of keys) {
+        if (vars[k] === undefined) continue;
+        const esc = k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        out = out.replace(new RegExp(esc, "g"), vars[k]);
+    }
+    return out.replace(/\{\{([\w.-]+)\}\}|\{([\w.-]+)\}|\[([\w.-]+)\]|-([\w.-]+)-|\b(var\d+)\b/g, (match, g1, g2, g3, g4, g5) => {
         const name = g1 || g2 || g3 || g4 || g5;
         return vars[name] ?? match;
     });

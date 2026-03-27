@@ -134,11 +134,9 @@ class Painel_Campanhas
         // register_activation_hook precisa ser chamado fora da classe para funcionar corretamente
         register_deactivation_hook(__FILE__, [$this, 'deactivate']);
 
-        // Salesforce MC import cron (every 6 hours)
+        // Salesforce MC import cron — diário às 09:00 (fuso do WordPress)
         add_action('pc_salesforce_import_cron', [$this, 'run_salesforce_import_cron']);
-        if (!wp_next_scheduled('pc_salesforce_import_cron')) {
-            wp_schedule_event(time(), 'twicedaily', 'pc_salesforce_import_cron');
-        }
+        add_action('init', [$this, 'maybe_reschedule_salesforce_cron_9am'], 5);
 
         // Inicialização
         add_action('init', [$this, 'init']);
@@ -278,6 +276,7 @@ class Painel_Campanhas
 
         // AJAX para Tracking Salesforce
         add_action('wp_ajax_pc_get_salesforce_tracking', [$this, 'handle_get_salesforce_tracking']);
+        add_action('wp_ajax_pc_get_salesforce_sync_status', [$this, 'handle_get_salesforce_sync_status']);
         add_action('wp_ajax_pc_download_salesforce_csv', [$this, 'handle_download_salesforce_csv']);
 
         // AJAX para Relatórios Multi-Tabela
@@ -814,9 +813,65 @@ class Painel_Campanhas
 
             $elapsed = round(microtime(true) - $start, 2);
             @file_put_contents($log_file, "[{$timestamp}] Completed in {$elapsed}s. Output: " . substr($output, 0, 500) . "\n", FILE_APPEND);
+
+            update_option('pc_last_salesforce_tracking_run', current_time('mysql'));
         } catch (\Throwable $e) {
             @file_put_contents($log_file, "[{$timestamp}] FATAL: " . $e->getMessage() . "\n", FILE_APPEND);
         }
+    }
+
+    /**
+     * Realinha o WP-Cron do import Salesforce para execução diária às 09:00 (timezone WP).
+     */
+    public function maybe_reschedule_salesforce_cron_9am()
+    {
+        if (defined('DOING_CRON') && DOING_CRON) {
+            return;
+        }
+        $v = (int) get_option('pc_salesforce_cron_schedule_v', 0);
+        if ($v >= 3) {
+            if (!wp_next_scheduled('pc_salesforce_import_cron')) {
+                $this->schedule_salesforce_cron_next_9am();
+            }
+            return;
+        }
+        wp_clear_scheduled_hook('pc_salesforce_import_cron');
+        $this->schedule_salesforce_cron_next_9am();
+        update_option('pc_salesforce_cron_schedule_v', 3);
+    }
+
+    private function schedule_salesforce_cron_next_9am()
+    {
+        try {
+            $tz = function_exists('wp_timezone') ? wp_timezone() : new DateTimeZone('America/Sao_Paulo');
+            $now = new DateTime('now', $tz);
+            $run = new DateTime('today 09:00', $tz);
+            if ($now >= $run) {
+                $run->modify('+1 day');
+            }
+            wp_schedule_event($run->getTimestamp(), 'daily', 'pc_salesforce_import_cron');
+        } catch (\Throwable $e) {
+            error_log('🔴 [SF Cron] Falha ao agendar 09:00: ' . $e->getMessage());
+            wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'pc_salesforce_import_cron');
+        }
+    }
+
+    /**
+     * Última execução bem-sucedida do job de tracking/import Salesforce (WP-Cron).
+     */
+    public function handle_get_salesforce_sync_status()
+    {
+        check_ajax_referer('pc_nonce', 'nonce');
+        if (!is_user_logged_in() || !current_user_can('edit_posts')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+        $last = get_option('pc_last_salesforce_tracking_run', '');
+        $next = wp_next_scheduled('pc_salesforce_import_cron');
+        wp_send_json_success([
+            'lastRunMysql' => is_string($last) ? $last : '',
+            'nextScheduledUnix' => $next ? (int) $next : null,
+        ]);
     }
 
     public function init()
@@ -5840,6 +5895,7 @@ class Painel_Campanhas
         global $wpdb;
         $table = $wpdb->prefix . 'envios_pendentes';
         $users_table = $wpdb->prefix . 'users';
+        $carteiras_table = $wpdb->prefix . 'pc_carteiras_v2';
 
         $filter_agendamento = sanitize_text_field($_POST['filter_agendamento'] ?? '');
         $filter_fornecedor = sanitize_text_field($_POST['filter_fornecedor'] ?? '');
@@ -5866,9 +5922,13 @@ class Painel_Campanhas
                 MIN(t1.data_cadastro) AS created_at,
                 COUNT(*) AS total_clients,
                 MAX(t1.current_user_id) AS current_user_id,
-                COALESCE(MAX(u.display_name), 'Usuário Desconhecido') AS scheduled_by
+                COALESCE(MAX(u.display_name), 'Usuário Desconhecido') AS scheduled_by,
+                MAX(t1.id_carteira) AS id_carteira,
+                MAX(cv.nome) AS nome_carteira
             FROM `{$table}` AS t1
             LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
+            LEFT JOIN `{$carteiras_table}` AS cv
+                ON TRIM(cv.id_carteira) = TRIM(t1.id_carteira) AND cv.ativo = 1
             WHERE {$where_sql}
             GROUP BY t1.agendamento_id, t1.fornecedor
             ORDER BY MIN(t1.data_cadastro) DESC
@@ -9381,6 +9441,7 @@ class Painel_Campanhas
         global $wpdb;
         $envios_table = $wpdb->prefix . 'envios_pendentes';
         $users_table = $wpdb->users;
+        $carteiras_table = $wpdb->prefix . 'pc_carteiras_v2';
 
         // Filtros
         $status_filter = sanitize_text_field($_POST['status'] ?? $_GET['status'] ?? '');
@@ -9399,9 +9460,13 @@ class Painel_Campanhas
                 COUNT(t1.id) AS total_clients,
                 COALESCE(MAX(u.display_name), 'Usuário Desconhecido') AS scheduled_by,
                 MAX(t1.motivo_cancelamento) AS motivo_cancelamento,
-                MAX(t1.cancelado_por) AS cancelado_por_id
+                MAX(t1.cancelado_por) AS cancelado_por_id,
+                MAX(t1.id_carteira) AS id_carteira,
+                MAX(cv.nome) AS nome_carteira
             FROM `{$envios_table}` AS t1
             LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
+            LEFT JOIN `{$carteiras_table}` AS cv
+                ON TRIM(cv.id_carteira) = TRIM(t1.id_carteira) AND cv.ativo = 1
             WHERE t1.current_user_id = %d
         ";
 
@@ -9467,6 +9532,8 @@ class Painel_Campanhas
                 'user' => $camp['scheduled_by'],
                 'motivoCancelamento' => $camp['motivo_cancelamento'] ?? '',
                 'canceladoPor' => $cancel_name,
+                'idCarteira' => isset($camp['id_carteira']) ? (string) $camp['id_carteira'] : '',
+                'nomeCarteira' => isset($camp['nome_carteira']) ? (string) $camp['nome_carteira'] : '',
             ];
         }, $campanhas);
 
@@ -10826,6 +10893,10 @@ class Painel_Campanhas
             if (!is_array($data)) {
                 return [];
             }
+            // Resposta direta da Ótima: [ { "template_code": "...", "variable_sample": {...} }, ... ]
+            if ($data !== [] && array_keys($data) === range(0, count($data) - 1)) {
+                return $data;
+            }
             $paths = [];
             if (isset($data['data']['templates']) && is_array($data['data']['templates'])) {
                 $paths[] = $data['data']['templates'];
@@ -10980,24 +11051,13 @@ class Painel_Campanhas
                     if (!is_array($tpl)) {
                         continue;
                     }
-                    $wpp_code = $tpl['template_code'] ?? $tpl['code'] ?? $tpl['name'] ?? $tpl['template_name'] ?? $tpl['hsm_name'] ?? '';
-                    $tpl_label = $tpl['description'] ?? $tpl['title'] ?? $wpp_code;
-                    $templates[] = [
-                        'id' => 'wpp_' . ($wpp_code !== '' ? $wpp_code : uniqid()),
-                        'name' => $tpl_label !== '' ? $tpl_label : ($wpp_code !== '' ? $wpp_code : 'Template WhatsApp'),
-                        'content' => $tpl['content'] ?? $tpl['body'] ?? '',
-                        'date' => $tpl['created_date'] ?? $tpl['created_at'] ?? date('Y-m-d H:i:s'),
+                    // Preserva o JSON da Ótima; apenas acrescenta metadados do painel (sem sobrescrever chaves da API).
+                    $templates[] = array_merge($tpl, [
                         'source' => 'otima_wpp',
-                        'template_code' => $wpp_code,
-                        'status' => $tpl['status'] ?? '',
                         'wallet_id' => $customer_code,
                         'wallet_name' => $carteira_nome,
-                        'broker_code' => $tpl['broker_code'] ?? $tpl['brokerCode'] ?? '',
                         'customer_code' => $customer_code,
-                        'status_desc' => $tpl['status_description'] ?? '',
-                        'category' => $tpl['category'] ?? '',
-                        'raw_data' => $tpl,
-                    ];
+                    ]);
                 }
             }
         }
