@@ -105,6 +105,8 @@ export default function NovaCampanha() {
   const [selectedTemplateObj, setSelectedTemplateObj] = useState<any>(null);
   const [openTemplateDropdown, setOpenTemplateDropdown] = useState(false);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  /** Debug temporário: `#/...?debugOtima=1` na hash ou botão na etapa Template */
+  const [showOtimaRawJson, setShowOtimaRawJson] = useState(false);
 
   // Buscar carteiras
   const { data: carteiras = [] } = useQuery({
@@ -214,7 +216,9 @@ export default function NovaCampanha() {
 
   // Buscar templates Ótima sob demanda (apenas após selecionar carteira)
   const selectedCarteiraObj = carteiras.find((c: any) => String(c.id) === String(formData.carteira));
-  const walletIdForOtima = selectedCarteiraObj?.id_carteira ? String(selectedCarteiraObj.id_carteira) : undefined;
+  const rawWallet = selectedCarteiraObj?.id_carteira;
+  const walletIdForOtima =
+    rawWallet != null && String(rawWallet).trim() !== '' ? String(rawWallet).trim() : undefined;
 
   const {
     data: otimaTemplatesData = [],
@@ -225,10 +229,22 @@ export default function NovaCampanha() {
   } = useQuery({
     queryKey: ['otima-templates', walletIdForOtima, formData.carteira],
     queryFn: () => getOtimaTemplates(walletIdForOtima, formData.carteira),
-    enabled: !!walletIdForOtima && !!formData.carteira,
+    enabled: !!formData.carteira,
     staleTime: 60 * 1000,
     gcTime: 5 * 60 * 1000,
   });
+
+  useEffect(() => {
+    try {
+      const h = window.location.hash || '';
+      const qIdx = h.indexOf('?');
+      if (qIdx !== -1 && new URLSearchParams(h.slice(qIdx + 1)).get('debugOtima') === '1') {
+        setShowOtimaRawJson(true);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   useEffect(() => {
     if (!otimaTemplatesIsError || !otimaTemplatesErr) {
@@ -1122,25 +1138,59 @@ export default function NovaCampanha() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <Label>Template</Label>
                   {walletIdForOtima && formData.carteira ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 shrink-0 gap-1 text-xs"
-                      disabled={otimaTemplatesFetching}
-                      onClick={() => {
-                        queryClient.invalidateQueries({ queryKey: ['otima-templates'] });
-                        toast({
-                          title: 'Sincronizando',
-                          description: 'Buscando templates HSM na API Ótima Digital…',
-                        });
-                      }}
-                    >
-                      <RefreshCw className={`h-3.5 w-3.5 ${otimaTemplatesFetching ? 'animate-spin' : ''}`} />
-                      Sincronizar templates Ótima
-                    </Button>
+                    <>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 shrink-0 gap-1 text-xs"
+                        disabled={otimaTemplatesFetching}
+                        onClick={() => {
+                          queryClient.invalidateQueries({ queryKey: ['otima-templates'] });
+                          toast({
+                            title: 'Sincronizando',
+                            description: 'Buscando templates HSM na API Ótima Digital…',
+                          });
+                        }}
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${otimaTemplatesFetching ? 'animate-spin' : ''}`} />
+                        Sincronizar templates Ótima
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 shrink-0 text-xs"
+                        onClick={() => setShowOtimaRawJson((o) => !o)}
+                      >
+                        {showOtimaRawJson ? 'Ocultar' : 'Ver'} JSON bruto Ótima
+                      </Button>
+                    </>
                   ) : null}
                 </div>
+                {walletIdForOtima && formData.carteira && showOtimaRawJson && (
+                  <div className="rounded-md border border-amber-200/80 bg-amber-50/40 p-2 dark:border-amber-900/50 dark:bg-amber-950/20">
+                    <p className="mb-1 text-[11px] text-muted-foreground">
+                      Payload de <code className="rounded bg-muted px-0.5">pc_get_otima_templates</code> (não inclui templates locais tipo CART_*). Compare com a lista do combobox (mesclada).
+                    </p>
+                    <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded border bg-background p-2 font-mono text-[10px] leading-tight">
+                      {JSON.stringify(
+                        {
+                          walletIdForOtima,
+                          carteiraPK: formData.carteira,
+                          otimaTemplatesCount: Array.isArray(otimaTemplatesData) ? otimaTemplatesData.length : 0,
+                          otimaWppCodes: (Array.isArray(otimaTemplatesData) ? otimaTemplatesData : [])
+                            .filter((x: any) => x?.source === 'otima_wpp')
+                            .map((x: any) => x?.template_code)
+                            .filter(Boolean),
+                          otimaTemplatesData,
+                        },
+                        null,
+                        2
+                      )}
+                    </pre>
+                  </div>
+                )}
                 <Popover open={openTemplateDropdown} onOpenChange={setOpenTemplateDropdown}>
                   <PopoverTrigger asChild>
                     <Button

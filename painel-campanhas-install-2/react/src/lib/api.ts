@@ -3,7 +3,7 @@
  */
 
 // Configuração da URL do WordPress
-const getAjaxUrl = () => {
+export const getAjaxUrl = () => {
   const pc = (window as any).pcAjax;
   const url = pc?.ajaxUrl || pc?.ajaxurl;
   if (typeof pc !== 'undefined' && url) {
@@ -89,6 +89,14 @@ export const wpAjax = async (
     }
 
     const result = await response.json();
+
+    if (action === 'pc_get_otima_templates') {
+      console.log('[DEBUG ÓTIMA] URL interna (WP AJAX) chamada:', ajaxUrl);
+      console.log(
+        '[DEBUG ÓTIMA] Resposta bruta (Raw Payload) recebida do backend:',
+        typeof result === 'object' ? JSON.stringify(result, null, 2).slice(0, 80000) : String(result)
+      );
+    }
 
     // Log detalhado para debug
     if (action === 'pc_get_bases_carteira') {
@@ -291,20 +299,37 @@ export const getIscas = () => {
   return wpAjax('pc_get_iscas', {});
 };
 
+/**
+ * Templates Ótima (HSM/RCS). Regra: o ID na URL da Ótima é sempre `wallet_id` (coluna id_carteira no cadastro).
+ * Quando `walletId` está definido, só ele é enviado — a PK local não acompanha o request (evita confusão no proxy).
+ * Sem wallet: envia `carteira_id` (PK) só para o PHP resolver `id_carteira` no banco; a API externa nunca recebe a PK.
+ */
 export const getOtimaTemplates = (walletId?: string, carteiraDbId?: string) => {
   const payload: Record<string, string> = {};
-  if (walletId) payload.wallet_id = String(walletId);
-  if (carteiraDbId) payload.carteira_id = String(carteiraDbId);
-  if (typeof window !== 'undefined' && (walletId || carteiraDbId)) {
-    console.log('[Ótima HSM] AJAX pc_get_otima_templates payload:', {
-      wallet_id: walletId ?? null,
-      carteira_id: carteiraDbId ?? null,
-    });
+  if (walletId) {
+    payload.wallet_id = String(walletId);
+  } else if (carteiraDbId) {
+    payload.carteira_id = String(carteiraDbId);
   }
+
+  if (typeof window !== 'undefined') {
+    console.log('[DEBUG ÓTIMA] wallet_id (provedor Ótima) enviado:', walletId ?? '(omitido)');
+    console.log('[DEBUG ÓTIMA] carteira_id PK local (só se sem wallet):', walletId ? '(omitido — não enviado ao PHP)' : carteiraDbId ?? '(vazio)');
+    console.log('[DEBUG ÓTIMA] Action AJAX:', 'pc_get_otima_templates', '(não é pc_get_messages / templates locais)');
+    console.log('[DEBUG ÓTIMA] URL interna (WP AJAX) será usada no próximo log (wpAjax):', getAjaxUrl());
+    console.log('[DEBUG ÓTIMA] Payload FormData (chaves):', Object.keys(payload), payload);
+  }
+
   return wpAjax('pc_get_otima_templates', payload).then((data) => {
-    if (typeof window !== 'undefined' && (walletId || carteiraDbId)) {
+    if (typeof window !== 'undefined') {
       const arr = Array.isArray(data) ? data : [];
-      console.log('[Ótima HSM] resposta do painel (itens):', arr.length, arr[0] ?? null);
+      const wppCodes = arr
+        .filter((x: any) => x?.source === 'otima_wpp')
+        .map((x: any) => x?.template_code)
+        .filter(Boolean);
+      console.log('[DEBUG ÓTIMA] Após unwrap result.data — itens totais:', arr.length, '| WPP (source=otima_wpp):', wppCodes.length);
+      console.log('[DEBUG ÓTIMA] template_code(s) WPP (amostra):', wppCodes.slice(0, 25));
+      console.log('[DEBUG ÓTIMA] Primeiro item (qualquer):', arr[0] ?? null);
     }
     return data;
   });

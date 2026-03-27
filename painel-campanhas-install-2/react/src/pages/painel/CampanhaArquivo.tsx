@@ -92,7 +92,9 @@ export default function CampanhaArquivo() {
 
   // Buscar templates Ótima sob demanda (apenas após selecionar carteira)
   const selectedCarteiraObj = (carteiras as any[]).find((c: any) => String(c.id) === String(carteira));
-  const walletIdForOtima = selectedCarteiraObj?.id_carteira ? String(selectedCarteiraObj.id_carteira) : undefined;
+  const rawWallet = selectedCarteiraObj?.id_carteira;
+  const walletIdForOtima =
+    rawWallet != null && String(rawWallet).trim() !== '' ? String(rawWallet).trim() : undefined;
 
   const {
     data: otimaTemplatesData = [],
@@ -103,7 +105,7 @@ export default function CampanhaArquivo() {
   } = useQuery({
     queryKey: ['otima-templates', walletIdForOtima, carteira],
     queryFn: () => getOtimaTemplates(walletIdForOtima, carteira),
-    enabled: !!walletIdForOtima && !!carteira,
+    enabled: !!carteira,
     staleTime: 60 * 1000,
     gcTime: 5 * 60 * 1000,
   });

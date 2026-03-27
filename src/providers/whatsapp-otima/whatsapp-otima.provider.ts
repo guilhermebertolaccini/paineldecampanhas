@@ -16,7 +16,8 @@ interface HsmMessage {
     type?: string;
     message?: string;
   };
-  phone: string;
+  /** Contrato API Ótima bulk HSM: campo obrigatório `whatsapp` (não `phone`). */
+  whatsapp: string;
   url_callback_mo?: string;
   url_callback_status?: string;
   variables?: Record<string, any>;
@@ -86,7 +87,7 @@ export class WhatsappOtimaProvider extends BaseProvider {
 
     // Formata mensagens para o formato da API Ótima
     const messages: HsmMessage[] = data.map((item) => {
-      const phone = this.normalizePhoneForOtimaHsm(item.telefone);
+      const whatsapp = this.normalizePhoneForOtimaHsm(item.telefone);
 
       // Variáveis no formato da documentação Ótima: chaves alinhadas ao template (ex.: {{1}} → parâmetro nomeado como "nome")
       const resolvedVariables: Record<string, string> = {};
@@ -102,10 +103,10 @@ export class WhatsappOtimaProvider extends BaseProvider {
         resolvedVariables['nome'] = item.nome ?? '';
       }
 
-      this.logger.debug(`📋 [WhatsApp Ótima] Variables for ${phone}: ${JSON.stringify(resolvedVariables)}`);
+      this.logger.debug(`📋 [WhatsApp Ótima] Variables for ${whatsapp}: ${JSON.stringify(resolvedVariables)}`);
 
       const message: HsmMessage = {
-        phone: phone,
+        whatsapp,
         document: item.cpf_cnpj?.replace(/\D/g, ''), // Remove caracteres não numéricos
         extra_fields: {
           nome: item.nome,
@@ -190,10 +191,13 @@ export class WhatsappOtimaProvider extends BaseProvider {
    * Ótima HSM (doc interna): telefone em formato nacional, sem prefixo 55 duplicado.
    */
   private normalizePhoneForOtimaHsm(telefone: string): string {
-    if (!telefone) {
-      return telefone;
+    if (telefone == null || telefone === '') {
+      return '';
     }
-    let n = telefone.trim().replace(/[\s()\-]/g, '');
+    let n = String(telefone)
+      .trim()
+      .replace(/^\+/, '')
+      .replace(/[\s()\-]/g, '');
     if (n.startsWith('55') && n.length > 11) {
       n = n.slice(2);
     }

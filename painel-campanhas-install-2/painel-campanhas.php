@@ -10765,21 +10765,23 @@ class Painel_Campanhas
         global $wpdb;
         $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
 
-        // carteira_id = PK interna (pc_carteiras_v2.id) — só para exibir nome; NÃO substitui o código na URL da Ótima
-        $carteira_internal = intval($_POST['carteira_id'] ?? $_GET['carteira_id'] ?? 0);
-        // wallet_id = id_carteira na Ótima (ex.: "33256") — quando informado, SEMPRE é o segmento da URL HSM/RCS
-        $wallet_id = trim(sanitize_text_field($_POST['wallet_id'] ?? $_GET['wallet_id'] ?? ''));
-        $single_carteira_mode = ($carteira_internal > 0) || ($wallet_id !== '');
+        // PK interna (pc_carteiras_v2.id): apenas metadados / resolução no banco — NUNCA vai na URL da Ótima.
+        $carteira_db_pk = intval($_POST['carteira_id'] ?? $_GET['carteira_id'] ?? 0);
+        // wallet_id (POST): ID da carteira no provedor Ótima — ÚNICO segmento válido em .../hsm/{wallet} e .../rcs/template/{wallet}
+        $wallet_from_request = trim(sanitize_text_field($_POST['wallet_id'] ?? $_GET['wallet_id'] ?? ''));
+        $single_carteira_mode = ($carteira_db_pk > 0) || ($wallet_from_request !== '');
+
+        error_log('[DEBUG ÓTIMA] AJAX pc_get_otima_templates | POST wallet_id=' . ($_POST['wallet_id'] ?? '∅') . ' carteira_id(PK)=' . ($_POST['carteira_id'] ?? '∅') . ' → wallet_request=' . $wallet_from_request . ' pk=' . $carteira_db_pk . ' | URL Ótima usa somente wallet do provedor');
 
         $carteiras = [];
 
-        if ($wallet_id !== '') {
-            // Regra de negócio: a lista deve espelhar GET .../hsm/{wallet_id}. O banco pode ter id_carteira desatualizado na linha id=27.
+        if ($wallet_from_request !== '') {
+            // Fonte de verdade para a API Ótima: sempre o wallet enviado pelo cliente (nunca a PK).
             $nome = '';
-            if ($carteira_internal > 0) {
+            if ($carteira_db_pk > 0) {
                 $row_meta = $wpdb->get_row($wpdb->prepare(
                     "SELECT nome FROM $table_carteiras WHERE id = %d AND ativo = 1 LIMIT 1",
-                    $carteira_internal
+                    $carteira_db_pk
                 ), ARRAY_A);
                 if ($row_meta) {
                     $nome = $row_meta['nome'] ?? '';
@@ -10788,19 +10790,25 @@ class Painel_Campanhas
             if ($nome === '') {
                 $row_w = $wpdb->get_row($wpdb->prepare(
                     "SELECT nome FROM $table_carteiras WHERE id_carteira = %s AND ativo = 1 LIMIT 1",
-                    $wallet_id
+                    $wallet_from_request
                 ), ARRAY_A);
                 if ($row_w) {
                     $nome = $row_w['nome'] ?? '';
                 }
             }
-            $carteiras = [['id_carteira' => $wallet_id, 'nome' => $nome]];
-        } elseif ($carteira_internal > 0) {
+            $carteiras = [['id_carteira' => $wallet_from_request, 'nome' => $nome]];
+        } elseif ($carteira_db_pk > 0) {
+            // Sem wallet no POST: resolve só pela coluna id_carteira (integração); a PK não substitui o ID do provedor.
             $carteira = $wpdb->get_row($wpdb->prepare(
                 "SELECT id_carteira, nome FROM $table_carteiras WHERE id = %d AND ativo = 1 LIMIT 1",
-                $carteira_internal
+                $carteira_db_pk
             ), ARRAY_A);
-            $carteiras = $carteira ? [$carteira] : [];
+            $wallet_resolved = $carteira ? trim((string) ($carteira['id_carteira'] ?? '')) : '';
+            if ($wallet_resolved === '') {
+                wp_send_json_error('Esta carteira não possui ID de integração (wallet) Ótima configurado em id_carteira. Corrija o cadastro da carteira; a PK interna não pode ser usada na API da Ótima.');
+                return;
+            }
+            $carteiras = [['id_carteira' => $wallet_resolved, 'nome' => $carteira['nome'] ?? '']];
         } else {
             // Fallback: todas as carteiras (ex.: página Mensagens sem filtro)
             $carteiras = $wpdb->get_results("SELECT id_carteira, nome FROM $table_carteiras WHERE ativo = 1", ARRAY_A);
@@ -10888,58 +10896,118 @@ class Painel_Campanhas
             return ['ok' => true, 'http' => 200, 'data' => $normalized, 'url' => $url];
         };
 
-        // WhatsApp HSM: mesma convenção do disparo em massa (header authorization em lowercase, token cru) — doc interna + Postman Ótima
+        /**
+         * Extrai a lista HSM do JSON da Ótima.
+         * A API documentada / curl devolve um array JSON na raiz: [ { "template_code": "...", ... }, ... ].
+         * Quando o payload vem encapsulado, `data` como array sequencial tem prioridade sobre `templates`
+         * (evita escolher um array legado maior só porque tinha mais linhas com template_code).
+         */
         $normalize_otima_wpp_hsm_body = function ($data) {
             if (!is_array($data)) {
                 return [];
             }
-            // Resposta direta da Ótima: [ { "template_code": "...", "variable_sample": {...} }, ... ]
-            if ($data !== [] && array_keys($data) === range(0, count($data) - 1)) {
-                return $data;
-            }
-            $paths = [];
-            if (isset($data['data']['templates']) && is_array($data['data']['templates'])) {
-                $paths[] = $data['data']['templates'];
-            }
-            if (isset($data['data']['hsm']) && is_array($data['data']['hsm'])) {
-                $paths[] = $data['data']['hsm'];
-            }
-            if (isset($data['data']) && is_array($data['data']) && $data['data'] !== [] && array_keys($data['data']) === range(0, count($data['data']) - 1)) {
-                $paths[] = $data['data'];
-            }
-            if (isset($data['templates']) && is_array($data['templates'])) {
-                $paths[] = $data['templates'];
-            }
-            if (isset($data['hsm']) && is_array($data['hsm'])) {
-                $paths[] = $data['hsm'];
-            }
-            if (isset($data['result']) && is_array($data['result'])) {
-                $paths[] = $data['result'];
-            }
-            if (isset($data['items']) && is_array($data['items'])) {
-                $paths[] = $data['items'];
-            }
-            if (isset($data['content']) && is_array($data['content'])) {
-                $paths[] = $data['content'];
-            }
-            if ($data !== [] && array_keys($data) === range(0, count($data) - 1)) {
-                $paths[] = $data;
-            }
-            foreach ($paths as $p) {
-                if (is_array($p) && !empty($p)) {
-                    return $p;
+            $is_seq = function ($a) {
+                return is_array($a) && $a !== [] && array_keys($a) === range(0, count($a) - 1);
+            };
+            $looks_hsm_row = function ($row) {
+                return is_array($row) && (isset($row['template_code']) || isset($row['templateCode']));
+            };
+            $log_pick = function ($branch, $list) {
+                $n = is_array($list) ? count($list) : 0;
+                error_log('[Ótima HSM proxy] Lista HSM (prioridade fixa): branch=' . $branch . ' | itens=' . $n);
+            };
+
+            // 1) Raiz = array sequencial — igual ao retorno do curl direto
+            if ($is_seq($data)) {
+                if (isset($data[0]) && $looks_hsm_row($data[0])) {
+                    $log_pick('root[]', $data);
+
+                    return $data;
                 }
+                // Raiz é lista de objetos (sem checar template_code no [0], ex.: formato novo)
+                if (isset($data[0]) && is_array($data[0])) {
+                    $log_pick('root[](objetos)', $data);
+
+                    return $data;
+                }
+            }
+
+            // 2) data[] sequencial (wrapper comum)
+            if (isset($data['data']) && is_array($data['data']) && $is_seq($data['data']) && !empty($data['data'])) {
+                $inner = $data['data'];
+                if ($looks_hsm_row($inner[0])) {
+                    $log_pick('data[]', $inner);
+
+                    return $inner;
+                }
+                if (is_array($inner[0])) {
+                    $log_pick('data[](objetos)', $inner);
+
+                    return $inner;
+                }
+            }
+
+            // 3–4) hsm explícito
+            $hsm_paths = [
+                ['label' => 'data.hsm', 'node' => isset($data['data']['hsm']) ? $data['data']['hsm'] : null],
+                ['label' => 'hsm', 'node' => isset($data['hsm']) ? $data['hsm'] : null],
+            ];
+            foreach ($hsm_paths as $hp) {
+                $h = $hp['node'];
+                if (is_array($h) && $is_seq($h) && !empty($h) && $looks_hsm_row($h[0])) {
+                    $log_pick($hp['label'], $h);
+
+                    return $h;
+                }
+            }
+
+            // 5) result / items / content
+            foreach (['result', 'items', 'content'] as $k) {
+                if (!isset($data[$k]) || !is_array($data[$k]) || !$is_seq($data[$k]) || empty($data[$k])) {
+                    continue;
+                }
+                $inner = $data[$k];
+                if ($looks_hsm_row($inner[0])) {
+                    $log_pick($k, $inner);
+
+                    return $inner;
+                }
+            }
+
+            // 6) Fallbacks legados (por último — costumam ser outro produto / lista antiga)
+            if (isset($data['data']['templates']) && is_array($data['data']['templates']) && $is_seq($data['data']['templates']) && !empty($data['data']['templates'])) {
+                $inner = $data['data']['templates'];
+                if ($looks_hsm_row($inner[0])) {
+                    error_log('[Ótima HSM proxy] AVISO: fallback data.templates (última prioridade) | n=' . count($inner));
+
+                    return $inner;
+                }
+            }
+            if (isset($data['templates']) && is_array($data['templates']) && $is_seq($data['templates']) && !empty($data['templates'])) {
+                $inner = $data['templates'];
+                if ($looks_hsm_row($inner[0])) {
+                    error_log('[Ótima HSM proxy] AVISO: fallback templates raiz (última prioridade) | n=' . count($inner));
+
+                    return $inner;
+                }
+            }
+
+            if ($is_seq($data)) {
+                return $data;
             }
 
             return [];
         };
 
+        /** Proxy ao vivo: sem cache em banco; só GET na API Ótima. */
         $fetch_otima_wpp_hsm = function ($url, $token) use ($normalize_otima_wpp_hsm_body) {
             $token_clean = preg_replace('/[\r\n\t]/', '', trim($token));
             if ($token_clean === '') {
-                error_log('🟡 [Otima WPP HSM] Token vazio | ' . $url);
+                error_log('[Ótima HSM proxy] Token WPP vazio — request não enviado | ' . $url);
                 return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => 'token_empty'];
             }
+
+            error_log('[Ótima HSM proxy] GET ao vivo (sem DB) | ' . $url);
 
             $header_sets = [
                 ['authorization' => $token_clean, 'Accept' => 'application/json', 'Content-Type' => 'application/json'],
@@ -10956,36 +11024,46 @@ class Painel_Campanhas
                     'sslverify' => false,
                 ]);
                 if (is_wp_error($response)) {
-                    error_log('🔴 [Otima WPP HSM] WP_Error ' . $response->get_error_message() . ' | ' . $url);
+                    error_log('[Ótima HSM proxy] WP_Error: ' . $response->get_error_message() . ' | ' . $url);
                     continue;
                 }
-                $last_http = wp_remote_retrieve_response_code($response);
+                $last_http = (int) wp_remote_retrieve_response_code($response);
                 $last_body = wp_remote_retrieve_body($response);
+
+                error_log('[Ótima HSM proxy] Código HTTP retornado pela API Ótima: ' . $last_http . ' | ' . $url);
+
                 if ($last_http === 200) {
+                    $last_body = trim($last_body);
                     $decoded = json_decode($last_body, true);
+                    if (!is_array($decoded)) {
+                        error_log('[Ótima HSM proxy] JSON inválido ou não-array após decode | len_body=' . strlen($last_body));
+                        return ['ok' => false, 'http' => 200, 'data' => null, 'url' => $url, 'body_snippet' => substr($last_body, 0, 400)];
+                    }
+
                     $normalized = $normalize_otima_wpp_hsm_body($decoded);
                     $keys_hint = '';
                     if (isset($normalized[0]) && is_array($normalized[0])) {
                         $keys_hint = implode(',', array_slice(array_keys($normalized[0]), 0, 12));
                     }
-                    error_log('🟢 [Otima WPP HSM] HTTP 200 | ' . $url . ' | itens=' . count($normalized) . ($keys_hint !== '' ? ' | keys_0=' . $keys_hint : ''));
+                    error_log('[Ótima HSM proxy] HTTP 200 — lista normalizada: itens=' . count($normalized) . ($keys_hint !== '' ? ' | keys_0=' . $keys_hint : ''));
 
                     return ['ok' => true, 'http' => 200, 'data' => $normalized, 'url' => $url];
                 }
             }
 
-            error_log('🔴 [Otima WPP HSM] Falhou | ' . $url . ' | http=' . $last_http . ' | snippet=' . substr($last_body, 0, 600));
+            error_log('[Ótima HSM proxy] Falha após tentativas de Authorization | último HTTP=' . $last_http . ' | ' . $url . ' | snippet=' . substr($last_body, 0, 600));
 
             return ['ok' => false, 'http' => $last_http, 'data' => null, 'url' => $url, 'body_snippet' => substr($last_body, 0, 400)];
         };
 
         foreach ($carteiras as $carteira) {
-            $customer_code = $carteira['id_carteira'];
+            // id_carteira neste array = wallet Ótima (provedor), nunca PK do WordPress
+            $wallet_otima = (string) ($carteira['id_carteira'] ?? '');
             $carteira_nome = $carteira['nome'];
 
             // --- RCS Templates ---
             if (!empty($token_rcs)) {
-                $url_rcs = "https://services.otima.digital/v1/rcs/template/{$customer_code}";
+                $url_rcs = 'https://services.otima.digital/v1/rcs/template/' . rawurlencode($wallet_otima);
                 $rcs_res = $fetch_otima($url_rcs, $token_rcs);
                 $rcs_data = ($rcs_res['ok'] && is_array($rcs_res['data'])) ? $rcs_res['data'] : [];
 
@@ -11022,10 +11100,10 @@ class Painel_Campanhas
                             'date' => date('Y-m-d H:i:s'),
                             'source' => 'otima_rcs',
                             'template_code' => $tpl['code'] ?? $tpl['template_id'] ?? '', // No RCS usamos o 'code' (apelido) para envio via Bulk API
-                            'wallet_id' => $customer_code,
+                            'wallet_id' => $wallet_otima,
                             'wallet_name' => $carteira_nome,
                             'broker_code' => $tpl['broker_code'] ?? $tpl['brokerCode'] ?? '',
-                            'customer_code' => $customer_code,
+                            'customer_code' => $wallet_otima,
                             'image_url' => $image_url,
                             'raw_data' => $tpl
                         ];
@@ -11033,10 +11111,10 @@ class Painel_Campanhas
                 }
             }
 
-            // --- WhatsApp HSM: GET https://services.otima.digital/v1/whatsapp/template/hsm/{id_carteira} (id_carteira = wallet na Ótima) ---
+            // --- WhatsApp HSM: GET .../hsm/{wallet_otima} (somente ID do provedor, nunca PK local) ---
             if (!empty($token_wpp)) {
-                $url_wpp = 'https://services.otima.digital/v1/whatsapp/template/hsm/' . rawurlencode((string) $customer_code);
-                error_log('🔵 [Otima Templates] HSM id_carteira=' . $customer_code . ' url=' . $url_wpp);
+                $url_wpp = 'https://services.otima.digital/v1/whatsapp/template/hsm/' . rawurlencode($wallet_otima);
+                error_log('🔵 [Otima Templates] HSM wallet_otima=' . $wallet_otima . ' url=' . $url_wpp);
                 $wpp_res = $fetch_otima_wpp_hsm($url_wpp, $token_wpp);
 
                 if ($single_carteira_mode && !$wpp_res['ok']) {
@@ -11051,16 +11129,22 @@ class Painel_Campanhas
                     if (!is_array($tpl)) {
                         continue;
                     }
-                    // Preserva o JSON da Ótima; apenas acrescenta metadados do painel (sem sobrescrever chaves da API).
+                    // Proxy: payload espelha a API Ótima; só acrescentamos o mínimo para o React filtrar por provedor.
                     $templates[] = array_merge($tpl, [
                         'source' => 'otima_wpp',
-                        'wallet_id' => $customer_code,
-                        'wallet_name' => $carteira_nome,
-                        'customer_code' => $customer_code,
+                        'wallet_id' => $wallet_otima,
                     ]);
                 }
             }
         }
+
+        $wpp_codes_debug = [];
+        foreach ($templates as $titem) {
+            if (is_array($titem) && ($titem['source'] ?? '') === 'otima_wpp') {
+                $wpp_codes_debug[] = $titem['template_code'] ?? $titem['templateCode'] ?? '(sem template_code)';
+            }
+        }
+        error_log('[Ótima HSM proxy] wp_send_json_success | total_itens=' . count($templates) . ' | template_code WPP (amostra 50): ' . implode(', ', array_slice($wpp_codes_debug, 0, 50)));
 
         wp_send_json_success($templates);
     }
