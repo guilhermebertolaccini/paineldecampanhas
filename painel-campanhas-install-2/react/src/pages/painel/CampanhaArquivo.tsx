@@ -941,6 +941,17 @@ export default function CampanhaArquivo() {
               const selectedTpl = templates.find((t) => t.id === template);
               const isOtima = selectedTpl?.source === 'otima_rcs' || selectedTpl?.source === 'otima_wpp';
               if (isOtima) {
+                const list = Array.isArray(otimaBrokersData) ? otimaBrokersData : [];
+                const channel = selectedTpl?.source === 'otima_wpp' ? 'wpp' : 'rcs';
+                const brokersFiltered = list.filter(
+                  (b: any) =>
+                    String(b.code ?? '').startsWith('error_') ||
+                    b.channel === channel ||
+                    (!b.channel &&
+                      (channel === 'wpp'
+                        ? /wpp|whatsapp/i.test(String(b.name ?? ''))
+                        : /rcs/i.test(String(b.name ?? '')))),
+                );
                 return (
                   <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
                     <Label>Broker Ótima <span className="text-red-500">*</span></Label>
@@ -953,20 +964,22 @@ export default function CampanhaArquivo() {
                         <SelectValue placeholder={otimaBrokersLoading ? "Carregando brokers..." : "Selecione o broker para envio"} />
                       </SelectTrigger>
                       <SelectContent>
-                        {Array.isArray(otimaBrokersData) && otimaBrokersData.length === 0 && !otimaBrokersLoading && (
+                        {brokersFiltered.length === 0 && !otimaBrokersLoading && (
                           <div className="py-2 px-3 text-xs text-muted-foreground italic">
-                            Nenhum broker encontrado. Verifique as credenciais.
+                            Nenhum broker encontrado para este canal. Verifique o token WPP/RCS no API Manager.
                           </div>
                         )}
-                        {Array.isArray(otimaBrokersData) && otimaBrokersData.map((b: any, idx: number) => {
-                          const isRcs = String(b.name).toLowerCase().includes('rcs');
-                          const isWpp = String(b.name).toLowerCase().includes('wpp') || String(b.name).toLowerCase().includes('whatsapp');
+                        {brokersFiltered.map((b: any, idx: number) => {
+                          const v = String(b.value ?? b.code ?? '');
+                          const isRcs = b.channel === 'rcs' || String(b.name ?? '').toLowerCase().includes('rcs');
+                          const isWpp = b.channel === 'wpp' || /wpp|whatsapp/i.test(String(b.name ?? ''));
+                          const display = b.label ?? b.name ?? v;
                           return (
-                            <SelectItem key={`broker-${b.code || idx}`} value={b.code}>
+                            <SelectItem key={`broker-${v || idx}`} value={v}>
                               <div className="flex items-center gap-1.5">
                                 {isRcs && <Badge className="text-[10px] py-0 px-1 bg-blue-500 text-white shrink-0">RCS</Badge>}
                                 {isWpp && <Badge variant="outline" className="text-[10px] py-0 px-1 shrink-0">WPP</Badge>}
-                                <span>{b.name} ({b.code})</span>
+                                <span>{display}{v ? ` (${v})` : ''}</span>
                               </div>
                             </SelectItem>
                           );
@@ -974,7 +987,7 @@ export default function CampanhaArquivo() {
                       </SelectContent>
                     </Select>
                     <p className="text-xs text-muted-foreground">
-                      Selecione qual canal/broker da Ótima será usado para o envio desta campanha.
+                      Remetente WPP: use o número retornado pela Ótima (campo code), não o nome da credencial.
                     </p>
                   </div>
                 );

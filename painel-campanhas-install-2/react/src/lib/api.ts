@@ -206,7 +206,7 @@ export const scheduleCampaign = (data: Record<string, any>) => {
   if (data.template_source) {
     payload.template_source = data.template_source;
   }
-  // broker_code vem do select em Nova Campanha (getOtimaBrokers) - sempre envia quando Ótima
+  // broker_code: WPP = telefone remetente (campo `code` de GET /whatsapp/credential); RCS = code RCS — nunca o nome da credencial
   if (data.template_source === 'otima_rcs' || data.template_source === 'otima_wpp') {
     payload.broker_code = data.broker_code ?? '';
   } else if (data.broker_code) {

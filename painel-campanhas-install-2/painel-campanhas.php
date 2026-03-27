@@ -11174,64 +11174,126 @@ class Painel_Campanhas
         $seen = [];
         $debug_log = [];
 
-        $fetch_brokers = function ($url, $token) use (&$debug_log) {
+        /**
+         * GET credenciais Ótima (lista de remetentes). Mesma tolerância de Authorization do bulk HSM.
+         * @return array|null Lista de itens da API ou null em falha
+         */
+        $fetch_otima_credential_list = function ($url, $token, $channel_label) use (&$debug_log) {
             if (empty($token)) {
-                $debug_log[] = "Token está vazio.";
+                $debug_log[] = "{$channel_label}: token vazio.";
+
                 return null;
             }
+            $token_clean = preg_replace('/[\r\n\t]/', '', trim($token));
+            $header_sets = [
+                ['authorization' => $token_clean, 'Accept' => 'application/json', 'Content-Type' => 'application/json'],
+                ['Authorization' => $token_clean, 'Accept' => 'application/json'],
+                ['Authorization' => 'Bearer ' . $token_clean, 'Accept' => 'application/json', 'Content-Type' => 'application/json'],
+            ];
+            $last_status = 0;
+            $last_body = '';
+            foreach ($header_sets as $headers) {
+                $response = wp_remote_get($url, [
+                    'headers' => $headers,
+                    'timeout' => 20,
+                    'sslverify' => false,
+                ]);
+                if (is_wp_error($response)) {
+                    $debug_log[] = "{$channel_label} WP_Error: " . $response->get_error_message();
 
-            $response = wp_remote_get($url, [
-                'headers' => [
-                    'Authorization' => $token,
-                    'Accept' => 'application/json',
-                ],
-                'timeout' => 15,
-                'sslverify' => false,
-                'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            ]);
+                    continue;
+                }
+                $last_status = (int) wp_remote_retrieve_response_code($response);
+                $last_body = wp_remote_retrieve_body($response);
+                error_log('[Ótima credential proxy] ' . $channel_label . ' HTTP ' . $last_status . ' | ' . $url);
+                if ($last_status !== 200) {
+                    continue;
+                }
+                $data = json_decode(trim($last_body), true);
+                if (!is_array($data)) {
+                    $debug_log[] = "{$channel_label}: JSON inválido.";
 
-            if (is_wp_error($response)) {
-                $debug_log[] = "WP Error: " . $response->get_error_message();
-                return null;
+                    return null;
+                }
+                if (isset($data['data']) && is_array($data['data'])) {
+                    return $data['data'];
+                }
+                if ($data !== [] && array_keys($data) === range(0, count($data) - 1)) {
+                    return $data;
+                }
+
+                return [];
             }
+            $debug_log[] = "{$channel_label}: HTTP {$last_status} " . substr($last_body, 0, 120);
 
-            $status_code = wp_remote_retrieve_response_code($response);
-            $body = wp_remote_retrieve_body($response);
-
-            if ($status_code !== 200) {
-                $debug_log[] = "HTTP $status_code: " . substr($body, 0, 150);
-                return null;
-            }
-
-            $data = json_decode($body, true);
-
-            if (isset($data['data']) && is_array($data['data']))
-                return $data['data'];
-            if (is_array($data))
-                return $data;
-
-            $debug_log[] = "JSON Invalido: " . substr($body, 0, 100);
-            return [];
+            return null;
         };
 
-        // Otima RCS Credential Endpoint
-        if (empty($token_rcs)) {
-            $debug_log[] = "Token RCS não configurado no painel.";
+        // WhatsApp: GET /v1/whatsapp/credential — broker_code no bulk HSM = campo `code` (telefone remetente), NUNCA `credential` (nome).
+        if (empty($token_wpp)) {
+            $debug_log[] = 'Token WPP não configurado no painel.';
         } else {
-            $url_rcs = "https://services.otima.digital/v1/rcs/credential";
-            $rcs_creds = $fetch_brokers($url_rcs, $token_rcs);
-            if ($rcs_creds && is_array($rcs_creds)) {
-                foreach ($rcs_creds as $cred) {
-                    $code = $cred['code'] ?? '';
-                    if (!empty($code) && !isset($seen[$code])) {
-                        $seen[$code] = true;
-                        $nome = $cred['name'] ?? $code;
-                        $brokers[] = [
-                            'code' => $code,
-                            'name' => "RCS - " . $nome,
-                            'raw' => $cred
-                        ];
+            $url_wpp = 'https://services.otima.digital/v1/whatsapp/credential';
+            $wpp_creds = $fetch_otima_credential_list($url_wpp, $token_wpp, 'WPP');
+            if (is_array($wpp_creds)) {
+                foreach ($wpp_creds as $cred) {
+                    if (!is_array($cred)) {
+                        continue;
                     }
+                    $code = isset($cred['code']) ? trim((string) $cred['code']) : '';
+                    if ($code === '') {
+                        continue;
+                    }
+                    $dedupe = 'wpp:' . $code;
+                    if (isset($seen[$dedupe])) {
+                        continue;
+                    }
+                    $seen[$dedupe] = true;
+                    $credential = isset($cred['credential']) ? trim((string) $cred['credential']) : '';
+                    if ($credential === '') {
+                        $credential = isset($cred['name']) ? trim((string) $cred['name']) : $code;
+                    }
+                    $brokers[] = [
+                        'channel' => 'wpp',
+                        'code' => $code,
+                        'value' => $code,
+                        'label' => $credential,
+                        'name' => 'WPP — ' . $credential,
+                        'raw' => $cred,
+                    ];
+                }
+            }
+        }
+
+        // RCS: GET /v1/rcs/credential
+        if (empty($token_rcs)) {
+            $debug_log[] = 'Token RCS não configurado no painel.';
+        } else {
+            $url_rcs = 'https://services.otima.digital/v1/rcs/credential';
+            $rcs_creds = $fetch_otima_credential_list($url_rcs, $token_rcs, 'RCS');
+            if (is_array($rcs_creds)) {
+                foreach ($rcs_creds as $cred) {
+                    if (!is_array($cred)) {
+                        continue;
+                    }
+                    $code = isset($cred['code']) ? trim((string) $cred['code']) : '';
+                    if ($code === '') {
+                        continue;
+                    }
+                    $dedupe = 'rcs:' . $code;
+                    if (isset($seen[$dedupe])) {
+                        continue;
+                    }
+                    $seen[$dedupe] = true;
+                    $nome = isset($cred['name']) ? trim((string) $cred['name']) : (isset($cred['credential']) ? trim((string) $cred['credential']) : $code);
+                    $brokers[] = [
+                        'channel' => 'rcs',
+                        'code' => $code,
+                        'value' => $code,
+                        'label' => $nome,
+                        'name' => 'RCS — ' . $nome,
+                        'raw' => $cred,
+                    ];
                 }
             }
         }

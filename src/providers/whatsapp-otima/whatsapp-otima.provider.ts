@@ -50,8 +50,9 @@ export class WhatsappOtimaProvider extends BaseProvider {
     }
 
     const token = credentials.token || credentials.authorization;
-    let broker_code = credentials.broker_code || '';
-    let customer_code = credentials.customer_code || '';
+    /** Na API Ótima bulk HSM, broker_code = telefone do remetente (campo `code` de GET /v1/whatsapp/credential), não nome da credencial. */
+    let broker_code = this.normalizeOtimaWppBrokerCode(credentials.broker_code || '');
+    let customer_code = String(credentials.customer_code || '').trim();
     const template_code = credentials.template_code || 'default'; // Pode ser configurado depois
 
     // LOGICA DE EXTRAÇÃO DE TEMPLATE CORRIGIDA
@@ -68,11 +69,11 @@ export class WhatsappOtimaProvider extends BaseProvider {
             this.logger.log(`📝 [WhatsApp Ótima] Usando template selecionado na campanha: ${final_template_code}`);
           }
           if (parsed.broker_code) {
-            broker_code = parsed.broker_code;
-            this.logger.log(`🏢 [WhatsApp Ótima] broker_code extraído da campanha: ${broker_code}`);
+            broker_code = this.normalizeOtimaWppBrokerCode(parsed.broker_code);
+            this.logger.log(`🏢 [WhatsApp Ótima] broker_code (remetente / code credential) da campanha: ${broker_code}`);
           }
           if (parsed.customer_code) {
-            customer_code = parsed.customer_code;
+            customer_code = String(parsed.customer_code).trim();
             this.logger.log(`👤 [WhatsApp Ótima] customer_code extraído da campanha: ${customer_code}`);
           }
           if (parsed.variables_map && typeof parsed.variables_map === 'object') {
@@ -83,6 +84,12 @@ export class WhatsappOtimaProvider extends BaseProvider {
       } catch (e) {
         this.logger.warn(`⚠️ [WhatsApp Ótima] Falha ao parsear mensagem JSON para extrair template: ${e.message}`);
       }
+    }
+
+    if (!broker_code || broker_code.length < 10) {
+      throw new Error(
+        'broker_code WhatsApp Ótima inválido ou ausente: deve ser o número do remetente retornado em GET /v1/whatsapp/credential (campo `code`). Selecione o remetente na campanha; não use o nome da credencial nem o broker de RCS.',
+      );
     }
 
     // Formata mensagens para o formato da API Ótima
@@ -190,6 +197,17 @@ export class WhatsappOtimaProvider extends BaseProvider {
   /**
    * Ótima HSM (doc interna): telefone em formato nacional, sem prefixo 55 duplicado.
    */
+  /**
+   * broker_code no bulk HSM: apenas dígitos do telefone remetente (ex. 5511962188096).
+   * Se vier texto tipo nome da credencial, remove letras e fica vazio → validação acima falha.
+   */
+  private normalizeOtimaWppBrokerCode(raw: string): string {
+    if (raw == null || raw === '') {
+      return '';
+    }
+    return String(raw).replace(/\D/g, '');
+  }
+
   private normalizePhoneForOtimaHsm(telefone: string): string {
     if (telefone == null || telefone === '') {
       return '';
