@@ -362,9 +362,40 @@ export class CampaignsService {
         // Já recebem no formato correto (ROBBU: company, username, password, invenio_private_token)
         return credentials;
 
-      case 'SALESFORCE':
-        // Credenciais estáticas já vêm no formato correto
-        return credentials;
+      case 'SALESFORCE': {
+        // WordPress REST pode devolver objeto; em edge cases pode vir string JSON.
+        // API Manager grava operacao + automation_id por idgis em acm_provider_credentials.
+        let c: Record<string, any> =
+          typeof credentials === 'string'
+            ? (() => {
+                try {
+                  return JSON.parse(credentials) as Record<string, any>;
+                } catch {
+                  return {};
+                }
+              })()
+            : { ...credentials };
+        if (!c || typeof c !== 'object') {
+          return credentials;
+        }
+        const operacaoRaw =
+          c.operacao ?? c.Operacao ?? c.operation ?? '';
+        const automationRaw =
+          c.automation_id ?? c.automationId ?? c.sf_automation_id ?? '';
+        const operacao =
+          operacaoRaw !== '' && operacaoRaw != null
+            ? String(operacaoRaw).trim()
+            : '';
+        const automation_id =
+          automationRaw !== '' && automationRaw != null
+            ? String(automationRaw).trim()
+            : '';
+        return {
+          ...c,
+          ...(operacao ? { operacao } : {}),
+          ...(automation_id ? { automation_id } : {}),
+        };
+      }
 
       default:
         // Para outros providers, retorna como está

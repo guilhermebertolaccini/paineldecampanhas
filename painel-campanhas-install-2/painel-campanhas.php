@@ -17,6 +17,8 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+require_once __DIR__ . '/includes/class-pc-evolution-wa-validator.php';
+
 class Painel_Campanhas
 {
     private static $instance = null;
@@ -66,6 +68,64 @@ class Painel_Campanhas
         });
 
         $this->init_hooks();
+    }
+
+    /**
+     * Bloqueia usuários com role subscriber em rotas do API Manager e fluxo de aprovação (403).
+     */
+    private function pc_forbid_subscriber_ajax()
+    {
+        $user = wp_get_current_user();
+        if (!$user || !$user->ID) {
+            wp_send_json_error(['message' => 'Sessão inválida', 'code' => 'forbidden'], 401);
+        }
+        if (in_array('subscriber', (array) $user->roles, true)) {
+            wp_send_json_error(['message' => 'Acesso negado.', 'code' => 'forbidden'], 403);
+        }
+    }
+
+    /**
+     * Garante colunas para motivo de cancelamento/negativa e auditoria (quem cancelou).
+     */
+    private function maybe_add_envios_cancel_columns()
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'envios_pendentes';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)) !== $table) {
+            return;
+        }
+        $has_motivo = $wpdb->get_results("SHOW COLUMNS FROM `{$table}` LIKE 'motivo_cancelamento'");
+        if (empty($has_motivo)) {
+            $wpdb->query("ALTER TABLE `{$table}` ADD COLUMN motivo_cancelamento text NULL");
+        }
+        $has_cancel = $wpdb->get_results("SHOW COLUMNS FROM `{$table}` LIKE 'cancelado_por'");
+        if (empty($has_cancel)) {
+            $wpdb->query("ALTER TABLE `{$table}` ADD COLUMN cancelado_por bigint(20) UNSIGNED NULL DEFAULT NULL");
+        }
+    }
+
+    /**
+     * Normaliza status do MySQL para chaves usadas no React (filtros e badges).
+     */
+    private function map_campanha_status_ui($raw_status)
+    {
+        $s = strtolower(trim(str_replace('-', '_', (string) $raw_status)));
+        $map = [
+            'pendente_aprovacao' => 'pending',
+            'pendente' => 'scheduled',
+            'agendado_mkc' => 'scheduled',
+            'processando' => 'scheduled',
+            'enviado' => 'sent',
+            'negado' => 'denied',
+            'cancelada' => 'cancelled',
+            'erro' => 'denied',
+            'erro_envio' => 'denied',
+            'erro_credenciais' => 'denied',
+            'erro_validacao' => 'denied',
+            'mkc_erro' => 'denied',
+        ];
+
+        return $map[$s] ?? str_replace('_', '-', $s);
     }
 
     private function init_hooks()
@@ -146,6 +206,11 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_get_otima_customers', [$this, 'handle_get_otima_customers']);
         add_action('wp_ajax_pc_save_microservice_config', [$this, 'handle_save_microservice_config']);
         add_action('wp_ajax_pc_save_static_credentials', [$this, 'handle_save_static_credentials']);
+        add_action('wp_ajax_pc_evolution_save_config', ['PC_Evolution_WA_Validator', 'ajax_save_config']);
+        add_action('wp_ajax_pc_evolution_get_config', ['PC_Evolution_WA_Validator', 'ajax_get_config']);
+        add_action('wp_ajax_pc_wa_validator_upload', ['PC_Evolution_WA_Validator', 'ajax_upload']);
+        add_action('wp_ajax_pc_wa_validator_step', ['PC_Evolution_WA_Validator', 'ajax_step']);
+        add_action('admin_post_pc_wa_validator_download', ['PC_Evolution_WA_Validator', 'handle_download']);
         add_action('wp_ajax_pc_create_credential', [$this, 'handle_create_credential']);
         add_action('wp_ajax_pc_get_credential', [$this, 'handle_get_credential']);
         add_action('wp_ajax_pc_list_credentials', [$this, 'handle_list_credentials']);
@@ -233,6 +298,7 @@ class Painel_Campanhas
         // AJAX para Dashboard
         add_action('wp_ajax_pc_get_dashboard_stats', [$this, 'handle_get_dashboard_stats']);
         add_action('wp_ajax_pc_get_campanhas', [$this, 'handle_get_campanhas']);
+        add_action('wp_ajax_pc_cancel_campanha', [$this, 'handle_cancel_campanha']);
         add_action('wp_ajax_pc_get_available_bases', [$this, 'handle_get_available_bases']);
 
         // AJAX para Blocklist
@@ -320,6 +386,25 @@ class Painel_Campanhas
                     'validate_callback' => function ($param, $request, $key) {
                         return is_string($param);
                     }
+                ],
+            ],
+        ]);
+
+        // Métricas do Validador WhatsApp (Evolution) — apenas administradores
+        register_rest_route('api/v1', '/validador/metricas', [
+            'methods' => 'GET',
+            'callback' => ['PC_Evolution_WA_Validator', 'rest_validador_metricas'],
+            'permission_callback' => function () {
+                return is_user_logged_in() && current_user_can('manage_options');
+            },
+            'args' => [
+                'data_inicio' => [
+                    'required' => true,
+                    'type' => 'string',
+                ],
+                'data_fim' => [
+                    'required' => true,
+                    'type' => 'string',
                 ],
             ],
         ]);
@@ -498,6 +583,7 @@ class Painel_Campanhas
             KEY idx_carteira (id_carteira)
         ) $charset_collate;";
         dbDelta($sql_envios);
+        $this->maybe_add_envios_cancel_columns();
 
         // Tabela de custos por provider
         $table_custos = $wpdb->prefix . 'pc_custos_providers';
@@ -758,6 +844,7 @@ class Painel_Campanhas
         add_rewrite_rule('^painel/controle-custo/cadastro/?$', 'index.php?pc_page=controle-custo-cadastro', 'top');
         add_rewrite_rule('^painel/controle-custo/relatorio/?$', 'index.php?pc_page=controle-custo-relatorio', 'top');
         add_rewrite_rule('^painel/campanha-arquivo/?$', 'index.php?pc_page=campanha-arquivo', 'top');
+        add_rewrite_rule('^painel/validador/?$', 'index.php?pc_page=validador', 'top');
     }
 
     public function add_query_vars($vars)
@@ -802,6 +889,7 @@ class Painel_Campanhas
                 'painel/controle-custo/cadastro' => 'controle-custo-cadastro',
                 'painel/controle-custo/relatorio' => 'controle-custo-relatorio',
                 'painel/campanha-arquivo' => 'campanha-arquivo',
+                'painel/validador' => 'validador',
             ];
 
             if (isset($route_map[$request_uri])) {
@@ -1042,6 +1130,7 @@ class Painel_Campanhas
 
     public function handle_save_master_api_key()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1057,6 +1146,7 @@ class Painel_Campanhas
 
     public function handle_get_master_api_key()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1073,6 +1163,7 @@ class Painel_Campanhas
 
     public function handle_save_microservice_config()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1092,6 +1183,7 @@ class Painel_Campanhas
 
     public function handle_save_static_credentials()
     {
+        $this->pc_forbid_subscriber_ajax();
         try {
             if (!current_user_can('manage_options')) {
                 wp_send_json_error('Acesso negado');
@@ -1288,6 +1380,7 @@ class Painel_Campanhas
 
     public function handle_get_static_credentials()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1347,6 +1440,7 @@ class Painel_Campanhas
 
     public function handle_get_otima_customers()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1480,6 +1574,7 @@ class Painel_Campanhas
 
     public function handle_create_credential()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1543,6 +1638,7 @@ class Painel_Campanhas
 
     public function handle_get_credential()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1570,6 +1666,7 @@ class Painel_Campanhas
 
     public function handle_list_credentials()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1601,6 +1698,7 @@ class Painel_Campanhas
 
     public function handle_update_credential()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1664,6 +1762,7 @@ class Painel_Campanhas
 
     public function handle_list_custom_providers()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1692,6 +1791,7 @@ class Painel_Campanhas
 
     public function handle_create_custom_provider()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1750,6 +1850,7 @@ class Painel_Campanhas
 
     public function handle_get_custom_provider()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1782,6 +1883,7 @@ class Painel_Campanhas
 
     public function handle_update_custom_provider()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1835,6 +1937,7 @@ class Painel_Campanhas
 
     public function handle_delete_custom_provider()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -1863,6 +1966,7 @@ class Painel_Campanhas
 
     public function handle_delete_credential()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -2385,7 +2489,9 @@ class Painel_Campanhas
                 $campaign_id_carteira = $this->resolve_id_carteira_from_carteira_id($carteira);
             }
 
-            $is_template_ok = ($template_source === 'local' && $template_id > 0)
+            $only_sf = $this->is_salesforce_only_providers($providers_config);
+            $is_template_ok = $only_sf
+                || ($template_source === 'local' && $template_id > 0)
                 || (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code))
                 || (($template_source === 'gosac_oficial' || $template_source === 'noah_oficial' || $template_source === 'robbu_oficial') && !empty($template_code));
 
@@ -2395,7 +2501,9 @@ class Painel_Campanhas
             }
 
             // Carrega template
-            if ($template_source === 'local') {
+            if ($only_sf) {
+                $message_content = 'Salesforce Marketing Cloud: conteúdo definido na automação.';
+            } elseif ($template_source === 'local') {
                 $template = get_post($template_id);
                 if (!$template || $template->post_type !== 'message_template') {
                     wp_send_json_error('Template inválido');
@@ -2433,6 +2541,10 @@ class Painel_Campanhas
             // 🎣 ISCAS - Adiciona iscas ativas se solicitado
             $include_baits = isset($_POST['include_baits']) ? intval($_POST['include_baits']) : 0;
             $baits_added = 0;
+            $bait_ids_filter_cpf = null;
+            if ($include_baits) {
+                $bait_ids_filter_cpf = $this->parse_bait_ids_filter_from_post();
+            }
 
             if ($include_baits) {
                 $table_iscas = $wpdb->prefix . 'cm_baits';
@@ -2440,6 +2552,7 @@ class Painel_Campanhas
                     "SELECT * FROM $table_iscas WHERE ativo = 1",
                     ARRAY_A
                 );
+                $iscas = $this->filter_baits_rows_by_ids($iscas ? $iscas : [], $bait_ids_filter_cpf);
 
                 if (!empty($iscas)) {
                     foreach ($iscas as $isca) {
@@ -2499,8 +2612,8 @@ class Painel_Campanhas
                         $telefone = substr($telefone, 2);
                     }
 
-                    // Para templates Ótima/GOSAC/NOAH, não substitui placeholders (será resolvido no microserviço)
-                    if (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'robbu_oficial'])) {
+                    // Para templates Ótima/GOSAC/NOAH/Salesforce, não substitui placeholders (será resolvido no microserviço / SFMC)
+                    if (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'robbu_oficial']) || $only_sf) {
                         $mensagem_final = $message_content;
                     } else {
                         $mensagem_final = $this->replace_placeholders($message_content, $record);
@@ -2569,6 +2682,11 @@ class Painel_Campanhas
                             'channel' => $robbu_channel,
                             'original_message' => $mensagem_final,
                             'variables_map' => $variables_map
+                        ]);
+                    } elseif ($only_sf) {
+                        $mensagem_para_armazenar = json_encode([
+                            'template_source' => 'salesforce',
+                            'note' => 'Conteúdo definido na automação Salesforce/MC.',
                         ]);
                     }
 
@@ -2790,7 +2908,12 @@ class Painel_Campanhas
             wp_send_json_error('Dados incompletos para criar filtro salvo.');
         }
 
-        if ($template_source === 'local' && $template_id <= 0) {
+        $providers_cfg_pre = json_decode($providers_config_json, true);
+        $only_sf_recurring = is_array($providers_cfg_pre) && $this->is_salesforce_only_providers($providers_cfg_pre);
+
+        if ($only_sf_recurring) {
+            // Sem template local obrigatório — conteúdo no Salesforce/MC
+        } elseif ($template_source === 'local' && $template_id <= 0) {
             wp_send_json_error('Template_id inválido para template local.');
         }
 
@@ -2840,64 +2963,176 @@ class Painel_Campanhas
             $wpdb->query("ALTER TABLE `$table` ADD COLUMN carteira varchar(50) DEFAULT '' AFTER customer_code");
         }
 
-        // Adiciona exclusão ao config
+        // Adiciona exclusão ao config; bait_ids vêm no JSON do front (incl. edição em Filtros Salvos)
         $config_array = json_decode($providers_config_json, true);
         if (!is_array($config_array)) {
             $config_array = [];
         }
         $config_array['exclude_recent_phones'] = $exclude_recent_phones;
         $config_array['exclude_recent_hours'] = $exclude_recent_hours;
-        $providers_config_json = json_encode($config_array);
+        if (!$include_baits) {
+            unset($config_array['bait_ids']);
+        }
+        $providers_config_json = json_encode($config_array, JSON_UNESCAPED_UNICODE);
+
+        $recurring_id = intval($_POST['id'] ?? 0);
+        $current_user_id = get_current_user_id();
+
+        $row_data = [
+            'nome_campanha' => $nome_campanha,
+            'tabela_origem' => $table_name,
+            'filtros_json' => $filters_json,
+            'providers_config' => $providers_config_json,
+            'template_id' => $template_id,
+            'template_code' => $template_code,
+            'template_source' => $template_source,
+            'broker_code' => $broker_code,
+            'customer_code' => $customer_code,
+            'carteira' => $carteira,
+            'record_limit' => $record_limit,
+            'throttling_type' => $throttling_type,
+            'throttling_config' => $throttling_config_json,
+            'include_baits' => $include_baits,
+        ];
+        $row_formats = ['%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%d'];
+
+        if ($recurring_id > 0) {
+            $owner_ok = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$table} WHERE id = %d AND criado_por = %d",
+                $recurring_id,
+                $current_user_id
+            ));
+            if (intval($owner_ok) !== 1) {
+                wp_send_json_error('Filtro não encontrado ou sem permissão para editar.');
+            }
+            $result = $wpdb->update(
+                $table,
+                $row_data,
+                ['id' => $recurring_id, 'criado_por' => $current_user_id],
+                $row_formats,
+                ['%d', '%d']
+            );
+            if ($result === false) {
+                wp_send_json_error('Erro ao atualizar filtro: ' . $wpdb->last_error);
+            }
+            wp_send_json_success(['message' => 'Filtro atualizado com sucesso!', 'id' => $recurring_id]);
+        }
+
+        $row_data['ativo'] = 1;
+        $row_data['criado_por'] = $current_user_id;
+        $insert_formats = array_merge($row_formats, ['%d', '%d']);
 
         $result = $wpdb->insert(
             $table,
-            [
-                'nome_campanha' => $nome_campanha,
-                'tabela_origem' => $table_name,
-                'filtros_json' => $filters_json,
-                'providers_config' => $providers_config_json,
-                'template_id' => $template_id,
-                'template_code' => $template_code,
-                'template_source' => $template_source,
-                'broker_code' => $broker_code,
-                'customer_code' => $customer_code,
-                'carteira' => $carteira,
-                'record_limit' => $record_limit,
-                'throttling_type' => $throttling_type,
-                'throttling_config' => $throttling_config_json,
-                'include_baits' => $include_baits,
-                'ativo' => 1,
-                'criado_por' => get_current_user_id()
-            ],
-            ['%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%d', '%d', '%d']
+            $row_data,
+            $insert_formats
         );
 
         if ($result === false) {
             wp_send_json_error('Erro ao salvar filtro: ' . $wpdb->last_error);
         }
 
-        wp_send_json_success('Filtro salvo com sucesso!');
+        wp_send_json_success(['message' => 'Filtro salvo com sucesso!', 'id' => (int) $wpdb->insert_id]);
+    }
+
+    /**
+     * True quando todos os provedores da campanha são Salesforce.
+     */
+    private function is_salesforce_only_providers($providers_config)
+    {
+        $providers = $providers_config['providers'] ?? null;
+        if (!is_array($providers) || empty($providers)) {
+            return false;
+        }
+        foreach ($providers as $p) {
+            if (is_array($p)) {
+                $p = $p['id'] ?? $p['name'] ?? '';
+            }
+            if (strtoupper((string) $p) !== 'SALESFORCE') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * IDs de iscas enviados pelo front (JSON). null = legado (todas as iscas ativas).
+     * array vazio = nenhuma isca.
+     */
+    private function parse_bait_ids_filter_from_post()
+    {
+        if (!isset($_POST['bait_ids'])) {
+            return null;
+        }
+        $raw = wp_unslash($_POST['bait_ids']);
+        $dec = is_string($raw) ? json_decode($raw, true) : (is_array($raw) ? $raw : []);
+        if (!is_array($dec)) {
+            return [];
+        }
+        return array_values(array_unique(array_filter(array_map('intval', $dec))));
+    }
+
+    private function filter_baits_rows_by_ids($baits_rows, $bait_ids_filter)
+    {
+        if ($bait_ids_filter === null) {
+            return $baits_rows;
+        }
+        if (empty($bait_ids_filter)) {
+            return [];
+        }
+        $allowed = array_flip($bait_ids_filter);
+        $out = [];
+        foreach ($baits_rows as $row) {
+            $id = isset($row['id']) ? intval($row['id']) : 0;
+            if ($id > 0 && isset($allowed[$id])) {
+                $out[] = $row;
+            }
+        }
+        return $out;
     }
 
     public function handle_schedule_campaign()
     {
+        // Bases muito grandes (100k–300k+ linhas): tempo ilimitado e mais RAM (o host pode ignorar ini_set)
+        @set_time_limit(0);
+        @ini_set('max_execution_time', '0');
+        @ini_set('memory_limit', '2048M');
+
+        // Captura erros fatais para retornar JSON em vez de 500
+        register_shutdown_function(function () {
+            $err = error_get_last();
+            if ($err && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+                if (!headers_sent()) {
+                    header('Content-Type: application/json; charset=utf-8');
+                    echo wp_json_encode([
+                        'success' => false,
+                        'data' => 'Erro fatal PHP: ' . $err['message'] . ' em ' . basename($err['file']) . ':' . $err['line'],
+                    ]);
+                }
+            }
+        });
+
         check_ajax_referer('campaign-manager-nonce', 'nonce');
         if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
+        try {
         $table_name = $this->get_safe_table_name();
         if (empty($table_name)) { wp_send_json_error('Tabela inválida.'); return; }
         $filters_json = stripslashes($_POST['filters'] ?? '[]');
         $filters = json_decode($filters_json, true);
+        $filters = is_array($filters) ? $filters : [];
         $providers_config_json = stripslashes($_POST['providers_config'] ?? '{}');
         $providers_config = json_decode($providers_config_json, true);
+        $providers_config = is_array($providers_config) ? $providers_config : [];
         $template_id = intval($_POST['template_id'] ?? 0);
         $template_code = sanitize_text_field($_POST['template_code'] ?? '');
         $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
         $broker_code = sanitize_text_field($_POST['broker_code'] ?? '');
         $customer_code = sanitize_text_field($_POST['customer_code'] ?? '');
         $variables_map_json = stripslashes($_POST['variables_map'] ?? '{}');
-        $variables_map = is_string($variables_map_json) ? json_decode($variables_map_json, true) : [];
+        $variables_map_raw = is_string($variables_map_json) ? json_decode($variables_map_json, true) : [];
+        $variables_map = is_array($variables_map_raw) ? $variables_map_raw : [];
         $record_limit = intval($_POST['record_limit'] ?? 0);
         $exclude_recent_phones = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : 1;
         $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
@@ -2927,10 +3162,15 @@ class Painel_Campanhas
             wp_send_json_error('Dados da campanha inválidos.');
         }
 
+        $only_salesforce = $this->is_salesforce_only_providers($providers_config);
+
         // Valida template baseado na origem
         $message_content = '';
         $template_info = [];
-        if ($template_source === 'local' && $template_id > 0) {
+        if ($only_salesforce) {
+            $message_content = 'Salesforce Marketing Cloud: conteúdo definido na automação.';
+            $template_info = ['source' => 'salesforce'];
+        } elseif ($template_source === 'local' && $template_id > 0) {
             // Template local
             $message_post = get_post($template_id);
             if (!$message_post || $message_post->post_type !== 'message_template') {
@@ -2947,12 +3187,13 @@ class Painel_Campanhas
             $gosac_cid = intval($_POST['gosac_connection_id'] ?? 0);
             error_log('🔵 [GOSAC] Recebido: gosac_template_id=' . ($_POST['gosac_template_id'] ?? '') . ' -> ' . $gosac_tid . ', gosac_connection_id=' . ($_POST['gosac_connection_id'] ?? '') . ' -> ' . $gosac_cid);
             $message_content = 'Template GOSAC Oficial: ' . $template_code;
+            $gosac_vc_raw = isset($_POST['gosac_variable_components']) ? json_decode(stripslashes($_POST['gosac_variable_components']), true) : [];
             $template_info = [
                 'template_code' => $template_code,
                 'source' => 'gosac_oficial',
                 'template_id' => $gosac_tid,
                 'connection_id' => $gosac_cid,
-                'variable_components' => isset($_POST['gosac_variable_components']) ? json_decode(stripslashes($_POST['gosac_variable_components']), true) : [],
+                'variable_components' => is_array($gosac_vc_raw) ? $gosac_vc_raw : [],
             ];
         } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
             $message_content = 'Template NOAH Oficial: ' . $template_code;
@@ -2976,8 +3217,23 @@ class Painel_Campanhas
             wp_send_json_error('Template inválido. Informe template_id para templates locais ou template_code para templates externos (Ótima, GOSAC Oficial, NOAH Oficial).');
         }
 
-        // Busca registros filtrados
-        $records = PC_Campaign_Filters::get_filtered_records($table_name, $filters, $record_limit);
+        // Colunas extras do mapeamento de variáveis (Ótima/NOAH/Robbu etc.) — evita SELECT * em bases enormes
+        // Front envia Ótima como { "1": { "type": "field", "value": "nome" }, ... }; extrair só campos BD do tipo "field"
+        $variables_map_columns = [];
+        if (!empty($variables_map) && is_array($variables_map)) {
+            foreach ($variables_map as $var_key => $field) {
+                if (is_array($field) && isset($field['type'], $field['value'])
+                    && $field['type'] === 'field' && is_string($field['value']) && $field['value'] !== '') {
+                    $variables_map_columns[] = $field['value'];
+                } elseif (is_string($field) && $field !== '') {
+                    $variables_map_columns[] = $field;
+                }
+            }
+            $variables_map_columns = array_values(array_unique($variables_map_columns));
+        }
+
+        // Busca registros filtrados (SELECT enxuto quando possível)
+        $records = PC_Campaign_Filters::get_filtered_records($table_name, $filters, $record_limit, $variables_map_columns);
         error_log("🔍 [Debug pc_create_campaign] Registros após filtros: " . count($records));
 
         if (empty($records)) {
@@ -3002,6 +3258,10 @@ class Painel_Campanhas
         $include_baits = isset($_POST['include_baits']) ? intval($_POST['include_baits']) : 0;
         $test_only = isset($_POST['test_only']) ? intval($_POST['test_only']) : 0;
         $baits_added = 0;
+        $bait_ids_filter = null;
+        if ($include_baits) {
+            $bait_ids_filter = $this->parse_bait_ids_filter_from_post();
+        }
 
         // Se for um disparo de teste, ignoramos os clientes e usamos SÓ as iscas.
         if ($include_baits && $test_only) {
@@ -3015,6 +3275,7 @@ class Painel_Campanhas
                 "SELECT * FROM $table_iscas WHERE ativo = 1",
                 ARRAY_A
             );
+            $iscas = $this->filter_baits_rows_by_ids($iscas ? $iscas : [], $bait_ids_filter);
 
             if (!empty($iscas)) {
                 foreach ($iscas as $isca) {
@@ -3206,6 +3467,11 @@ class Painel_Campanhas
                         'variableComponents' => $variable_components,
                         'original_message' => $mensagem_final,
                     ]);
+                } elseif ($only_salesforce) {
+                    $mensagem_para_armazenar = json_encode([
+                        'template_source' => 'salesforce',
+                        'note' => 'Conteúdo definido na automação Salesforce/MC.',
+                    ]);
                 }
 
                 // carteira_id: id interno da carteira selecionada (para GOSAC: lookup correto de id_ruler quando há múltiplas carteiras com mesmo id_carteira)
@@ -3311,6 +3577,12 @@ class Painel_Campanhas
             'exclusion_enabled' => $exclude_recent_phones,
             'exclude_recent_hours' => $exclude_recent_hours
         ]);
+
+        } catch (\Throwable $e) {
+            error_log('🚨 [handle_schedule_campaign] Erro: ' . $e->getMessage());
+            error_log('🚨 [handle_schedule_campaign] Trace: ' . $e->getTraceAsString());
+            wp_send_json_error('Erro ao agendar campanha: ' . $e->getMessage());
+        }
     }
 
     public function handle_get_filters()
@@ -3358,8 +3630,105 @@ class Painel_Campanhas
         wp_send_json_success($count);
     }
 
+    /**
+     * Conta blocklist + exclusão recente para um lote (evita carregar a base inteira na RAM).
+     */
+    private function accumulate_count_detailed_batch(
+        array $batch,
+        $exclude_recent,
+        array $recent_phones,
+        &$blocked_count,
+        &$recent_excluded_count,
+        &$effective_count
+    ) {
+        global $wpdb;
+
+        if (empty($batch)) {
+            return;
+        }
+
+        $telefones = [];
+        $cpfs = [];
+        foreach ($batch as $record) {
+            if (!empty($record['telefone'])) {
+                $tel_clean = preg_replace('/[^0-9]/', '', $record['telefone']);
+                if (strlen($tel_clean) >= 10) {
+                    $telefones[] = $tel_clean;
+                }
+            }
+            if (!empty($record['cpf_cnpj'])) {
+                $cpf_clean = preg_replace('/[^0-9]/', '', $record['cpf_cnpj']);
+                if (strlen($cpf_clean) === 11) {
+                    $cpfs[] = $cpf_clean;
+                }
+            }
+        }
+
+        $table_blocklist = $wpdb->prefix . 'pc_blocklist';
+        $blocked_telefones_map = [];
+        $blocked_cpfs_map = [];
+
+        if (!empty($telefones)) {
+            foreach (array_chunk(array_values(array_unique($telefones)), 2500) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '%s'));
+                $query = $wpdb->prepare(
+                    "SELECT valor FROM $table_blocklist WHERE tipo = 'telefone' AND valor IN ($placeholders)",
+                    $chunk
+                );
+                foreach ((array) $wpdb->get_col($query) as $v) {
+                    $blocked_telefones_map[$v] = true;
+                }
+            }
+        }
+
+        if (!empty($cpfs)) {
+            foreach (array_chunk(array_values(array_unique($cpfs)), 2500) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '%s'));
+                $query = $wpdb->prepare(
+                    "SELECT valor FROM $table_blocklist WHERE tipo = 'cpf' AND valor IN ($placeholders)",
+                    $chunk
+                );
+                foreach ((array) $wpdb->get_col($query) as $v) {
+                    $blocked_cpfs_map[$v] = true;
+                }
+            }
+        }
+
+        foreach ($batch as $record) {
+            $telefone = preg_replace('/[^0-9]/', '', $record['telefone'] ?? '');
+            $telefone_normalizado = $telefone;
+            if (strlen($telefone_normalizado) > 11 && substr($telefone_normalizado, 0, 2) === '55') {
+                $telefone_normalizado = substr($telefone_normalizado, 2);
+            }
+
+            $cpf = preg_replace('/[^0-9]/', '', $record['cpf_cnpj'] ?? '');
+
+            $is_blocked = false;
+            if (isset($blocked_telefones_map[$telefone])) {
+                $is_blocked = true;
+            } elseif (strlen($cpf) === 11 && isset($blocked_cpfs_map[$cpf])) {
+                $is_blocked = true;
+            }
+
+            if ($is_blocked) {
+                $blocked_count++;
+                continue;
+            }
+
+            if ($exclude_recent && isset($recent_phones[$telefone_normalizado])) {
+                $recent_excluded_count++;
+                continue;
+            }
+
+            $effective_count++;
+        }
+    }
+
     public function handle_get_count_detailed()
     {
+        @set_time_limit(0);
+        @ini_set('memory_limit', '512M');
+
         check_ajax_referer('campaign-manager-nonce', 'nonce');
 
         $table_name = $this->get_safe_table_name();
@@ -3376,15 +3745,23 @@ class Painel_Campanhas
         global $wpdb;
         $envios_table = $wpdb->prefix . 'envios_pendentes';
 
-        // 1. Pega apenas os campos necessários para validação (TELEFONE, CPF_CNPJ)
-        // Isso simula o comportamento da criação da campanha, mas otimizado na memória
         $where_sql = PC_Campaign_Filters::build_where_clause($filters);
+        $total_count = PC_Campaign_Filters::count_records($table_name, $filters);
 
-        // Verifica as colunas disponíveis para fazer SELECT correto sem gerar erro de coluna inexistente
+        if ($total_count === 0) {
+            wp_send_json_success([
+                'total' => 0,
+                'recent_excluded' => 0,
+                'blocked' => 0,
+                'effective' => 0,
+                'partial' => false,
+            ]);
+            return;
+        }
+
         $columns = array_map('strtoupper', (array) $wpdb->get_col("SHOW COLUMNS FROM `{$table_name}`"));
         $select_fields = [];
 
-        // Telefone (Obrigatório, mas verificamos nomes comuns)
         if (in_array('TELEFONE', $columns)) {
             $select_fields[] = 'TELEFONE as telefone';
         } elseif (in_array('CELULAR', $columns)) {
@@ -3392,7 +3769,6 @@ class Painel_Campanhas
         } elseif (in_array('PHONE', $columns)) {
             $select_fields[] = 'PHONE as telefone';
         } else {
-            // Se não achar nada, tenta a primeira coluna que parece telefone ou bota NULL
             $found_tel = false;
             foreach ($columns as $col) {
                 if (strpos($col, 'TEL') !== false || strpos($col, 'CEL') !== false) {
@@ -3401,11 +3777,11 @@ class Painel_Campanhas
                     break;
                 }
             }
-            if (!$found_tel)
+            if (!$found_tel) {
                 $select_fields[] = 'NULL as telefone';
+            }
         }
 
-        // CPF/CNPJ
         if (in_array('CPF', $columns) && in_array('CPF_CNPJ', $columns)) {
             $select_fields[] = 'COALESCE(CPF, CPF_CNPJ) as cpf_cnpj';
         } elseif (in_array('CPF', $columns)) {
@@ -3422,120 +3798,132 @@ class Painel_Campanhas
 
         $select_clause = implode(', ', $select_fields);
 
-        $sql = "SELECT {$select_clause} FROM `{$table_name}`" . $where_sql;
-        // Fallback caso a tabela não tenha essas colunas nomeadas assim (vai tentar a padrão do plugin)
-        $suprime_erro = $wpdb->suppress_errors(true);
-        $records = $wpdb->get_results($sql, ARRAY_A);
-        $wpdb->suppress_errors($suprime_erro);
-
-        // Se falhou (nome de coluna diferente), tenta o método get_filtered_records_optimized que já resolve nomes
-        if ($records === null || $wpdb->last_error) {
-            $records = $this->get_filtered_records_optimized($table_name, $filters, 0, false);
-        }
-
-        $total_count = is_array($records) ? count($records) : 0;
-
-        if ($total_count === 0) {
-            wp_send_json_success([
-                'total' => 0,
-                'recent_excluded' => 0,
-                'blocked' => 0,
-                'effective' => 0
-            ]);
-            return;
-        }
-
-        // 2. Coleta telefones recentes em memória
         $recent_phones = [];
         if ($exclude_recent) {
             $recent_phones = $this->get_recent_phones_batch($envios_table, $exclude_recent_hours);
         }
 
-        // 3. Obtém dados de blocklist (telefones e cpfs em lote como a validação normal faz)
-        $telefones = [];
-        $cpfs = [];
-        foreach ($records as $record) {
-            if (!empty($record['telefone'])) {
-                $tel_clean = preg_replace('/[^0-9]/', '', $record['telefone']);
-                if (strlen($tel_clean) >= 10) {
-                    $telefones[] = $tel_clean;
-                }
-            }
-            if (!empty($record['cpf_cnpj'])) {
-                $cpf_clean = preg_replace('/[^0-9]/', '', $record['cpf_cnpj']);
-                if (strlen($cpf_clean) === 11) {
-                    $cpfs[] = $cpf_clean;
-                }
-            }
-        }
-
-        $table_blocklist = $wpdb->prefix . 'pc_blocklist';
-        $blocked_telefones = [];
-        $blocked_cpfs = [];
-
-        if (!empty($telefones)) {
-            $telefones_unique = array_unique($telefones);
-            // Processa em chunks se for muito grande
-            foreach (array_chunk($telefones_unique, 5000) as $chunk) {
-                $placeholders = implode(',', array_fill(0, count($chunk), '%s'));
-                $query = $wpdb->prepare("SELECT valor FROM $table_blocklist WHERE tipo = 'telefone' AND valor IN ($placeholders)", $chunk);
-                $blocked_telefones = array_merge($blocked_telefones, $wpdb->get_col($query));
-            }
-        }
-
-        if (!empty($cpfs)) {
-            $cpfs_unique = array_unique($cpfs);
-            foreach (array_chunk($cpfs_unique, 5000) as $chunk) {
-                $placeholders = implode(',', array_fill(0, count($chunk), '%s'));
-                $query = $wpdb->prepare("SELECT valor FROM $table_blocklist WHERE tipo = 'cpf' AND valor IN ($placeholders)", $chunk);
-                $blocked_cpfs = array_merge($blocked_cpfs, $wpdb->get_col($query));
-            }
-        }
-
-        $blocked_telefones_map = array_flip($blocked_telefones);
-        $blocked_cpfs_map = array_flip($blocked_cpfs);
-
-        // 4. Itera para contar
-        $recent_excluded_count = 0;
         $blocked_count = 0;
+        $recent_excluded_count = 0;
         $effective_count = 0;
 
-        foreach ($records as $record) {
-            $telefone = preg_replace('/[^0-9]/', '', $record['telefone'] ?? '');
-            $telefone_normalizado = $telefone;
-            if (strlen($telefone_normalizado) > 11 && substr($telefone_normalizado, 0, 2) === '55') {
-                $telefone_normalizado = substr($telefone_normalizado, 2);
+        $raw_col_names = (array) $wpdb->get_col("SHOW COLUMNS FROM `{$table_name}`");
+        $pk_column = null;
+        foreach ($raw_col_names as $cn) {
+            if (strtoupper($cn) === 'ID') {
+                $pk_column = $cn;
+                break;
             }
-
-            $cpf = preg_replace('/[^0-9]/', '', $record['cpf_cnpj'] ?? '');
-
-            $is_blocked = false;
-            // Blocklist priority
-            if (isset($blocked_telefones_map[$telefone])) {
-                $is_blocked = true;
-            } elseif (strlen($cpf) === 11 && isset($blocked_cpfs_map[$cpf])) {
-                $is_blocked = true;
-            }
-
-            if ($is_blocked) {
-                $blocked_count++;
-                continue; // Blocked records are dropped first
-            }
-
-            // Exclusão recente second priority
-            if ($exclude_recent && isset($recent_phones[$telefone_normalizado])) {
-                $recent_excluded_count++;
-                continue;
-            }
-
-            $effective_count++;
         }
+
+        $chunk_size = 2500;
+
+        if ($pk_column !== null) {
+            $pk_esc = '`' . str_replace('`', '', $pk_column) . '`';
+            $last_id = 0;
+
+            while (true) {
+                $sql = "SELECT {$pk_esc} AS __pc_pk, {$select_clause} FROM `{$table_name}`"
+                    . $where_sql . ' AND ' . $pk_esc . ' > ' . intval($last_id)
+                    . ' ORDER BY ' . $pk_esc . ' ASC LIMIT ' . intval($chunk_size);
+
+                $batch = $wpdb->get_results($sql, ARRAY_A);
+
+                if ($wpdb->last_error) {
+                    error_log('🔴 [count_detailed] Erro no lote (keyset ID): ' . $wpdb->last_error . ' | SQL: ' . $sql);
+                    wp_send_json_error('Erro ao contar registros (lote). Tente novamente ou contate o suporte.');
+                    return;
+                }
+
+                if (empty($batch)) {
+                    break;
+                }
+
+                $max_in_batch = 0;
+                foreach ($batch as &$row) {
+                    $rid = isset($row['__pc_pk']) ? intval($row['__pc_pk']) : 0;
+                    if ($rid > $max_in_batch) {
+                        $max_in_batch = $rid;
+                    }
+                    unset($row['__pc_pk']);
+                }
+                unset($row);
+
+                $this->accumulate_count_detailed_batch(
+                    $batch,
+                    $exclude_recent,
+                    $recent_phones,
+                    $blocked_count,
+                    $recent_excluded_count,
+                    $effective_count
+                );
+
+                unset($batch);
+
+                if ($max_in_batch <= $last_id) {
+                    break;
+                }
+                $last_id = $max_in_batch;
+            }
+
+            wp_send_json_success([
+                'total' => $total_count,
+                'recent_excluded' => $recent_excluded_count,
+                'blocked' => $blocked_count,
+                'effective' => $effective_count,
+                'partial' => false,
+            ]);
+            return;
+        }
+
+        // Sem coluna ID: carregar tudo só em bases menores (evita 500 por memória)
+        if ($total_count > 30000) {
+            wp_send_json_success([
+                'total' => $total_count,
+                'recent_excluded' => 0,
+                'blocked' => 0,
+                'effective' => $total_count,
+                'partial' => true,
+                'partial_message' => 'Esta visão não tem coluna ID indexável para contagem em lotes. O total líquido exibido iguala o bruto; blocklist e exclusão por envio recente ainda serão aplicadas ao gerar a campanha.',
+            ]);
+            return;
+        }
+
+        $sql = "SELECT {$select_clause} FROM `{$table_name}`" . $where_sql;
+        $suprime_erro = $wpdb->suppress_errors(true);
+        $records = $wpdb->get_results($sql, ARRAY_A);
+        $wpdb->suppress_errors($suprime_erro);
+
+        if ($records === null || $wpdb->last_error) {
+            $records = $this->get_filtered_records_optimized($table_name, $filters, 0, false);
+        }
+
+        if (!is_array($records) || empty($records)) {
+            wp_send_json_success([
+                'total' => 0,
+                'recent_excluded' => 0,
+                'blocked' => 0,
+                'effective' => 0,
+                'partial' => false,
+            ]);
+            return;
+        }
+
+        $this->accumulate_count_detailed_batch(
+            $records,
+            $exclude_recent,
+            $recent_phones,
+            $blocked_count,
+            $recent_excluded_count,
+            $effective_count
+        );
 
         wp_send_json_success([
             'total' => $total_count,
             'recent_excluded' => $recent_excluded_count,
             'blocked' => $blocked_count,
-            'effective' => $effective_count
+            'effective' => $effective_count,
+            'partial' => false,
         ]);
     }
 
@@ -4587,6 +4975,8 @@ class Painel_Campanhas
             $filters = json_decode($campaign['filtros_json'] ?? '[]', true) ?: [];
             $providers_config = json_decode($campaign['providers_config'] ?? '{}', true) ?: [];
             $campaign['parsed_filters'] = $filters;
+            // Objeto já decodificado para o React (iscas: bait_ids, provedores, exclusão recente, etc.)
+            $campaign['providers_config_parsed'] = $providers_config;
 
             // Calcula contagem estimada
             try {
@@ -5071,9 +5461,20 @@ class Painel_Campanhas
                 ];
             }
 
-            // 3. 🎣 ADICIONA ISCAS ATIVAS (apenas com IDGIS compatível)
+            // 3. 🎣 ADICIONA ISCAS ATIVAS (apenas com IDGIS compatível), se include_baits na campanha
             $baits_count = 0;
-            $all_baits = PC_Campaign_Baits::get_active_baits();
+            $include_baits_rc = intval($campaign['include_baits'] ?? 0);
+            $bait_ids_cfg = null;
+            if (is_array($providers_config) && array_key_exists('bait_ids', $providers_config)) {
+                $raw_bids = $providers_config['bait_ids'];
+                $bait_ids_cfg = is_array($raw_bids) ? array_values(array_unique(array_map('intval', $raw_bids))) : [];
+            }
+
+            $all_baits = [];
+            if ($include_baits_rc) {
+                $all_baits = PC_Campaign_Baits::get_active_baits();
+                $all_baits = $this->filter_baits_rows_by_ids($all_baits ? $all_baits : [], $bait_ids_cfg);
+            }
             $recurring_campaign_id_carteira_pre = !empty($campaign['carteira'])
                 ? $this->resolve_id_carteira_from_carteira_id($campaign['carteira'])
                 : '';
@@ -5115,14 +5516,20 @@ class Painel_Campanhas
             // Não precisa mais buscar telefones separadamente - já vem filtrado!
 
             // 5. Busca template
-            $template_post = get_post($campaign['template_id']);
-            if (!$template_post) {
-                return [
-                    'success' => false,
-                    'message' => 'Template de mensagem não encontrado'
-                ];
+            $template_source_row = $campaign['template_source'] ?? 'local';
+            $only_sf_exec = $this->is_salesforce_only_providers($providers_config);
+            if ($only_sf_exec) {
+                $mensagem_template = 'Salesforce Marketing Cloud: conteúdo definido na automação.';
+            } else {
+                $template_post = get_post($campaign['template_id']);
+                if (!$template_post) {
+                    return [
+                        'success' => false,
+                        'message' => 'Template de mensagem não encontrado'
+                    ];
+                }
+                $mensagem_template = $template_post->post_content;
             }
-            $mensagem_template = $template_post->post_content;
 
             // 6. Distribui registros entre provedores
             $distribution = $this->distribute_records_for_recurring($records, $providers_config);
@@ -5168,6 +5575,8 @@ class Painel_Campanhas
                     // 🚀 Telefones recentes já foram excluídos no LEFT JOIN da query
                     // Não precisa mais verificar aqui!
 
+                    $telefone_normalizado = $this->extract_phone_for_recurring($record);
+
                     // Aplica mapeamento IDGIS
                     $idgis_original = intval($record['idgis_ambiente'] ?? 0);
                     $idgis_mapeado = $idgis_original;
@@ -5196,6 +5605,11 @@ class Painel_Campanhas
                             'broker_code' => $broker_code,
                             'customer_code' => (string) $id_carteira,
                             'original_message' => $mensagem_final
+                        ]);
+                    } elseif ($only_sf_exec) {
+                        $mensagem_para_armazenar = json_encode([
+                            'template_source' => 'salesforce',
+                            'note' => 'Conteúdo definido na automação Salesforce/MC.',
                         ]);
                     }
 
@@ -5415,6 +5829,7 @@ class Painel_Campanhas
 
     public function handle_get_pending_campaigns()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -5485,6 +5900,7 @@ class Painel_Campanhas
 
     public function handle_get_microservice_config()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -5551,6 +5967,7 @@ class Painel_Campanhas
 
     public function handle_approve_campaign()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -5607,7 +6024,7 @@ class Painel_Campanhas
 
         if (!empty($static_credentials)) {
             if ($fornecedor_upper === 'SALESFORCE') {
-                $payload['salesforce_credentials'] = [
+                $sf_creds = [
                     'client_id' => $static_credentials['sf_client_id'] ?? '',
                     'client_secret' => $static_credentials['sf_client_secret'] ?? '',
                     'username' => $static_credentials['sf_username'] ?? '',
@@ -5615,7 +6032,15 @@ class Painel_Campanhas
                     'token_url' => $static_credentials['sf_token_url'] ?? 'https://concilig.my.salesforce.com/services/oauth2/token',
                     'api_url' => $static_credentials['sf_api_url'] ?? 'https://concilig.my.salesforce.com/services/data/v59.0/composite/sobjects',
                 ];
-                error_log('🔵 [Aprovar Campanha] Credenciais do Salesforce incluídas no payload');
+                $idgis_row = $wpdb->get_var($wpdb->prepare(
+                    "SELECT idgis_ambiente FROM {$table} WHERE agendamento_id = %s LIMIT 1",
+                    $agendamento_id
+                ));
+                if ($idgis_row !== null && $idgis_row !== '') {
+                    $sf_creds = $this->merge_salesforce_dynamic_credentials($sf_creds, $idgis_row);
+                }
+                $payload['salesforce_credentials'] = $sf_creds;
+                error_log('🔵 [Aprovar Campanha] Credenciais do Salesforce incluídas no payload (operacao/automation por idgis se configuradas)');
             } elseif ($fornecedor_upper === 'MKC' || $fornecedor_upper === 'MARKETING CLOUD') {
                 $payload['mkc_credentials'] = [
                     'client_id' => $static_credentials['mkc_client_id'] ?? '',
@@ -5844,31 +6269,49 @@ class Painel_Campanhas
 
     public function handle_deny_campaign()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
         }
 
         check_ajax_referer('pc_nonce', 'nonce');
+        $this->maybe_add_envios_cancel_columns();
 
         global $wpdb;
         $table = $wpdb->prefix . 'envios_pendentes';
         $agendamento_id = sanitize_text_field($_POST['agendamento_id'] ?? '');
+        $fornecedor = sanitize_text_field($_POST['fornecedor'] ?? '');
+        $motivo = sanitize_textarea_field($_POST['motivo'] ?? '');
 
         if (empty($agendamento_id)) {
             wp_send_json_error('Agendamento ID é obrigatório');
             return;
         }
 
+        $uid = get_current_user_id();
+        $update_row = [
+            'status' => 'negado',
+            'motivo_cancelamento' => $motivo !== '' ? $motivo : 'Negado pelo administrador (sem motivo informado).',
+            'cancelado_por' => $uid,
+        ];
+
+        $where = [
+            'agendamento_id' => $agendamento_id,
+            'status' => 'pendente_aprovacao',
+        ];
+        $where_format = ['%s', '%s'];
+        if ($fornecedor !== '') {
+            $where['fornecedor'] = $fornecedor;
+            $where_format[] = '%s';
+        }
+
         $updated = $wpdb->update(
             $table,
-            ['status' => 'negado'],
-            [
-                'agendamento_id' => $agendamento_id,
-                'status' => 'pendente_aprovacao'
-            ],
-            ['%s'],
-            ['%s', '%s']
+            $update_row,
+            $where,
+            ['%s', '%s', '%d'],
+            $where_format
         );
 
         if ($updated === false) {
@@ -5899,8 +6342,11 @@ class Painel_Campanhas
             (stripos($provider, 'OTIMA') !== false);
 
         if ($is_static_provider) {
-            // Para providers estáticos, ignoramos o envId
-            error_log('🔵 [REST API] Provider estático detectado: ' . $provider . ' (envId ignorado)');
+            if ($provider === 'SALESFORCE') {
+                error_log('🔵 [REST API] Salesforce: OAuth estático + operacao/automation_id por ambiente (envId=' . $env_id . ')');
+            } else {
+                error_log('🔵 [REST API] Provider estático detectado: ' . $provider . ' (envId ignorado para este provider)');
+            }
 
             // Retorna credenciais estáticas
             $static_credentials = get_option('acm_static_credentials', []);
@@ -5955,6 +6401,8 @@ class Painel_Campanhas
                     'token_url' => $static_credentials['sf_token_url'] ?? 'https://concilig.my.salesforce.com/services/oauth2/token',
                     'api_url' => $static_credentials['sf_api_url'] ?? 'https://concilig.my.salesforce.com/services/data/v59.0/composite/sobjects',
                 ];
+                // Operação + automation_id ficam por ambiente no API Manager (acm_provider_credentials → salesforce → idgis)
+                $credentials = $this->merge_salesforce_dynamic_credentials($credentials, $env_id);
             } elseif ($provider === 'MKC') {
                 $credentials = [
                     'client_id' => $static_credentials['mkc_client_id'] ?? '',
@@ -6100,6 +6548,61 @@ class Painel_Campanhas
             }
         }
         return false;
+    }
+
+    /**
+     * Injeta operacao, automation_id (e MKC por ambiente, se houver) nas credenciais Salesforce.
+     * O NestJS busca GET .../credentials/salesforce/{idgis_ambiente}; os dados dinâmicos vivem em acm_provider_credentials.
+     */
+    private function merge_salesforce_dynamic_credentials(array $credentials, $env_id)
+    {
+        $all = get_option('acm_provider_credentials', []);
+        if (!is_array($all) || empty($all['salesforce']) || !is_array($all['salesforce'])) {
+            return $credentials;
+        }
+        $by_env = $all['salesforce'];
+        $dyn = null;
+        $key_str = (string) $env_id;
+        $key_int = is_numeric($env_id) ? (string) intval($env_id) : $key_str;
+
+        if (isset($by_env[$key_str]) && is_array($by_env[$key_str])) {
+            $dyn = $by_env[$key_str];
+        } elseif ($key_int !== $key_str && isset($by_env[$key_int]) && is_array($by_env[$key_int])) {
+            $dyn = $by_env[$key_int];
+        } elseif (count($by_env) === 1) {
+            $dyn = reset($by_env);
+            if (!is_array($dyn)) {
+                $dyn = null;
+            }
+        } else {
+            foreach ($by_env as $block) {
+                if (!is_array($block)) {
+                    continue;
+                }
+                if (!empty($block['operacao']) && !empty($block['automation_id'])) {
+                    $dyn = $block;
+                    break;
+                }
+            }
+        }
+
+        if (!is_array($dyn)) {
+            return $credentials;
+        }
+
+        foreach (['operacao', 'automation_id'] as $f) {
+            if (isset($dyn[$f]) && $dyn[$f] !== '' && $dyn[$f] !== null) {
+                $credentials[$f] = $dyn[$f];
+            }
+        }
+        // Opcional: credenciais Marketing Cloud por ambiente (disparo SF + job MKC)
+        foreach (['mkc_client_id', 'mkc_client_secret', 'mkc_token_url', 'mkc_api_url'] as $mk) {
+            if (!empty($dyn[$mk])) {
+                $credentials[$mk] = $dyn[$mk];
+            }
+        }
+
+        return $credentials;
     }
 
     public function handle_webhook_status_update($request)
@@ -8873,6 +9376,7 @@ class Painel_Campanhas
     public function handle_get_campanhas()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+        $this->maybe_add_envios_cancel_columns();
 
         global $wpdb;
         $envios_table = $wpdb->prefix . 'envios_pendentes';
@@ -8893,7 +9397,9 @@ class Painel_Campanhas
                 MAX(t1.status) AS status,
                 MIN(t1.data_cadastro) AS data_cadastro,
                 COUNT(t1.id) AS total_clients,
-                COALESCE(MAX(u.display_name), 'Usuário Desconhecido') AS scheduled_by
+                COALESCE(MAX(u.display_name), 'Usuário Desconhecido') AS scheduled_by,
+                MAX(t1.motivo_cancelamento) AS motivo_cancelamento,
+                MAX(t1.cancelado_por) AS cancelado_por_id
             FROM `{$envios_table}` AS t1
             LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
             WHERE t1.current_user_id = %d
@@ -8901,10 +9407,25 @@ class Painel_Campanhas
 
         $params = [$current_user_id];
 
-        // Aplica filtros
+        // Aplica filtros (status no front usa chaves UI: pending, scheduled, …)
         if ($status_filter) {
-            $query .= " AND t1.status = %s";
-            $params[] = $status_filter;
+            $status_sql_map = [
+                'pending' => ['pendente_aprovacao'],
+                'scheduled' => ['pendente', 'agendado_mkc', 'processando'],
+                'sent' => ['enviado'],
+                'denied' => ['negado', 'erro', 'erro_envio', 'erro_credenciais', 'erro_validacao', 'mkc_erro'],
+                'cancelled' => ['cancelada'],
+            ];
+            if (isset($status_sql_map[$status_filter])) {
+                $placeholders = implode(',', array_fill(0, count($status_sql_map[$status_filter]), '%s'));
+                $query .= " AND t1.status IN ($placeholders)";
+                foreach ($status_sql_map[$status_filter] as $st) {
+                    $params[] = $st;
+                }
+            } else {
+                $query .= " AND t1.status = %s";
+                $params[] = str_replace('-', '_', $status_filter);
+            }
         }
 
         if ($fornecedor_filter) {
@@ -8928,18 +9449,117 @@ class Painel_Campanhas
 
         // Formata as campanhas
         $formatted = array_map(function ($camp) {
+            $cancel_id = !empty($camp['cancelado_por_id']) ? (int) $camp['cancelado_por_id'] : 0;
+            $cancel_name = '';
+            if ($cancel_id > 0) {
+                $u = get_userdata($cancel_id);
+                $cancel_name = $u ? ($u->display_name ?: $u->user_login) : '';
+            }
+
             return [
                 'id' => $camp['agendamento_id'] . '-' . $camp['provider'],
                 'name' => $camp['agendamento_id'],
-                'status' => str_replace('_', '-', $camp['status']),
+                'status' => $this->map_campanha_status_ui($camp['status']),
                 'provider' => strtoupper($camp['provider']),
+                'fornecedor' => $camp['provider'],
                 'quantity' => intval($camp['total_clients']),
                 'createdAt' => date('d/m/Y', strtotime($camp['data_cadastro'])),
                 'user' => $camp['scheduled_by'],
+                'motivoCancelamento' => $camp['motivo_cancelamento'] ?? '',
+                'canceladoPor' => $cancel_name,
             ];
         }, $campanhas);
 
         wp_send_json_success($formatted);
+    }
+
+    /**
+     * Cancela campanha (pendente, aguardando aprovação ou agendada MKC). Motivo obrigatório.
+     * Admin: qualquer campanha. Demais usuários: só linhas com current_user_id = próprio.
+     */
+    public function handle_cancel_campanha()
+    {
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        if (!is_user_logged_in()) {
+            wp_send_json_error(['message' => 'Sessão inválida'], 401);
+            return;
+        }
+
+        $this->maybe_add_envios_cancel_columns();
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'envios_pendentes';
+
+        $agendamento_id = sanitize_text_field($_POST['agendamento_id'] ?? '');
+        $fornecedor = sanitize_text_field($_POST['fornecedor'] ?? '');
+        $motivo = sanitize_textarea_field($_POST['motivo'] ?? '');
+
+        if ($agendamento_id === '' || $fornecedor === '') {
+            wp_send_json_error('Informe o identificador da campanha e o fornecedor.');
+            return;
+        }
+
+        if (strlen(trim($motivo)) < 3) {
+            wp_send_json_error('Informe o motivo do cancelamento (mínimo 3 caracteres).');
+            return;
+        }
+
+        $uid = get_current_user_id();
+        $is_admin = current_user_can('manage_options');
+
+        $allowed_status = ['pendente_aprovacao', 'pendente', 'agendado_mkc', 'processando'];
+
+        $check_sql = "SELECT id, status, current_user_id FROM `{$table}` WHERE agendamento_id = %s AND fornecedor = %s";
+        $check_params = [$agendamento_id, $fornecedor];
+        if (!$is_admin) {
+            $check_sql .= ' AND current_user_id = %d';
+            $check_params[] = $uid;
+        }
+        $rows = $wpdb->get_results($wpdb->prepare($check_sql, $check_params), ARRAY_A);
+
+        if (empty($rows)) {
+            wp_send_json_error('Campanha não encontrada ou você não tem permissão para cancelá-la.');
+            return;
+        }
+
+        foreach ($rows as $row) {
+            $st = strtolower(trim($row['status'] ?? ''));
+            if (!in_array($st, $allowed_status, true)) {
+                wp_send_json_error('Só é possível cancelar campanhas pendentes, aguardando aprovação ou agendadas (status atual: ' . esc_html($row['status']) . ').');
+                return;
+            }
+        }
+
+        $update = [
+            'status' => 'cancelada',
+            'motivo_cancelamento' => $motivo,
+            'cancelado_por' => $uid,
+        ];
+        $where = ['agendamento_id' => $agendamento_id, 'fornecedor' => $fornecedor];
+        $where_format = ['%s', '%s'];
+        if (!$is_admin) {
+            $where['current_user_id'] = $uid;
+            $where_format[] = '%d';
+        }
+
+        $updated = $wpdb->update(
+            $table,
+            $update,
+            $where,
+            ['%s', '%s', '%d'],
+            $where_format
+        );
+
+        if ($updated === false) {
+            wp_send_json_error('Erro ao atualizar o banco: ' . $wpdb->last_error);
+            return;
+        }
+
+        wp_send_json_success([
+            'message' => 'Campanha cancelada com sucesso.',
+            'agendamento_id' => $agendamento_id,
+        ]);
     }
 
     // ========== HANDLERS PARA BLOCKLIST ==========
@@ -9255,7 +9875,7 @@ class Painel_Campanhas
         check_ajax_referer('pc_nonce', 'nonce');
         global $wpdb;
         $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
-        $carteiras = $wpdb->get_results("SELECT id, nome, id_carteira FROM $table_carteiras WHERE ativo = 1", ARRAY_A);
+        $carteiras = $wpdb->get_results("SELECT id, nome, id_carteira, id_ruler FROM $table_carteiras WHERE ativo = 1", ARRAY_A);
 
         $credentials = get_option('acm_provider_credentials', []);
 
@@ -9269,11 +9889,15 @@ class Painel_Campanhas
                 $credentials['gosac_oficial'] = [];
             }
             foreach ($carteiras as $wallet) {
-                $id_amb = trim($wallet['id_carteira']);
-                if (!empty($id_amb) && !isset($credentials['gosac_oficial'][$id_amb])) {
-                    $credentials['gosac_oficial'][$id_amb] = [
+                $id_amb = trim($wallet['id_carteira'] ?? '');
+                $id_ruler = trim($wallet['id_ruler'] ?? '');
+                if (empty($id_amb)) continue;
+                $key = $id_amb . '|' . $id_ruler;
+                if (!isset($credentials['gosac_oficial'][$key])) {
+                    $credentials['gosac_oficial'][$key] = [
                         'url' => $gosac_url,
-                        'token' => $gosac_token
+                        'token' => $gosac_token,
+                        'id_ruler' => $id_ruler,
                     ];
                 }
             }
@@ -9313,16 +9937,32 @@ class Painel_Campanhas
         // Itera por (provider, id_ambient) único para evitar duplicar conexões
         foreach ($credentials as $provider => $envs) {
             if (!is_array($envs)) continue;
-            foreach ($envs as $id_ambient => $data) {
+            foreach ($envs as $env_key => $data) {
+                $env_key = trim($env_key);
+                if (empty($env_key)) continue;
+
+                // GOSAC usa chave "id_carteira|id_ruler"; outros usam só id_ambient
+                $id_ambient = $provider === 'gosac_oficial' && strpos($env_key, '|') !== false
+                    ? explode('|', $env_key, 2)[0] : $env_key;
                 $id_ambient = trim($id_ambient);
                 if (empty($id_ambient)) continue;
 
-                $cache_key = $provider . '_' . $id_ambient;
+                $cache_key = $provider . '_' . $env_key;
 
                 if (!isset($fetched_envs[$cache_key])) {
                     $provider_conns = [];
                     if ($provider === 'gosac_oficial') {
-                        $url = rtrim($data['url'], '/') . '/connections/official?idAmbient=' . urlencode($id_ambient);
+                        $id_ruler = isset($data['id_ruler']) ? trim($data['id_ruler']) : '';
+                        if ($id_ruler === '' && strpos($env_key, '|') !== false) {
+                            $parts = explode('|', $env_key, 2);
+                            $id_ruler = trim($parts[1] ?? '');
+                        }
+                        $params = ['idgis' => $id_ambient, 'idAmbient' => $id_ambient];
+                        if (!empty($id_ruler)) {
+                            $params['ruler'] = $id_ruler;
+                            $params['idRuler'] = $id_ruler;
+                        }
+                        $url = rtrim($data['url'], '/') . '/connections/official?' . http_build_query($params);
                         $token = $data['token'] ?? '';
                         if (stripos($token, 'Bearer ') !== 0) {
                             $token = 'Bearer ' . $token;
@@ -9746,6 +10386,7 @@ class Painel_Campanhas
 
     public function handle_get_robbu_webhook_stats()
     {
+        $this->pc_forbid_subscriber_ajax();
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado');
             return;
@@ -9838,10 +10479,13 @@ class Painel_Campanhas
             return;
         }
 
-        $url = rtrim($gosac_url, '/') . '/connections/official?idAmbient=' . urlencode($id_ambient);
+        // API GOSAC: parâmetros idgis e ruler (ou idAmbient e idRuler - envia ambos para compatibilidade)
+        $params = ['idgis' => $id_ambient, 'idAmbient' => $id_ambient];
         if (!empty($id_ruler)) {
-            $url .= '&idRuler=' . urlencode($id_ruler);
+            $params['ruler'] = $id_ruler;
+            $params['idRuler'] = $id_ruler;
         }
+        $url = rtrim($gosac_url, '/') . '/connections/official?' . http_build_query($params);
 
         $response = wp_remote_get($url, [
             'headers' => [
@@ -10044,7 +10688,7 @@ class Painel_Campanhas
 
     public function handle_get_otima_templates()
     {
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can('edit_posts')) {
             wp_send_json_error('Acesso negado');
             return;
         }
@@ -10054,19 +10698,44 @@ class Painel_Campanhas
         global $wpdb;
         $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
 
-        // wallet_id = id_carteira (ex: "373") - fetch sob demanda para uma carteira só
-        $wallet_id = sanitize_text_field($_POST['wallet_id'] ?? $_GET['wallet_id'] ?? '');
+        // carteira_id = PK interna (pc_carteiras_v2.id) — só para exibir nome; NÃO substitui o código na URL da Ótima
+        $carteira_internal = intval($_POST['carteira_id'] ?? $_GET['carteira_id'] ?? 0);
+        // wallet_id = id_carteira na Ótima (ex.: "33256") — quando informado, SEMPRE é o segmento da URL HSM/RCS
+        $wallet_id = trim(sanitize_text_field($_POST['wallet_id'] ?? $_GET['wallet_id'] ?? ''));
+        $single_carteira_mode = ($carteira_internal > 0) || ($wallet_id !== '');
 
-        if (!empty($wallet_id)) {
-            // Fetch direcionado: apenas a carteira solicitada
+        $carteiras = [];
+
+        if ($wallet_id !== '') {
+            // Regra de negócio: a lista deve espelhar GET .../hsm/{wallet_id}. O banco pode ter id_carteira desatualizado na linha id=27.
+            $nome = '';
+            if ($carteira_internal > 0) {
+                $row_meta = $wpdb->get_row($wpdb->prepare(
+                    "SELECT nome FROM $table_carteiras WHERE id = %d AND ativo = 1 LIMIT 1",
+                    $carteira_internal
+                ), ARRAY_A);
+                if ($row_meta) {
+                    $nome = $row_meta['nome'] ?? '';
+                }
+            }
+            if ($nome === '') {
+                $row_w = $wpdb->get_row($wpdb->prepare(
+                    "SELECT nome FROM $table_carteiras WHERE id_carteira = %s AND ativo = 1 LIMIT 1",
+                    $wallet_id
+                ), ARRAY_A);
+                if ($row_w) {
+                    $nome = $row_w['nome'] ?? '';
+                }
+            }
+            $carteiras = [['id_carteira' => $wallet_id, 'nome' => $nome]];
+        } elseif ($carteira_internal > 0) {
             $carteira = $wpdb->get_row($wpdb->prepare(
-                "SELECT id_carteira, nome FROM $table_carteiras WHERE (id_carteira = %s OR id = %d) AND ativo = 1 LIMIT 1",
-                $wallet_id,
-                intval($wallet_id)
+                "SELECT id_carteira, nome FROM $table_carteiras WHERE id = %d AND ativo = 1 LIMIT 1",
+                $carteira_internal
             ), ARRAY_A);
             $carteiras = $carteira ? [$carteira] : [];
         } else {
-            // Fallback: todas as carteiras (ex: página Mensagens)
+            // Fallback: todas as carteiras (ex.: página Mensagens sem filtro)
             $carteiras = $wpdb->get_results("SELECT id_carteira, nome FROM $table_carteiras WHERE ativo = 1", ARRAY_A);
         }
 
@@ -10080,21 +10749,20 @@ class Painel_Campanhas
         $token_rcs = trim($static_credentials['otima_rcs_token'] ?? '');
         $token_wpp = trim($static_credentials['otima_wpp_token'] ?? '');
 
-        // Remove 'Bearer ' se existir
-        $token_rcs = trim(preg_replace('/^Bearer\s+/i', '', $token_rcs));
-        $token_wpp = trim(preg_replace('/^Bearer\s+/i', '', $token_wpp));
+        // Remove 'Bearer ' se existir e caracteres de controle (evita 400 na Ótima)
+        $token_rcs = preg_replace('/[\r\n\t]/', '', trim(preg_replace('/^Bearer\s+/i', '', $token_rcs)));
+        $token_wpp = preg_replace('/[\r\n\t]/', '', trim(preg_replace('/^Bearer\s+/i', '', $token_wpp)));
 
         $templates = [];
 
-        // Função auxiliar para chamada API
+        // Retorno: ok, http, data (lista normalizada), url — para logs e erro em modo carteira única (HSM)
         $fetch_otima = function ($url, $token) {
             if (empty($token)) {
-                error_log('🟡 [Otima Debug] Token está vazio para URL: ' . $url);
-                return null;
+                error_log('🟡 [Otima Templates] Token vazio | ' . $url);
+                return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => 'token_empty'];
             }
 
-            error_log('🔵 [Otima Debug] Requesting URL: ' . $url);
-            error_log('🔵 [Otima Debug] Token Prefix: ' . substr($token, 0, 10) . '...');
+            error_log('🔵 [Otima Templates] GET ' . $url . ' | token_prefix=' . substr($token, 0, 8) . '…');
 
             $response = wp_remote_get($url, [
                 'headers' => [
@@ -10105,7 +10773,6 @@ class Painel_Campanhas
                 'timeout' => 15,
             ]);
 
-            // Fallback sem Bearer se der 400/401
             if (!is_wp_error($response)) {
                 $code = wp_remote_retrieve_response_code($response);
                 if ($code === 400 || $code === 401) {
@@ -10120,19 +10787,125 @@ class Painel_Campanhas
                 }
             }
 
-            if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
-                return null;
+            if (is_wp_error($response)) {
+                error_log('🔴 [Otima Templates] WP_Error ' . $response->get_error_message() . ' | ' . $url);
+                return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => $response->get_error_message()];
             }
 
+            $http = wp_remote_retrieve_response_code($response);
             $body = wp_remote_retrieve_body($response);
-            $data = json_decode($body, true);
 
-            // Normaliza retorno
-            if (isset($data['data']) && is_array($data['data']))
-                return $data['data'];
-            if (is_array($data))
-                return $data;
+            if ($http !== 200) {
+                error_log('🔴 [Otima Templates] HTTP ' . $http . ' | ' . $url . ' | body_snippet=' . substr($body, 0, 1200));
+                return ['ok' => false, 'http' => $http, 'data' => null, 'url' => $url, 'body_snippet' => substr($body, 0, 400)];
+            }
+
+            $data = json_decode($body, true);
+            $normalized = [];
+            if (isset($data['data']) && is_array($data['data'])) {
+                $normalized = $data['data'];
+            } elseif (isset($data['templates']) && is_array($data['templates'])) {
+                $normalized = $data['templates'];
+            } elseif (isset($data['hsm']) && is_array($data['hsm'])) {
+                $normalized = $data['hsm'];
+            } elseif (is_array($data) && $data !== [] && array_keys($data) === range(0, count($data) - 1)) {
+                $normalized = $data;
+            }
+
+            $keys_hint = '';
+            if (isset($normalized[0]) && is_array($normalized[0])) {
+                $keys_hint = implode(',', array_slice(array_keys($normalized[0]), 0, 12));
+            }
+            error_log('🟢 [Otima Templates] HTTP 200 | ' . $url . ' | itens=' . count($normalized) . ($keys_hint !== '' ? ' | keys_0=' . $keys_hint : '') . ' | raw_len=' . strlen($body));
+
+            return ['ok' => true, 'http' => 200, 'data' => $normalized, 'url' => $url];
+        };
+
+        // WhatsApp HSM: mesma convenção do disparo em massa (header authorization em lowercase, token cru) — doc interna + Postman Ótima
+        $normalize_otima_wpp_hsm_body = function ($data) {
+            if (!is_array($data)) {
+                return [];
+            }
+            $paths = [];
+            if (isset($data['data']['templates']) && is_array($data['data']['templates'])) {
+                $paths[] = $data['data']['templates'];
+            }
+            if (isset($data['data']['hsm']) && is_array($data['data']['hsm'])) {
+                $paths[] = $data['data']['hsm'];
+            }
+            if (isset($data['data']) && is_array($data['data']) && $data['data'] !== [] && array_keys($data['data']) === range(0, count($data['data']) - 1)) {
+                $paths[] = $data['data'];
+            }
+            if (isset($data['templates']) && is_array($data['templates'])) {
+                $paths[] = $data['templates'];
+            }
+            if (isset($data['hsm']) && is_array($data['hsm'])) {
+                $paths[] = $data['hsm'];
+            }
+            if (isset($data['result']) && is_array($data['result'])) {
+                $paths[] = $data['result'];
+            }
+            if (isset($data['items']) && is_array($data['items'])) {
+                $paths[] = $data['items'];
+            }
+            if (isset($data['content']) && is_array($data['content'])) {
+                $paths[] = $data['content'];
+            }
+            if ($data !== [] && array_keys($data) === range(0, count($data) - 1)) {
+                $paths[] = $data;
+            }
+            foreach ($paths as $p) {
+                if (is_array($p) && !empty($p)) {
+                    return $p;
+                }
+            }
+
             return [];
+        };
+
+        $fetch_otima_wpp_hsm = function ($url, $token) use ($normalize_otima_wpp_hsm_body) {
+            $token_clean = preg_replace('/[\r\n\t]/', '', trim($token));
+            if ($token_clean === '') {
+                error_log('🟡 [Otima WPP HSM] Token vazio | ' . $url);
+                return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => 'token_empty'];
+            }
+
+            $header_sets = [
+                ['authorization' => $token_clean, 'Accept' => 'application/json', 'Content-Type' => 'application/json'],
+                ['Authorization' => $token_clean, 'Accept' => 'application/json'],
+                ['Authorization' => 'Bearer ' . $token_clean, 'Accept' => 'application/json', 'Content-Type' => 'application/json'],
+            ];
+
+            $last_http = 0;
+            $last_body = '';
+            foreach ($header_sets as $headers) {
+                $response = wp_remote_get($url, [
+                    'headers' => $headers,
+                    'timeout' => 25,
+                    'sslverify' => false,
+                ]);
+                if (is_wp_error($response)) {
+                    error_log('🔴 [Otima WPP HSM] WP_Error ' . $response->get_error_message() . ' | ' . $url);
+                    continue;
+                }
+                $last_http = wp_remote_retrieve_response_code($response);
+                $last_body = wp_remote_retrieve_body($response);
+                if ($last_http === 200) {
+                    $decoded = json_decode($last_body, true);
+                    $normalized = $normalize_otima_wpp_hsm_body($decoded);
+                    $keys_hint = '';
+                    if (isset($normalized[0]) && is_array($normalized[0])) {
+                        $keys_hint = implode(',', array_slice(array_keys($normalized[0]), 0, 12));
+                    }
+                    error_log('🟢 [Otima WPP HSM] HTTP 200 | ' . $url . ' | itens=' . count($normalized) . ($keys_hint !== '' ? ' | keys_0=' . $keys_hint : ''));
+
+                    return ['ok' => true, 'http' => 200, 'data' => $normalized, 'url' => $url];
+                }
+            }
+
+            error_log('🔴 [Otima WPP HSM] Falhou | ' . $url . ' | http=' . $last_http . ' | snippet=' . substr($last_body, 0, 600));
+
+            return ['ok' => false, 'http' => $last_http, 'data' => null, 'url' => $url, 'body_snippet' => substr($last_body, 0, 400)];
         };
 
         foreach ($carteiras as $carteira) {
@@ -10142,9 +10915,10 @@ class Painel_Campanhas
             // --- RCS Templates ---
             if (!empty($token_rcs)) {
                 $url_rcs = "https://services.otima.digital/v1/rcs/template/{$customer_code}";
-                $rcs_data = $fetch_otima($url_rcs, $token_rcs);
+                $rcs_res = $fetch_otima($url_rcs, $token_rcs);
+                $rcs_data = ($rcs_res['ok'] && is_array($rcs_res['data'])) ? $rcs_res['data'] : [];
 
-                if ($rcs_data && is_array($rcs_data)) {
+                if (!empty($rcs_data)) {
                     foreach ($rcs_data as $tpl) {
                         // FILTRO REMOVIDO: A Ótima nem sempre retorna o ID da carteira no campo 'code' exato.
                         // Permitindo que o template carregue normalmente.
@@ -10188,31 +10962,42 @@ class Painel_Campanhas
                 }
             }
 
-            // --- WhatsApp Templates ---
+            // --- WhatsApp HSM: GET https://services.otima.digital/v1/whatsapp/template/hsm/{id_carteira} (id_carteira = wallet na Ótima) ---
             if (!empty($token_wpp)) {
-                $url_wpp = "https://services.otima.digital/v1/whatsapp/template/hsm/{$customer_code}";
-                $wpp_data = $fetch_otima($url_wpp, $token_wpp);
+                $url_wpp = 'https://services.otima.digital/v1/whatsapp/template/hsm/' . rawurlencode((string) $customer_code);
+                error_log('🔵 [Otima Templates] HSM id_carteira=' . $customer_code . ' url=' . $url_wpp);
+                $wpp_res = $fetch_otima_wpp_hsm($url_wpp, $token_wpp);
 
-                if ($wpp_data && is_array($wpp_data)) {
-                    foreach ($wpp_data as $tpl) {
-                        // No WhatsApp, o template_code é o nome técnico do template
-                        $templates[] = [
-                            'id' => 'wpp_' . ($tpl['template_code'] ?? uniqid()),
-                            'name' => $tpl['template_code'] ?? 'Template WhatsApp',
-                            'content' => $tpl['content'] ?? '',
-                            'date' => $tpl['created_date'] ?? date('Y-m-d H:i:s'),
-                            'source' => 'otima_wpp',
-                            'template_code' => $tpl['template_code'] ?? '',
-                            'status' => $tpl['status'] ?? '',
-                            'wallet_id' => $customer_code,
-                            'wallet_name' => $carteira_nome,
-                            'broker_code' => $tpl['broker_code'] ?? $tpl['brokerCode'] ?? '',
-                            'customer_code' => $customer_code,
-                            'status_desc' => $tpl['status_description'] ?? '',
-                            'category' => $tpl['category'] ?? '',
-                            'raw_data' => $tpl
-                        ];
+                if ($single_carteira_mode && !$wpp_res['ok']) {
+                    $hint = isset($wpp_res['body_snippet']) ? ' Resposta: ' . $wpp_res['body_snippet'] : '';
+                    wp_send_json_error('Não foi possível sincronizar os templates HSM para esta carteira.' . $hint);
+                    return;
+                }
+
+                $wpp_data = ($wpp_res['ok'] && is_array($wpp_res['data'])) ? $wpp_res['data'] : [];
+
+                foreach ($wpp_data as $tpl) {
+                    if (!is_array($tpl)) {
+                        continue;
                     }
+                    $wpp_code = $tpl['template_code'] ?? $tpl['code'] ?? $tpl['name'] ?? $tpl['template_name'] ?? $tpl['hsm_name'] ?? '';
+                    $tpl_label = $tpl['description'] ?? $tpl['title'] ?? $wpp_code;
+                    $templates[] = [
+                        'id' => 'wpp_' . ($wpp_code !== '' ? $wpp_code : uniqid()),
+                        'name' => $tpl_label !== '' ? $tpl_label : ($wpp_code !== '' ? $wpp_code : 'Template WhatsApp'),
+                        'content' => $tpl['content'] ?? $tpl['body'] ?? '',
+                        'date' => $tpl['created_date'] ?? $tpl['created_at'] ?? date('Y-m-d H:i:s'),
+                        'source' => 'otima_wpp',
+                        'template_code' => $wpp_code,
+                        'status' => $tpl['status'] ?? '',
+                        'wallet_id' => $customer_code,
+                        'wallet_name' => $carteira_nome,
+                        'broker_code' => $tpl['broker_code'] ?? $tpl['brokerCode'] ?? '',
+                        'customer_code' => $customer_code,
+                        'status_desc' => $tpl['status_description'] ?? '',
+                        'category' => $tpl['category'] ?? '',
+                        'raw_data' => $tpl,
+                    ];
                 }
             }
         }
@@ -10222,7 +11007,7 @@ class Painel_Campanhas
 
     public function handle_get_otima_brokers()
     {
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can('edit_posts')) {
             wp_send_json_error('Acesso negado');
             return;
         }
@@ -10360,6 +11145,8 @@ class Painel_Campanhas
             wp_send_json_error(['error' => 'Nonce invalido ou expirado. Recarregue a pagina e tente novamente.']);
             return;
         }
+
+        $this->pc_forbid_subscriber_ajax();
 
         if (!current_user_can('manage_options')) {
             $trace('Salesforce Import: Permission denied (not manage_options).');
@@ -10742,24 +11529,38 @@ class PC_Blocklist_Validator
 
         // Busca telefones bloqueados
         if (!empty($telefones)) {
-            $telefones_unique = array_unique($telefones);
-            $placeholders = implode(',', array_fill(0, count($telefones_unique), '%s'));
-            $query = $wpdb->prepare(
-                "SELECT valor FROM $table WHERE tipo = 'telefone' AND valor IN ($placeholders)",
-                $telefones_unique
-            );
-            $blocked_telefones = $wpdb->get_col($query);
+            $telefones_unique = array_values(array_unique($telefones));
+            $chunk = 2500;
+            foreach (array_chunk($telefones_unique, $chunk) as $chunk_vals) {
+                $placeholders = implode(',', array_fill(0, count($chunk_vals), '%s'));
+                $query = $wpdb->prepare(
+                    "SELECT valor FROM $table WHERE tipo = 'telefone' AND valor IN ($placeholders)",
+                    $chunk_vals
+                );
+                $col = $wpdb->get_col($query);
+                if (!empty($col)) {
+                    $blocked_telefones = array_merge($blocked_telefones, $col);
+                }
+            }
+            $blocked_telefones = array_values(array_unique($blocked_telefones));
         }
 
         // Busca CPFs bloqueados
         if (!empty($cpfs)) {
-            $cpfs_unique = array_unique($cpfs);
-            $placeholders = implode(',', array_fill(0, count($cpfs_unique), '%s'));
-            $query = $wpdb->prepare(
-                "SELECT valor FROM $table WHERE tipo = 'cpf' AND valor IN ($placeholders)",
-                $cpfs_unique
-            );
-            $blocked_cpfs = $wpdb->get_col($query);
+            $cpfs_unique = array_values(array_unique($cpfs));
+            $chunk = 2500;
+            foreach (array_chunk($cpfs_unique, $chunk) as $chunk_vals) {
+                $placeholders = implode(',', array_fill(0, count($chunk_vals), '%s'));
+                $query = $wpdb->prepare(
+                    "SELECT valor FROM $table WHERE tipo = 'cpf' AND valor IN ($placeholders)",
+                    $chunk_vals
+                );
+                $col = $wpdb->get_col($query);
+                if (!empty($col)) {
+                    $blocked_cpfs = array_merge($blocked_cpfs, $col);
+                }
+            }
+            $blocked_cpfs = array_values(array_unique($blocked_cpfs));
         }
 
         // Filtra registros que não estão na blocklist
@@ -10946,7 +11747,9 @@ class PC_Campaign_Filters
             'starts_with',
             'ends_with',
             'in',
-            'not_in'
+            'not_in',
+            'is_null',
+            'is_not_null',
         ];
 
         if (empty($filters) || !is_array($filters)) {
@@ -10984,16 +11787,24 @@ class PC_Campaign_Filters
                 $operator = $filter['operator'];
                 $value = $filter['value'] ?? null;
 
-                // Pula valores vazios, exceto se for verificação de nulo (futuro)
-                if ($value === '' || $value === null) {
-                    continue;
-                }
-
-                if (!in_array($operator, $allowed_operators)) {
+                if (!in_array($operator, $allowed_operators, true)) {
                     continue;
                 }
 
                 $sanitized_column = esc_sql(str_replace('`', '', $column));
+
+                if ($operator === 'is_null') {
+                    $where_clauses[] = "`{$sanitized_column}` IS NULL";
+                    continue;
+                }
+                if ($operator === 'is_not_null') {
+                    $where_clauses[] = "`{$sanitized_column}` IS NOT NULL";
+                    continue;
+                }
+
+                if ($value === '' || $value === null) {
+                    continue;
+                }
 
                 switch ($operator) {
                     case 'equals':
@@ -11066,7 +11877,91 @@ class PC_Campaign_Filters
         return intval($count);
     }
 
-    public static function get_filtered_records($table_name, $filters, $limit = 0)
+    /**
+     * Monta lista SELECT só com colunas usadas na campanha (reduz memória em bases com muitas colunas / 100k+ linhas).
+     *
+     * @param string[] $extra_requested Nomes de colunas vindos do variables_map (case-insensitive)
+     * @return string|null Lista "`col1`, `col2`" ou null se não for seguro (cai no SELECT *)
+     */
+    private static function build_lean_select_list($table_name, array $extra_requested)
+    {
+        global $wpdb;
+
+        $raw_cols = $wpdb->get_col("SHOW COLUMNS FROM `{$table_name}`");
+        if (empty($raw_cols)) {
+            return null;
+        }
+
+        $upper_map = [];
+        foreach ($raw_cols as $cn) {
+            $upper_map[strtoupper($cn)] = $cn;
+        }
+
+        $quoted = [];
+        $add_upper = function ($upper) use (&$quoted, $upper_map) {
+            $U = strtoupper($upper);
+            if (isset($upper_map[$U])) {
+                $act = str_replace('`', '', $upper_map[$U]);
+                $quoted[$U] = '`' . esc_sql($act) . '`';
+            }
+        };
+
+        if (isset($upper_map['TELEFONE'])) {
+            $add_upper('TELEFONE');
+        } elseif (isset($upper_map['CELULAR'])) {
+            $add_upper('CELULAR');
+        }
+
+        if (isset($upper_map['NOME'])) {
+            $add_upper('NOME');
+        } elseif (isset($upper_map['CLIENTE'])) {
+            $add_upper('CLIENTE');
+        }
+
+        if (isset($upper_map['IDGIS_AMBIENTE'])) {
+            $add_upper('IDGIS_AMBIENTE');
+        } elseif (isset($upper_map['AMBIENTE'])) {
+            $add_upper('AMBIENTE');
+        }
+
+        if (isset($upper_map['IDCOB_CONTRATO'])) {
+            $add_upper('IDCOB_CONTRATO');
+        } elseif (isset($upper_map['CONTRATO'])) {
+            $add_upper('CONTRATO');
+        }
+
+        if (isset($upper_map['CPF']) && isset($upper_map['CPF_CNPJ'])) {
+            $add_upper('CPF');
+            $add_upper('CPF_CNPJ');
+        } elseif (isset($upper_map['CPF'])) {
+            $add_upper('CPF');
+        } elseif (isset($upper_map['CPF_CNPJ'])) {
+            $add_upper('CPF_CNPJ');
+        } elseif (isset($upper_map['CNPJ'])) {
+            $add_upper('CNPJ');
+        }
+
+        foreach ($extra_requested as $req) {
+            if (!is_string($req) || $req === '') {
+                continue;
+            }
+            $add_upper($req);
+        }
+
+        // Precisamos de ao menos uma coluna “de telefone” para a campanha fazer sentido
+        $has_phone = isset($upper_map['TELEFONE']) && isset($quoted['TELEFONE'])
+            || isset($upper_map['CELULAR']) && isset($quoted['CELULAR']);
+        if (!$has_phone) {
+            return null;
+        }
+
+        return implode(', ', $quoted);
+    }
+
+    /**
+     * @param string[] $extra_columns Colunas extras (ex.: campos do variables_map) para incluir no SELECT
+     */
+    public static function get_filtered_records($table_name, $filters, $limit = 0, $extra_columns = [])
     {
         global $wpdb;
 
@@ -11074,14 +11969,21 @@ class PC_Campaign_Filters
             return [];
         }
 
+        $extra_columns = is_array($extra_columns) ? $extra_columns : [];
+
         $where_sql = self::build_where_clause($filters);
         $limit_sql = '';
         if ($limit > 0) {
             $limit_sql = $wpdb->prepare(" LIMIT %d", $limit);
         }
 
-        // Use SELECT * to avoid issues with column names case sensitivity or missing columns
-        $sql = "SELECT * FROM `{$table_name}`" . $where_sql . $limit_sql;
+        $select_list = self::build_lean_select_list($table_name, $extra_columns);
+        if ($select_list === null) {
+            error_log('PC Campaign Filters - SELECT enxuto indisponível; usando SELECT * (memória maior). Tabela: ' . $table_name);
+            $sql = "SELECT * FROM `{$table_name}`" . $where_sql . $limit_sql;
+        } else {
+            $sql = "SELECT {$select_list} FROM `{$table_name}`" . $where_sql . $limit_sql;
+        }
 
         $records = $wpdb->get_results($sql, ARRAY_A);
 
@@ -11092,19 +11994,23 @@ class PC_Campaign_Filters
 
         // Helper function to get value from record case-insensitively
         $get_val = function ($record, $keys) {
-            if (!is_array($keys))
+            if (!is_array($keys)) {
                 $keys = [$keys];
+            }
             foreach ($keys as $key) {
-                if (isset($record[$key]))
+                if (isset($record[$key])) {
                     return $record[$key];
-                if (isset($record[strtolower($key)]))
+                }
+                if (isset($record[strtolower($key)])) {
                     return $record[strtolower($key)];
-                if (isset($record[strtoupper($key)]))
+                }
+                if (isset($record[strtoupper($key)])) {
                     return $record[strtoupper($key)];
-                // Try to find key case-insensitively
+                }
                 foreach ($record as $k => $v) {
-                    if (strcasecmp($k, $key) === 0)
+                    if (strcasecmp($k, $key) === 0) {
                         return $v;
+                    }
                 }
             }
             return '';
@@ -11113,7 +12019,6 @@ class PC_Campaign_Filters
         $normalized_records = [];
         foreach ($records as $record) {
             $telefone = $get_val($record, ['TELEFONE', 'celular', 'phone']);
-            // Fallback: try to find any column that looks like a phone
             if (empty($telefone)) {
                 foreach ($record as $k => $v) {
                     if (stripos($k, 'tel') !== false || stripos($k, 'cel') !== false) {
@@ -11123,13 +12028,16 @@ class PC_Campaign_Filters
                 }
             }
 
-            $normalized_records[] = [
+            $base = [
                 'telefone' => $telefone,
                 'nome' => $get_val($record, ['NOME', 'name', 'cliente']),
                 'idgis_ambiente' => $get_val($record, ['IDGIS_AMBIENTE', 'id_gis', 'ambiente']),
                 'idcob_contrato' => $get_val($record, ['IDCOB_CONTRATO', 'contrato', 'id_contrato']),
                 'cpf_cnpj' => $get_val($record, ['CPF', 'CNPJ', 'cpf_cnpj', 'doc'])
             ];
+
+            // Preserva colunas trazidas no SELECT (variáveis de template) com chaves originais + UPPER para provedores
+            $normalized_records[] = array_merge($record, $base);
         }
 
         return $normalized_records;

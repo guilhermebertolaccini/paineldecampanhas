@@ -13,14 +13,22 @@ const getAjaxUrl = () => {
 };
 
 // Helper para fazer requisições AJAX do WordPress
-export const wpAjax = async (action: string, data: Record<string, any> = {}, nonceType: 'nonce' | 'cmNonce' = 'nonce') => {
+export const wpAjax = async (
+  action: string,
+  data: Record<string, any> = {},
+  nonceType: 'nonce' | 'cmNonce' | 'validatorNonce' = 'nonce'
+) => {
   const formData = new FormData();
   formData.append('action', action);
 
   // Adiciona nonce se disponível
   if (typeof (window as any).pcAjax !== 'undefined') {
     // Para ações cm_* usa cmNonce, para pc_* usa nonce
-    const nonce = (window as any).pcAjax[nonceType] || (window as any).pcAjax.nonce;
+    const pc = (window as any).pcAjax;
+    const nonce =
+      nonceType === 'validatorNonce'
+        ? (pc?.validatorNonce || pc?.nonce)
+        : (pc?.[nonceType] || pc?.nonce);
     if (nonce) {
       formData.append('nonce', nonce);
       console.log(`🔵 [API] Usando nonce tipo: ${nonceType} para ação: ${action}`);
@@ -146,6 +154,18 @@ export const getCampanhas = (params: Record<string, any> = {}) => {
   return wpAjax('pc_get_campanhas', params);
 };
 
+export const cancelCampanha = (params: {
+  agendamento_id: string;
+  fornecedor: string;
+  motivo: string;
+}) => {
+  return wpAjax('pc_cancel_campanha', {
+    agendamento_id: params.agendamento_id,
+    fornecedor: params.fornecedor,
+    motivo: params.motivo,
+  });
+};
+
 export const scheduleCampaign = (data: Record<string, any>) => {
   // Formata os dados conforme esperado pelo backend
   const payload: Record<string, any> = {
@@ -162,6 +182,10 @@ export const scheduleCampaign = (data: Record<string, any>) => {
     throttling_type: data.throttling_type || 'none',
     throttling_config: JSON.stringify(data.throttling_config || {}),
   };
+
+  if (data.include_baits) {
+    payload.bait_ids = JSON.stringify(Array.isArray(data.bait_ids) ? data.bait_ids : []);
+  }
 
   // Adiciona campos para templates da Ótima
   if (data.template_code) {
@@ -263,10 +287,23 @@ export const getIscas = () => {
   return wpAjax('pc_get_iscas', {});
 };
 
-export const getOtimaTemplates = (walletId?: string) => {
+export const getOtimaTemplates = (walletId?: string, carteiraDbId?: string) => {
   const payload: Record<string, string> = {};
   if (walletId) payload.wallet_id = String(walletId);
-  return wpAjax('pc_get_otima_templates', payload);
+  if (carteiraDbId) payload.carteira_id = String(carteiraDbId);
+  if (typeof window !== 'undefined' && (walletId || carteiraDbId)) {
+    console.log('[Ótima HSM] AJAX pc_get_otima_templates payload:', {
+      wallet_id: walletId ?? null,
+      carteira_id: carteiraDbId ?? null,
+    });
+  }
+  return wpAjax('pc_get_otima_templates', payload).then((data) => {
+    if (typeof window !== 'undefined' && (walletId || carteiraDbId)) {
+      const arr = Array.isArray(data) ? data : [];
+      console.log('[Ótima HSM] resposta do painel (itens):', arr.length, arr[0] ?? null);
+    }
+    return data;
+  });
 };
 
 export const getOtimaBrokers = () => {
@@ -382,10 +419,10 @@ export const saveRecurring = (data: Record<string, any>) => {
     id: data.id, // Se tiver id, será update, senão será insert
   };
 
-  if (data.template_code) {
+  if (data.template_code !== undefined && data.template_code !== null) {
     payload.template_code = data.template_code;
   }
-  if (data.template_source) {
+  if (data.template_source !== undefined && data.template_source !== null && data.template_source !== '') {
     payload.template_source = data.template_source;
   }
   if (data.broker_code) {
@@ -472,6 +509,10 @@ export const createCpfCampaign = (data: Record<string, any>) => {
     include_baits: data.include_baits || 0,
     show_already_sent: data.show_already_sent || 0,
   };
+
+  if (data.include_baits) {
+    payload.bait_ids = JSON.stringify(Array.isArray(data.bait_ids) ? data.bait_ids : []);
+  }
 
   // broker_code e customer_code: igual Nova Campanha - broker do select, customer = id_carteira por registro (PHP)
   if (templateSource === 'otima_rcs' || templateSource === 'otima_wpp') {
@@ -653,6 +694,99 @@ export const getStaticCredentials = async () => {
 export const saveStaticCredentials = (data: Record<string, any>) => {
   return wpAjax('pc_save_static_credentials', data);
 };
+
+/** Evolution API — credenciais só no servidor; token nunca retornado completo */
+export const getEvolutionConfig = async () => {
+  const { z } = await import('zod');
+  const Schema = z.object({
+    evolution_api_url: z.string(),
+    evolution_token_configured: z.boolean(),
+  });
+  const raw = await wpAjax('pc_evolution_get_config', {});
+  return Schema.parse(raw);
+};
+
+export const saveEvolutionConfig = (data: { evolution_api_url: string; evolution_api_token?: string }) =>
+  wpAjax('pc_evolution_save_config', {
+    evolution_api_url: data.evolution_api_url,
+    evolution_api_token: data.evolution_api_token ?? '',
+  });
+
+/** Validador WhatsApp (CSV) — processamento em etapas */
+export const waValidatorUpload = async (file: File) => {
+  const { z } = await import('zod');
+  const Schema = z.object({
+    job_id: z.string(),
+    download_nonce: z.string().optional(),
+  });
+  const raw = await wpAjax('pc_wa_validator_upload', { file }, 'validatorNonce');
+  return Schema.parse(raw);
+};
+
+export const waValidatorStep = async (jobId: string) => {
+  const { z } = await import('zod');
+  const Schema = z.object({
+    done: z.boolean(),
+    progress: z.number(),
+    processed: z.number(),
+    total: z.number(),
+    download_nonce: z.string().optional(),
+  });
+  const raw = await wpAjax('pc_wa_validator_step', { job_id: jobId }, 'validatorNonce');
+  return Schema.parse(raw);
+};
+
+/** Métricas agregadas do Validador (REST, só administradores) */
+export async function fetchValidadorMetricas(dataInicio: string, dataFim: string) {
+  const { z } = await import('zod');
+  const pc = (window as any).pcAjax;
+  const base = pc?.validadorMetricasRest as string | undefined;
+  if (!base) {
+    throw new Error('validadorMetricasRest não disponível (recarregue a página).');
+  }
+  const url = new URL(base, window.location.origin);
+  url.searchParams.set('data_inicio', dataInicio);
+  url.searchParams.set('data_fim', dataFim);
+
+  const res = await fetch(url.toString(), {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/json',
+      'X-WP-Nonce': (pc?.restNonce as string) || '',
+    },
+  });
+
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg =
+      typeof body?.message === 'string'
+        ? body.message
+        : typeof body?.code === 'string'
+          ? body.code
+          : `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+
+  const Schema = z.object({
+    periodo: z.object({
+      data_inicio: z.string(),
+      data_fim: z.string(),
+      timezone: z.string().optional(),
+    }),
+    linhas: z.array(
+      z.object({
+        usuario_id: z.coerce.number(),
+        usuario_nome: z.string(),
+        total_enviado: z.coerce.number(),
+        total_validos: z.coerce.number(),
+        taxa_qualidade_pct: z.coerce.number(),
+      })
+    ),
+  });
+
+  return Schema.parse(body);
+}
 
 export const getOtimaCustomers = (provider: 'rcs' | 'wpp' = 'rcs') => {
   return wpAjax('pc_get_otima_customers', { provider });

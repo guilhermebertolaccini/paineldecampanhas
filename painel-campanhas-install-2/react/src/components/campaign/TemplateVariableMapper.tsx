@@ -109,20 +109,85 @@ export function TemplateVariableMapper({ variables, mapping, onChange }: Props) 
 }
 
 /**
- * Extracts variable names from a template string with {{varN}} placeholders.
- * Returns sorted unique list: ["var1", "var2", ...]
+ * Junta todo texto onde placeholders podem aparecer (RCS rich_card, WPP components/BODY, etc.).
+ */
+export function collectPlaceholdersSourceText(template: unknown): string {
+    if (!template || typeof template !== "object") return "";
+    const t = template as Record<string, any>;
+    const raw = (t.raw_data && typeof t.raw_data === "object" ? t.raw_data : t) as Record<string, any>;
+
+    const walkComponents = (components: unknown): string => {
+        if (!Array.isArray(components)) return "";
+        const chunks: string[] = [];
+        for (const c of components) {
+            if (!c || typeof c !== "object") continue;
+            const comp = c as Record<string, any>;
+            const typ = String(comp.type ?? comp.Type ?? "").toLowerCase();
+            if (typeof comp.text === "string") chunks.push(comp.text);
+            if (comp.body && typeof comp.body.text === "string") chunks.push(comp.body.text);
+            if (typ === "body" || typ === "header" || typ === "footer") {
+                if (typeof comp.text === "string") chunks.push(comp.text);
+            }
+            if (Array.isArray(comp.buttons)) {
+                for (const b of comp.buttons) {
+                    if (b && typeof b.text === "string") chunks.push(b.text);
+                }
+            }
+            const ex = comp.example;
+            if (ex && typeof ex === "object") {
+                const bt = ex.body_text;
+                if (Array.isArray(bt)) chunks.push(bt.join(" "));
+                else if (typeof bt === "string") chunks.push(bt);
+            }
+            if (Array.isArray(comp.components)) chunks.push(walkComponents(comp.components));
+        }
+        return chunks.filter(Boolean).join("\n");
+    };
+
+    const parts: string[] = [];
+    if (typeof t.content === "string") parts.push(t.content);
+    if (typeof raw.content === "string") parts.push(raw.content);
+    if (typeof raw.body === "string") parts.push(raw.body);
+    if (typeof raw.template_body === "string") parts.push(raw.template_body);
+    if (typeof raw.text === "string") parts.push(raw.text);
+    if (typeof raw.description === "string") parts.push(raw.description);
+
+    const rc = raw.rich_card ?? raw.richCard;
+    if (rc && typeof rc === "object") {
+        if (typeof rc.title === "string") parts.push(rc.title);
+        if (typeof rc.description === "string") parts.push(rc.description);
+        if (typeof rc.text === "string") parts.push(rc.text);
+    }
+
+    if (raw.components) parts.push(walkComponents(raw.components));
+    const nested = raw.template;
+    if (nested && typeof nested === "object" && Array.isArray(nested.components)) {
+        parts.push(walkComponents(nested.components));
+    }
+
+    return parts.filter(Boolean).join("\n");
+}
+
+/**
+ * Extracts variable names from a template string with {{varN}}, {n}, -var-, etc.
+ * Returns sorted unique list (números na ordem natural: 1, 2, 10).
  */
 export function extractVariables(text: string): string[] {
     if (!text) return [];
-    // Match {{varName}}, {varName}, [varName], -varName-, or raw var1, var2, etc.
-    const regex = /\{\{([\w.-]+)\}\}|\{([\w.-]+)\}|\[([\w.-]+)\]|(-[\w.-]+-)|\b(var\d+)\b/g;
+    // {{name}}, {name}, [name], -name- (Ótima bulk), var1
+    const regex = /\{\{([\w.-]+)\}\}|\{([\w.-]+)\}|\[([\w.-]+)\]|-([\w.-]+)-|\b(var\d+)\b/g;
     const vars: string[] = [];
     let match;
     while ((match = regex.exec(text)) !== null) {
         const v = match[1] || match[2] || match[3] || match[4] || match[5];
         if (v) vars.push(v);
     }
-    return [...new Set(vars)].sort();
+    const uniq = [...new Set(vars)];
+    const allNumeric = uniq.length > 0 && uniq.every((x) => /^\d+$/.test(x));
+    if (allNumeric) {
+        return uniq.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+    }
+    return uniq.sort((a, b) => a.localeCompare(b));
 }
 
 /**

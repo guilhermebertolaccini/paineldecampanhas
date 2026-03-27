@@ -1,5 +1,6 @@
 import React from "react";
 import { Smartphone } from "lucide-react";
+import { collectPlaceholdersSourceText } from "./TemplateVariableMapper";
 
 interface Props {
     template: any;                              // Raw template object from Ótima API
@@ -9,7 +10,7 @@ interface Props {
 
 function applyVars(text: string, vars: Record<string, string>): string {
     if (!text) return "";
-    return text.replace(/\{\{([\w.-]+)\}\}|\{([\w.-]+)\}|\[([\w.-]+)\]|(-[\w.-]+-)|\b(var\d+)\b/g, (match, g1, g2, g3, g4, g5) => {
+    return text.replace(/\{\{([\w.-]+)\}\}|\{([\w.-]+)\}|\[([\w.-]+)\]|-([\w.-]+)-|\b(var\d+)\b/g, (match, g1, g2, g3, g4, g5) => {
         const name = g1 || g2 || g3 || g4 || g5;
         return vars[name] ?? match;
     });
@@ -31,9 +32,18 @@ export function RcsMessagePreview({ template, resolvedVariables = {}, channel = 
     // --- RCS Rich Card ---
     const richCard = raw.rich_card ?? raw.richCard ?? null;
     const imageUrl: string | null = richCard?.image_url ?? raw.image_url ?? null;
+    const wppBodyText =
+        channel === "wpp" ? collectPlaceholdersSourceText(template) : "";
     const title: string = applyVars(richCard?.title ?? raw.title ?? "", resolvedVariables);
     const description: string = applyVars(
-        richCard?.description ?? richCard?.text ?? raw.description ?? raw.text ?? raw.content ?? template.content ?? "",
+        richCard?.description ??
+            richCard?.text ??
+            raw.description ??
+            raw.text ??
+            raw.content ??
+            template.content ??
+            wppBodyText ??
+            "",
         resolvedVariables
     );
     const buttons: any[] = richCard?.suggestions ?? raw.suggestions ?? [];

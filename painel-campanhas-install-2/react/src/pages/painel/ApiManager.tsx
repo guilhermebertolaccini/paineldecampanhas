@@ -15,6 +15,8 @@ import {
   getMasterApiKey,
   getMicroserviceConfig,
   saveMicroserviceConfig,
+  getEvolutionConfig,
+  saveEvolutionConfig,
   getStaticCredentials,
   saveStaticCredentials,
   getOtimaCustomers,
@@ -237,6 +239,11 @@ export default function ApiManager() {
     dashboard_password: "",
   });
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [evolutionConfig, setEvolutionConfig] = useState({
+    url: "",
+    token: "",
+  });
+
   const [dynamicCredential, setDynamicCredential] = useState({
     provider: "",
     env_id: "",
@@ -269,6 +276,20 @@ export default function ApiManager() {
     queryKey: ['static-credentials'],
     queryFn: getStaticCredentials,
   });
+
+  const { data: evolutionData, isLoading: evolutionLoading } = useQuery({
+    queryKey: ['evolution-config'],
+    queryFn: getEvolutionConfig,
+  });
+
+  useEffect(() => {
+    if (evolutionData) {
+      setEvolutionConfig((prev) => ({
+        url: evolutionData.evolution_api_url || "",
+        token: prev.token,
+      }));
+    }
+  }, [evolutionData]);
 
   useEffect(() => {
     if (microConfigData) {
@@ -349,6 +370,22 @@ export default function ApiManager() {
       toast({
         title: "Erro ao salvar",
         description: error.message || "Erro ao salvar configuração",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const evolutionMutation = useMutation({
+    mutationFn: (data: { evolution_api_url: string; evolution_api_token?: string }) => saveEvolutionConfig(data),
+    onSuccess: () => {
+      toast({ title: "Evolution API salva com sucesso" });
+      queryClient.invalidateQueries({ queryKey: ['evolution-config'] });
+      setEvolutionConfig((p) => ({ ...p, token: "" }));
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Erro ao salvar Evolution API",
+        description: error?.message || "Tente novamente",
         variant: "destructive",
       });
     },
@@ -711,6 +748,89 @@ export default function ApiManager() {
                   <Save className="mr-2 h-4 w-4" />
                 )}
                 Salvar Configuração
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Evolution API — Validador WhatsApp */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Server className="h-5 w-5 text-primary" />
+            Evolution API (Validador WhatsApp)
+          </CardTitle>
+          <CardDescription>
+            URL base e token global da Evolution API v2. O token é armazenado cifrado no servidor e não é enviado de volta ao navegador.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4 max-w-2xl">
+          {evolutionLoading ? (
+            <Skeleton className="h-24 w-full" />
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Label>EVOLUTION_API_URL</Label>
+                <Input
+                  placeholder="https://sua-evolution.exemplo.com"
+                  value={evolutionConfig.url}
+                  onChange={(e) => setEvolutionConfig({ ...evolutionConfig, url: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>EVOLUTION_API_TOKEN</Label>
+                <div className="relative">
+                  <Input
+                    type={visibleKeys.includes("evolution") ? "text" : "password"}
+                    placeholder={
+                      evolutionData?.evolution_token_configured
+                        ? "Deixe em branco para manter o token atual ou cole um novo"
+                        : "Cole o apikey global"
+                    }
+                    value={evolutionConfig.token}
+                    onChange={(e) => setEvolutionConfig({ ...evolutionConfig, token: e.target.value })}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleKeyVisibility("evolution")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {visibleKeys.includes("evolution") ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+                {evolutionData?.evolution_token_configured && (
+                  <p className="text-xs text-muted-foreground">Token já configurado no servidor.</p>
+                )}
+              </div>
+              <Button
+                onClick={() => {
+                  if (!evolutionConfig.url.trim()) {
+                    toast({
+                      title: "URL obrigatória",
+                      description: "Informe a URL base da Evolution API",
+                      variant: "destructive",
+                    });
+                    return;
+                  }
+                  evolutionMutation.mutate({
+                    evolution_api_url: evolutionConfig.url.trim(),
+                    evolution_api_token: evolutionConfig.token.trim() || undefined,
+                  });
+                }}
+                disabled={evolutionMutation.isPending}
+              >
+                {evolutionMutation.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="mr-2 h-4 w-4" />
+                )}
+                Salvar Evolution API
               </Button>
             </>
           )}

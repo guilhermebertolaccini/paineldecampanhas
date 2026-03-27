@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Upload, FileText, CheckCircle, AlertCircle, Loader2, X, Check, ChevronsUpDown } from "lucide-react";
-import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables } from "@/components/campaign/TemplateVariableMapper";
+import { Upload, FileText, CheckCircle, AlertCircle, Loader2, X, Check, ChevronsUpDown, RefreshCw } from "lucide-react";
+import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables, collectPlaceholdersSourceText } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,7 @@ import {
   getGosacOficialTemplates,
   getGosacOficialConnections,
   getRobbuOficialTemplates,
+  getIscas,
 } from "@/lib/api";
 
 const providers = [
@@ -57,6 +58,8 @@ const providers = [
 export default function CampanhaArquivo() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const otimaTemplatesErrorShownRef = useRef<unknown>(null);
   const [file, setFile] = useState<File | null>(null);
   const [tempId, setTempId] = useState<string>("");
   const [matchField, setMatchField] = useState<"cpf" | "telefone">("cpf");
@@ -67,6 +70,7 @@ export default function CampanhaArquivo() {
   const [carteira, setCarteira] = useState("");
   const [tableName, setTableName] = useState("");
   const [includeBaits, setIncludeBaits] = useState(false);
+  const [selectedBaitIds, setSelectedBaitIds] = useState<number[]>([]);
   const [showAlreadySent, setShowAlreadySent] = useState(false);
   const [baseUpdateStatus, setBaseUpdateStatus] = useState<{ isUpdated: boolean; message: string } | null>(null);
   const [templateVariables, setTemplateVariables] = useState<Record<string, VarMapping>>({});
@@ -90,12 +94,33 @@ export default function CampanhaArquivo() {
   const selectedCarteiraObj = (carteiras as any[]).find((c: any) => String(c.id) === String(carteira));
   const walletIdForOtima = selectedCarteiraObj?.id_carteira ? String(selectedCarteiraObj.id_carteira) : undefined;
 
-  const { data: otimaTemplatesData = [], isLoading: otimaTemplatesLoading } = useQuery({
-    queryKey: ['otima-templates', walletIdForOtima],
-    queryFn: () => getOtimaTemplates(walletIdForOtima),
-    enabled: !!walletIdForOtima,
-    staleTime: 5 * 60 * 1000,
+  const {
+    data: otimaTemplatesData = [],
+    isLoading: otimaTemplatesLoading,
+    isFetching: otimaTemplatesFetching,
+    isError: otimaTemplatesIsError,
+    error: otimaTemplatesErr,
+  } = useQuery({
+    queryKey: ['otima-templates', walletIdForOtima, carteira],
+    queryFn: () => getOtimaTemplates(walletIdForOtima, carteira),
+    enabled: !!walletIdForOtima && !!carteira,
+    staleTime: 60 * 1000,
+    gcTime: 5 * 60 * 1000,
   });
+
+  useEffect(() => {
+    if (!otimaTemplatesIsError || !otimaTemplatesErr) {
+      otimaTemplatesErrorShownRef.current = null;
+      return;
+    }
+    if (otimaTemplatesErrorShownRef.current === otimaTemplatesErr) return;
+    otimaTemplatesErrorShownRef.current = otimaTemplatesErr;
+    const msg =
+      otimaTemplatesErr instanceof Error
+        ? otimaTemplatesErr.message
+        : "Não foi possível sincronizar os templates para esta carteira.";
+    toast({ variant: "destructive", title: "Templates Ótima", description: msg });
+  }, [otimaTemplatesIsError, otimaTemplatesErr, toast]);
 
   // Buscar brokers Ótima (WPP + RCS)
   const { data: otimaBrokersData = [], isLoading: otimaBrokersLoading } = useQuery({
@@ -131,6 +156,11 @@ export default function CampanhaArquivo() {
     queryKey: ['robbu-oficial-templates'],
     queryFn: getRobbuOficialTemplates,
     staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: baitsData = [], isLoading: baitsLoading } = useQuery({
+    queryKey: ['baits-file-campaign'],
+    queryFn: getIscas,
   });
 
   // Processar e mesclar templates
@@ -413,7 +443,9 @@ export default function CampanhaArquivo() {
       return;
     }
 
-    if (!template) {
+    const salesforceOnly = provider === "SALESFORCE";
+
+    if (!salesforceOnly && !template) {
       toast({
         title: "Template obrigatório",
         description: "Por favor, selecione um template de mensagem",
@@ -424,7 +456,7 @@ export default function CampanhaArquivo() {
 
     const selectedTemplate = templates.find((t) => t.id === template);
 
-    if ((selectedTemplate?.source === 'otima_rcs' || selectedTemplate?.source === 'otima_wpp') && !brokerCode) {
+    if (!salesforceOnly && (selectedTemplate?.source === 'otima_rcs' || selectedTemplate?.source === 'otima_wpp') && !brokerCode) {
       toast({
         title: "Broker obrigatório",
         description: "Por favor, selecione um broker da Ótima",
@@ -433,7 +465,7 @@ export default function CampanhaArquivo() {
       return;
     }
 
-    if (selectedTemplate?.source === 'gosac_oficial' && !gosacConnectionId) {
+    if (!salesforceOnly && selectedTemplate?.source === 'gosac_oficial' && !gosacConnectionId) {
       toast({
         title: "Ilha obrigatória",
         description: "Selecione a ilha (conexão) por qual o disparo será enviado",
@@ -480,7 +512,9 @@ export default function CampanhaArquivo() {
 
     // template_source: PHP exige otima_rcs/otima_wpp para Ótima, gosac_oficial/noah_oficial para GOSAC/NOAH
     const isOtimaTemplate = selectedTemplate?.source === 'otima_rcs' || selectedTemplate?.source === 'otima_wpp' || selectedTemplate?.source === 'otima';
-    const templateSource = isOtimaTemplate
+    const templateSource = salesforceOnly
+      ? 'salesforce'
+      : isOtimaTemplate
       ? (provider === 'OTIMA_WPP' ? 'otima_wpp' : 'otima_rcs')
       : (selectedTemplate?.source || 'local');
 
@@ -488,15 +522,16 @@ export default function CampanhaArquivo() {
       temp_id: tempId,
       table_name: tableName,
       carteira: carteira || '',
-      template_id: selectedTemplate?.source === 'local' ? parseInt(template) : null,
-      template_code: selectedTemplate?.templateCode || null,
+      template_id: salesforceOnly ? null : (selectedTemplate?.source === 'local' ? parseInt(template) : null),
+      template_code: salesforceOnly ? null : (selectedTemplate?.templateCode || null),
       template_source: templateSource,
-      broker_code: brokerCode || selectedTemplate?.brokerCode || null,
-      customer_code: selectedTemplate?.customerCode || null,
-      variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
+      broker_code: salesforceOnly ? null : (brokerCode || selectedTemplate?.brokerCode || null),
+      customer_code: salesforceOnly ? null : (selectedTemplate?.customerCode || null),
+      variables_map: salesforceOnly ? null : (Object.keys(templateVariables).length > 0 ? templateVariables : null),
       provider: provider.toUpperCase(),
       match_field: matchField,
       include_baits: includeBaits ? 1 : 0,
+      bait_ids: includeBaits ? selectedBaitIds : [],
       show_already_sent: showAlreadySent ? 1 : 0,
     };
 
@@ -720,7 +755,28 @@ export default function CampanhaArquivo() {
             )}
 
             <div className="space-y-2">
-              <Label>Template de Mensagem <span className="text-red-500">*</span></Label>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label>Template de Mensagem <span className="text-red-500">*</span></Label>
+                {walletIdForOtima && carteira && (provider === "OTIMA_RCS" || provider === "OTIMA_WPP") ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 shrink-0 gap-1 text-xs"
+                    disabled={otimaTemplatesFetching}
+                    onClick={() => {
+                      queryClient.invalidateQueries({ queryKey: ["otima-templates"] });
+                      toast({
+                        title: "Sincronizando",
+                        description: "Buscando templates na API Ótima Digital…",
+                      });
+                    }}
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${otimaTemplatesFetching ? "animate-spin" : ""}`} />
+                    Sincronizar Ótima
+                  </Button>
+                ) : null}
+              </div>
               {(provider === 'OTIMA_RCS' || provider === 'OTIMA_WPP') && !carteira && (
                 <p className="text-xs text-muted-foreground">Selecione uma carteira para carregar templates Ótima.</p>
               )}
@@ -766,17 +822,7 @@ export default function CampanhaArquivo() {
                                   }
                                   // Save for preview
                                   setSelectedTemplateObj(selectedTpl ?? null);
-                                  // Extract variables from content
-                                  const rawData = selectedTpl?.raw_data || {};
-                                  const rc = rawData.rich_card || rawData.richCard || {};
-                                  const rawContent = [
-                                    selectedTpl?.content,
-                                    rawData.text,
-                                    rawData.description,
-                                    rc.title,
-                                    rc.description,
-                                    rc.text
-                                  ].filter(Boolean).join(' ');
+                                  const rawContent = collectPlaceholdersSourceText(selectedTpl);
                                   const detectedVars = extractVariables(rawContent);
                                   const initMap: Record<string, VarMapping> = {};
                                   detectedVars.forEach(vVar => {
@@ -957,17 +1003,55 @@ export default function CampanhaArquivo() {
                 <Checkbox
                   id="include-baits-file"
                   checked={includeBaits}
-                  onCheckedChange={(checked) => setIncludeBaits(!!checked)}
+                  onCheckedChange={(checked) => {
+                    const on = !!checked;
+                    setIncludeBaits(on);
+                    if (on && Array.isArray(baitsData) && baitsData.length) {
+                      setSelectedBaitIds(
+                        baitsData.map((b: any) => Number(b.id)).filter((n: number) => !Number.isNaN(n) && n > 0),
+                      );
+                    } else {
+                      setSelectedBaitIds([]);
+                    }
+                  }}
                 />
                 <div className="flex-1">
                   <label htmlFor="include-baits-file" className="font-semibold cursor-pointer">
                     Incluir iscas de teste
                   </label>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Adiciona automaticamente todos os números cadastrados como iscas nesta campanha
+                    Escolha quais iscas ativas entram nesta campanha
                   </p>
                 </div>
               </div>
+              {includeBaits && baitsData.length > 0 && (
+                <div className="max-h-40 overflow-y-auto space-y-2 pl-1">
+                  {baitsData.map((isca: any) => {
+                    const id = Number(isca.id);
+                    if (!id) return null;
+                    return (
+                      <label key={id} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <Checkbox
+                          checked={selectedBaitIds.includes(id)}
+                          onCheckedChange={(c) => {
+                            const on = !!c;
+                            setSelectedBaitIds((prev) =>
+                              on ? [...prev, id] : prev.filter((x) => x !== id),
+                            );
+                          }}
+                        />
+                        <span className="truncate">
+                          {isca.telefone}
+                          {isca.nome ? ` — ${isca.nome}` : ""}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {includeBaits && !baitsLoading && baitsData.length === 0 && (
+                <p className="text-xs text-destructive">Nenhuma isca ativa cadastrada.</p>
+              )}
             </div>
 
             {/* Filtro Adicional: Mostrar já enviados */}
@@ -990,7 +1074,7 @@ export default function CampanhaArquivo() {
               disabled={
                 !file ||
                 !tempId ||
-                !template ||
+                (!template && provider !== "SALESFORCE") ||
                 !provider ||
                 !tableName ||
                 createMutation.isPending ||

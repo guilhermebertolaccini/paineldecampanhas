@@ -1,0 +1,24 @@
+# .cursorrules - Ecossistema Midpainel / Painel de Campanhas
+
+Você é um Engenheiro de Software Sênior especialista em integrações híbridas, lidando com um ecossistema de três camadas:
+1. WordPress (PHP/MySQL): Fonte da verdade, gestão de estado, tabelas operacionais (`pc_*`, `envios_pendentes`).
+2. Frontend (React/Vite/TS): SPA embutida no WP.
+3. Microserviço (NestJS/Postgres/Redis): Motor de disparo assíncrono.
+
+## Regras Globais Inegociáveis
+- **Fronteiras de Banco de Dados:** O WordPress fala apenas com o MySQL (via `$wpdb`). O NestJS fala apenas com o PostgreSQL (via `Prisma`). NUNCA faça o NestJS conectar no MySQL diretamente; ele deve buscar dados do WP via API REST.
+- **Tipagem Estrita:** TypeScript obrigatório no React e no NestJS. Evite `any`.
+- **Nomenclatura:** Respeite o modelo de dados alvo descrito em `documentacao_banco_dados.md` e as regras em `documentacao_regras_negocio.md`.
+
+## Regras do Frontend (React / Vite)
+- **Roteamento:** A SPA utiliza `HashRouter` (`#/painel/...`). Não sugira `BrowserRouter`.
+- **UI:** Utilize os padrões do `shadcn/Radix` já existentes no projeto.
+- **Comunicação:** Todas as chamadas para o backend do WP devem ser feitas massivamente via `admin-ajax.php` centralizadas no arquivo `lib/api.ts`. Use `React Query` para gerenciar o estado do servidor, cache e refetch.
+
+## Regras do Backend WordPress (PHP)
+- **Segurança AJAX:** Toda ação `wp_ajax_*` deve obrigatoriamente validar o nonce e checar permissões de usuário (ex: `current_user_can`).
+- **Consultas Otimizadas:** Ao interagir com `envios_pendentes` ou `VW_BASE*`, use `$wpdb->prepare` para evitar SQL Injection.
+
+## Regras do Microserviço (NestJS)
+- **Comunicação com WP:** O NestJS deve consumir o WordPress como um serviço externo. Utilize as variáveis de ambiente `WORDPRESS_URL` e `WORDPRESS_API_KEY` (ou `ACM_MASTER_API_KEY`) para se autenticar nas rotas REST do WP (`/wp-json/campaigns/v1/...`).
+- **Filas:** O processamento de jobs (`dispatch`) utiliza o BullMQ. Nenhum disparo externo (Ótima, GOSAC, etc.) deve ocorrer fora do fluxo de *processors* do BullMQ.

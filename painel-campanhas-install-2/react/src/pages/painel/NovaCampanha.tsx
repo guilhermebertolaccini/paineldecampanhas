@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Database, Filter, MessageSquare, Truck, Send, Loader2, AlertCircle, Check, ChevronsUpDown, ImagePlus, X } from "lucide-react";
-import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables } from "@/components/campaign/TemplateVariableMapper";
+import { Database, Filter, MessageSquare, Truck, Send, Loader2, AlertCircle, Check, ChevronsUpDown, ImagePlus, X, RefreshCw } from "lucide-react";
+import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables, collectPlaceholdersSourceText } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -65,6 +65,8 @@ const providers = [
 export default function NovaCampanha() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const otimaTemplatesErrorShownRef = useRef<unknown>(null);
   const [step, setStep] = useState(1);
   const [filters, setFilters] = useState<FilterItem[]>([]);
   const [baseUpdateStatus, setBaseUpdateStatus] = useState<{
@@ -93,6 +95,7 @@ export default function NovaCampanha() {
     exclude_recent_phones: true,
     exclude_recent_hours: 48,
     include_baits: false,
+    selectedBaitIds: [] as number[],
     test_only: false,
     throttling_type: 'none',
     throttling_config: {} as any,
@@ -213,12 +216,33 @@ export default function NovaCampanha() {
   const selectedCarteiraObj = carteiras.find((c: any) => String(c.id) === String(formData.carteira));
   const walletIdForOtima = selectedCarteiraObj?.id_carteira ? String(selectedCarteiraObj.id_carteira) : undefined;
 
-  const { data: otimaTemplatesData = [], isLoading: otimaTemplatesLoading } = useQuery({
-    queryKey: ['otima-templates', walletIdForOtima],
-    queryFn: () => getOtimaTemplates(walletIdForOtima),
-    enabled: !!walletIdForOtima,
-    staleTime: 5 * 60 * 1000,
+  const {
+    data: otimaTemplatesData = [],
+    isLoading: otimaTemplatesLoading,
+    isFetching: otimaTemplatesFetching,
+    isError: otimaTemplatesIsError,
+    error: otimaTemplatesErr,
+  } = useQuery({
+    queryKey: ['otima-templates', walletIdForOtima, formData.carteira],
+    queryFn: () => getOtimaTemplates(walletIdForOtima, formData.carteira),
+    enabled: !!walletIdForOtima && !!formData.carteira,
+    staleTime: 60 * 1000,
+    gcTime: 5 * 60 * 1000,
   });
+
+  useEffect(() => {
+    if (!otimaTemplatesIsError || !otimaTemplatesErr) {
+      otimaTemplatesErrorShownRef.current = null;
+      return;
+    }
+    if (otimaTemplatesErrorShownRef.current === otimaTemplatesErr) return;
+    otimaTemplatesErrorShownRef.current = otimaTemplatesErr;
+    const msg =
+      otimaTemplatesErr instanceof Error
+        ? otimaTemplatesErr.message
+        : "Não foi possível sincronizar os templates para esta carteira.";
+    toast({ variant: "destructive", title: "Templates Ótima", description: msg });
+  }, [otimaTemplatesIsError, otimaTemplatesErr, toast]);
 
   // Buscar brokers Ótima (WPP + RCS)
   const { data: otimaBrokersData = [], isLoading: otimaBrokersLoading } = useQuery({
@@ -257,13 +281,7 @@ export default function NovaCampanha() {
       raw_data: t.raw_data || t,
     }));
 
-    if (formData.carteira) {
-      const selectedWallet = carteiras.find((c: any) => String(c.id) === String(formData.carteira));
-      const walletCode = selectedWallet?.id_carteira ? String(selectedWallet.id_carteira) : null;
-      if (walletCode) {
-        otima = otima.filter((t: any) => String(t.walletId) === walletCode || String(t.customerCode) === walletCode);
-      }
-    }
+    // Templates Ótima já vêm filtrados pelo backend (carteira_id + id_carteira); filtrar de novo aqui pode esconder itens por divergência de tipo.
 
     // Templates Externos (GOSAC Oficial + NOAH Oficial, filtrados por carteira)
     const external = Array.isArray(externalTemplatesData) ? externalTemplatesData.map((t: any) => {
@@ -335,7 +353,20 @@ export default function NovaCampanha() {
       templateName: t.templateName || t.name || t.id,
     }));
 
-    console.log('📋 [NovaCampanha] Templates locais:', local.length, 'Ótima:', otima.length, 'Externos:', external.length, 'GOSAC:', gosac.length, 'Robbu:', robbu.length);
+    console.log(
+      '📋 [NovaCampanha] Templates locais:',
+      local.length,
+      'Ótima (pós-merge):',
+      otima.length,
+      'raw Ótima API→painel:',
+      Array.isArray(otimaTemplatesData) ? otimaTemplatesData.length : 0,
+      '| Externos:',
+      external.length,
+      'GOSAC:',
+      gosac.length,
+      'Robbu:',
+      robbu.length
+    );
 
     return [...local, ...otima, ...external, ...gosac, ...robbu];
   }, [localTemplatesData, otimaTemplatesData, externalTemplatesData, gosacTemplatesData, robbuTemplatesData, formData.carteira, carteiras]);
@@ -404,6 +435,44 @@ export default function NovaCampanha() {
     });
   }, [templates, formData.providers, formData.carteira, carteiras]);
 
+  const salesforceOnly = useMemo(
+    () => formData.providers.length > 0 && formData.providers.every((p) => p === "SALESFORCE"),
+    [formData.providers],
+  );
+
+  const buildFilterPayload = (items: FilterItem[]) =>
+    items
+      .filter((f) => {
+        if (!f.column || !f.operator) return false;
+        if (f.operator === "is_null" || f.operator === "is_not_null") return true;
+        return f.value !== "" && f.value !== null && f.value !== undefined;
+      })
+      .map((f) => ({ column: f.column, operator: f.operator, value: f.value }));
+
+  useEffect(() => {
+    if (!salesforceOnly || step < 5) return;
+    setFormData((prev) => {
+      if (prev.templateSource === "salesforce") return prev;
+      return {
+        ...prev,
+        template: "__salesforce__",
+        templateSource: "salesforce",
+        templateCode: "",
+        message: "Conteúdo definido na automação Salesforce / Marketing Cloud.",
+      };
+    });
+    setTemplateVariables({});
+    setSelectedTemplateObj(null);
+  }, [salesforceOnly, step]);
+
+  useEffect(() => {
+    if (salesforceOnly || step < 5) return;
+    setFormData((prev) => {
+      if (prev.templateSource !== "salesforce" || prev.template !== "__salesforce__") return prev;
+      return { ...prev, template: "", templateSource: "", templateCode: "", message: "" };
+    });
+  }, [salesforceOnly, step]);
+
   const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading || gosacTemplatesLoading || robbuTemplatesLoading || otimaBrokersLoading;
 
   // Buscar filtros quando base for selecionada
@@ -445,13 +514,7 @@ export default function NovaCampanha() {
         // Formata os filtros novos para enviar ao backend
         // O backend espera um array de objetos {column, operator, value}
         // A FilterItem interface já combina com isso
-        const formattedFilters = filters
-          .filter(f => f.column && f.operator && f.value !== '' && f.value !== null)
-          .map(f => ({
-            column: f.column,
-            operator: f.operator,
-            value: f.value
-          }));
+        const formattedFilters = buildFilterPayload(filters);
 
         return await getCountDetailed({
           table_name: formData.base,
@@ -480,7 +543,7 @@ export default function NovaCampanha() {
       }
       return getTemplateContent(formData.template);
     },
-    enabled: !!formData.template && formData.template !== '' && formData.template !== '0' && step >= 3
+    enabled: !!formData.template && formData.template !== '' && formData.template !== '0' && formData.template !== '__salesforce__' && step >= 3
       && formData.templateSource === 'local',
     retry: false,
   });
@@ -585,7 +648,7 @@ export default function NovaCampanha() {
       return;
     }
 
-    if (!formData.template) {
+    if (!salesforceOnly && !formData.template) {
       toast({
         title: "Template obrigatório",
         description: "Por favor, selecione um template de mensagem",
@@ -594,7 +657,7 @@ export default function NovaCampanha() {
       return;
     }
 
-    if ((formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp') && !formData.brokerCode) {
+    if (!salesforceOnly && (formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp') && !formData.brokerCode) {
       toast({
         title: "Broker obrigatório",
         description: "Por favor, selecione um broker da Ótima",
@@ -603,7 +666,7 @@ export default function NovaCampanha() {
       return;
     }
 
-    if (formData.templateSource === 'gosac_oficial') {
+    if (!salesforceOnly && formData.templateSource === 'gosac_oficial') {
       const tid = formData.gosacTemplateId ?? selectedTemplateObj?.templateId ?? selectedTemplateObj?.id;
       const cid = formData.gosacConnectionId ?? selectedTemplateObj?.connectionId;
       if (!tid || (typeof tid === 'number' && tid <= 0)) {
@@ -643,16 +706,11 @@ export default function NovaCampanha() {
     const providersConfig = {
       mode: 'split',
       providers: formData.providers,
-      percentages: providersConfigMap
+      percentages: providersConfigMap,
+      ...(formData.include_baits ? { bait_ids: formData.selectedBaitIds } : {}),
     };
 
-    const formattedFilters = filters
-      .filter(f => f.column && f.operator && f.value !== '' && f.value !== null)
-      .map(f => ({
-        column: f.column,
-        operator: f.operator,
-        value: f.value
-      }));
+    const formattedFilters = buildFilterPayload(filters);
 
     if (formData.is_recurring) {
       const recurringData = {
@@ -716,6 +774,7 @@ export default function NovaCampanha() {
         exclude_recent_phones: formData.exclude_recent_phones ? 1 : 0,
         exclude_recent_hours: formData.exclude_recent_hours || 48,
         include_baits: formData.include_baits ? 1 : 0,
+        bait_ids: formData.include_baits ? formData.selectedBaitIds : [],
         test_only: formData.test_only ? 1 : 0,
         throttling_type: formData.throttling_type || 'none',
         throttling_config: formData.throttling_config || {},
@@ -748,6 +807,7 @@ export default function NovaCampanha() {
         }
         return true;
       case 5: {
+        if (salesforceOnly) return true;
         if (!formData.template) return false;
         const isOtima = formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp';
         if (isOtima && !formData.brokerCode) return false;
@@ -1002,10 +1062,16 @@ export default function NovaCampanha() {
                       {countLoading ? (
                         <Loader2 className="inline h-4 w-4 animate-spin" />
                       ) : (
-                        countData.effective.toLocaleString('pt-BR')
+                        (countData.effective ?? 0).toLocaleString('pt-BR')
                       )}
                     </span>
                   </div>
+                  {(countData as { partial?: boolean; partial_message?: string }).partial &&
+                    (countData as { partial_message?: string }).partial_message && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400 mt-2 leading-snug">
+                      {(countData as { partial_message?: string }).partial_message}
+                    </p>
+                  )}
                 </div>
               </div></CardContent>
           </>
@@ -1021,6 +1087,15 @@ export default function NovaCampanha() {
               <CardDescription>Selecione ou crie a mensagem da campanha</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {salesforceOnly && (
+                <Alert className="border-blue-200 bg-blue-50/50 dark:bg-blue-950/20">
+                  <AlertDescription>
+                    Campanha somente Salesforce: o template e o mapeamento de variáveis são definidos no Salesforce Marketing Cloud. Não é necessário selecionar template nesta etapa.
+                  </AlertDescription>
+                </Alert>
+              )}
+              {!salesforceOnly && (
+              <>
               {/* Assuming useState and imports are handled elsewhere in the component */}
               {/* const [openTemplateDropdown, setOpenTemplateDropdown] = React.useState(false); */}
               {/* import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover"; */}
@@ -1028,7 +1103,28 @@ export default function NovaCampanha() {
               {/* import { ChevronsUpDown, Check } from "lucide-react"; */}
               {/* import { cn } from "@/lib/utils"; */}
               <div className="space-y-2">
-                <Label>Template</Label>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Label>Template</Label>
+                  {walletIdForOtima && formData.carteira ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 shrink-0 gap-1 text-xs"
+                      disabled={otimaTemplatesFetching}
+                      onClick={() => {
+                        queryClient.invalidateQueries({ queryKey: ['otima-templates'] });
+                        toast({
+                          title: 'Sincronizando',
+                          description: 'Buscando templates HSM na API Ótima Digital…',
+                        });
+                      }}
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${otimaTemplatesFetching ? 'animate-spin' : ''}`} />
+                      Sincronizar templates Ótima
+                    </Button>
+                  ) : null}
+                </div>
                 <Popover open={openTemplateDropdown} onOpenChange={setOpenTemplateDropdown}>
                   <PopoverTrigger asChild>
                     <Button
@@ -1100,17 +1196,8 @@ export default function NovaCampanha() {
                                   // Save template object for preview + variable extraction
                                   setSelectedTemplateObj(selectedTemplate ?? null);
 
-                                  // Extract variables from template content
-                                  const rawData = selectedTemplate?.raw_data || {};
-                                  const rc = rawData.rich_card || rawData.richCard || {};
-                                  const rawContent = [
-                                    selectedTemplate?.content,
-                                    rawData.text,
-                                    rawData.description,
-                                    rc.title,
-                                    rc.description,
-                                    rc.text
-                                  ].filter(Boolean).join(' ');
+                                  // RCS + WPP HSM: placeholders podem estar em rich_card ou em components[].text
+                                  const rawContent = collectPlaceholdersSourceText(selectedTemplate);
                                   const detectedVars = extractVariables(rawContent);
                                   // Initialize each variable with default mapping (field: nome)
                                   const initMap: Record<string, VarMapping> = {};
@@ -1124,7 +1211,10 @@ export default function NovaCampanha() {
                                     refetchTemplate();
                                   } else {
                                     console.log('ℹ️ [Template Select] Template externo, usando conteúdo pré-carregado');
-                                    setFormData(prev => ({ ...prev, message: selectedTemplate?.content || '' }));
+                                    setFormData(prev => ({
+                                      ...prev,
+                                      message: selectedTemplate?.content || rawContent || '',
+                                    }));
                                   }
 
                                   setOpenTemplateDropdown(false);
@@ -1316,6 +1406,9 @@ export default function NovaCampanha() {
                     O template selecionado será enviado para os destinatários. Variáveis como {"{nome}"}, {"{cpf}"} serão substituídas automaticamente.
                   </p>
                 </div>
+              )}
+
+              </>
               )}
 
               {/* Upload de Mídia — disponível para templates livres (CDA RCS, CDA WPP, local) */}
@@ -1607,37 +1700,66 @@ export default function NovaCampanha() {
                   <Checkbox
                     id="include-baits"
                     checked={formData.include_baits}
-                    onCheckedChange={(checked) => setFormData({ ...formData, include_baits: !!checked })}
+                    onCheckedChange={(checked) => {
+                      const on = !!checked;
+                      setFormData((prev) => ({
+                        ...prev,
+                        include_baits: on,
+                        selectedBaitIds:
+                          on && Array.isArray(baitsData) && baitsData.length
+                            ? baitsData
+                                .map((b: any) => Number(b.id))
+                                .filter((n: number) => !Number.isNaN(n) && n > 0)
+                            : [],
+                      }));
+                    }}
                   />
                   <div className="flex-1">
                     <label htmlFor="include-baits" className="font-semibold cursor-pointer">
                       Incluir iscas de teste
                     </label>
                     <p className="text-xs text-muted-foreground mt-1">
-                      Adiciona automaticamente todos os números cadastrados como iscas nesta campanha
+                      Escolha abaixo quais iscas ativas entram nesta campanha
                     </p>
                   </div>
                 </div>
 
-                {/* Lista de Iscas Renderizada Condicionalmente */}
                 {formData.include_baits && baitsData.length > 0 && (
-                  <div className="mt-4 p-3 bg-muted rounded-md text-sm">
-                    <p className="font-semibold mb-2">Serão enviadas cópias para {baitsData.length} isca(s):</p>
-                    <ul className="list-disc list-inside text-muted-foreground space-y-1">
-                      {baitsData.slice(0, 10).map((isca: any, idx: number) => (
-                        <li key={idx} className="truncate">
-                          {isca.telefone} {isca.nome ? `- ${isca.nome}` : ''}
-                        </li>
-                      ))}
-                      {baitsData.length > 10 && (
-                        <li className="italic">+ {baitsData.length - 10} outras iscas.</li>
-                      )}
-                    </ul>
+                  <div className="mt-4 space-y-2 p-3 bg-muted rounded-md text-sm max-h-56 overflow-y-auto">
+                    <p className="font-semibold">Iscas incluídas no disparo</p>
+                    {baitsData.map((isca: any) => {
+                      const id = Number(isca.id);
+                      if (!id) return null;
+                      const checked = formData.selectedBaitIds.includes(id);
+                      return (
+                        <label
+                          key={id}
+                          className="flex items-center gap-2 cursor-pointer rounded-md px-1 py-1 hover:bg-background/80"
+                        >
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={(c) => {
+                              const on = !!c;
+                              setFormData((prev) => ({
+                                ...prev,
+                                selectedBaitIds: on
+                                  ? [...prev.selectedBaitIds, id]
+                                  : prev.selectedBaitIds.filter((x) => x !== id),
+                              }));
+                            }}
+                          />
+                          <span className="truncate">
+                            {isca.telefone}
+                            {isca.nome ? ` — ${isca.nome}` : ""}
+                          </span>
+                        </label>
+                      );
+                    })}
                   </div>
                 )}
                 {formData.include_baits && baitsData.length === 0 && !baitsLoading && (
                   <div className="mt-4 p-3 bg-destructive/10 text-destructive rounded-md text-sm border border-destructive/20">
-                    <p>Você não possui enables ativas cadastradas no sistema. Nenhuma isca será enviada.</p>
+                    <p>Você não possui iscas ativas cadastradas no sistema. Nenhuma isca será enviada.</p>
                   </div>
                 )}
                 {/* Disparo de Teste Exclusivo (Apenas Iscas) - Exibe apenas se Incluir Iscas estiver marcado */}

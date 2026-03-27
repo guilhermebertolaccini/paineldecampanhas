@@ -57,6 +57,18 @@ Authorization: SeuTokenAqui123...
 
 > **Atenção:** O GOSAC retorna um `id` de campanha na criação. Para iniciar os disparos ativamente (se não for agendado), é necessário fazer uma requisição `PUT` para a URL `[URL]/[id_da_campanha]/status/started` usando as mesmas credenciais.
 
+### 2.1 GOSAC Oficial (WhatsApp API) — Ilhas/Conexões
+
+Para listar as ilhas (conexões oficiais) disponíveis:
+
+* **URL:** `[URL_BASE]/connections/official`
+* **Método:** `GET`
+* **Parâmetros obrigatórios (query string):**
+  * `idgis` — ID do ambiente (id_carteira / idAmbient)
+  * `ruler` — ID Ruler (quando a carteira tiver `id_ruler` configurado)
+
+A API aceita também `idAmbient` e `idRuler` como alternativas. O painel envia ambos (`idgis` + `idAmbient` e `ruler` + `idRuler`) para compatibilidade com diferentes versões da API.
+
 ---
 
 ## 3. NOAH

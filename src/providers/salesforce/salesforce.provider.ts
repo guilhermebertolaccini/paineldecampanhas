@@ -52,6 +52,15 @@ export class SalesforceProvider extends BaseProvider {
       };
     }
 
+    // WordPress pode enviar fila sem JSON de template — o conteúdo fica na automação SFMC.
+    const rows: CampaignData[] = data.map((d) => ({
+      ...d,
+      mensagem:
+        typeof (d as { mensagem?: unknown }).mensagem === 'string'
+          ? ((d as { mensagem: string }).mensagem as string)
+          : '',
+    }));
+
     // Verifica se tem operacao e automation_id (credenciais dinâmicas por ambiente)
     if (!credentials.operacao || !credentials.automation_id) {
       return {
@@ -108,7 +117,7 @@ export class SalesforceProvider extends BaseProvider {
     }
 
     // PASSO 2: Enviar contatos
-    const contacts = data.map((dado) => ({
+    const contacts = rows.map((dado) => ({
       attributes: { type: 'Contact' },
       MobilePhone: this.normalizePhoneNumber(dado.telefone),
       LastName: dado.nome,

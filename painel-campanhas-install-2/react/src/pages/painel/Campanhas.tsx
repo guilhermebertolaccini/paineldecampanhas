@@ -84,11 +84,11 @@ export default function Campanhas() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Todos Status</SelectItem>
-                  <SelectItem value="pending">Pendente</SelectItem>
-                  <SelectItem value="approved">Aprovado</SelectItem>
+                  <SelectItem value="pending">Pendente aprovação</SelectItem>
+                  <SelectItem value="scheduled">Pendente / agendado</SelectItem>
                   <SelectItem value="sent">Enviado</SelectItem>
-                  <SelectItem value="denied">Negado</SelectItem>
-                  <SelectItem value="scheduled">Agendado</SelectItem>
+                  <SelectItem value="denied">Negado / erro</SelectItem>
+                  <SelectItem value="cancelled">Cancelada</SelectItem>
                 </SelectContent>
               </Select>
               <Select value={providerFilter} onValueChange={setProviderFilter}>

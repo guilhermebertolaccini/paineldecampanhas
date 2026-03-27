@@ -86,22 +86,20 @@ export class WhatsappOtimaProvider extends BaseProvider {
 
     // Formata mensagens para o formato da API Ótima
     const messages: HsmMessage[] = data.map((item) => {
-      const phone = this.normalizePhoneNumber(item.telefone);
+      const phone = this.normalizePhoneForOtimaHsm(item.telefone);
 
-      // Resolve variables dynamically from the variables_map
+      // Variáveis no formato da documentação Ótima: chaves alinhadas ao template (ex.: {{1}} → parâmetro nomeado como "nome")
       const resolvedVariables: Record<string, string> = {};
       if (variables_map) {
         for (const [varName, mapping] of Object.entries(variables_map)) {
-          const hyphenatedVarName = `-${varName}-`;
           if (mapping.type === 'field') {
-            resolvedVariables[hyphenatedVarName] = (item as any)[mapping.value] ?? '';
+            resolvedVariables[varName] = String((item as any)[mapping.value] ?? '');
           } else {
-            resolvedVariables[hyphenatedVarName] = mapping.value ?? '';
+            resolvedVariables[varName] = String(mapping.value ?? '');
           }
         }
       } else {
-        // Legacy fallback: map nome -> -var1-
-        resolvedVariables['-var1-'] = item.nome ?? '';
+        resolvedVariables['nome'] = item.nome ?? '';
       }
 
       this.logger.debug(`📋 [WhatsApp Ótima] Variables for ${phone}: ${JSON.stringify(resolvedVariables)}`);
@@ -142,17 +140,13 @@ export class WhatsappOtimaProvider extends BaseProvider {
         this.logger.log(`🌐 [WhatsApp Ótima] Enviando requisição para ${this.API_URL}`);
         this.logger.log(`🔑 [WhatsApp Ótima] Token: ${token ? token.substring(0, 10) + '...' : 'N/A'}`);
 
-        const response = await this.httpService.axiosRef.post(
-          this.API_URL,
-          payload,
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'authorization': token,
-            },
-            timeout: 60000, // 60 segundos
+        const response = await this.httpService.axiosRef.post(this.API_URL, payload, {
+          headers: {
+            'Content-Type': 'application/json',
+            authorization: String(token).trim(),
           },
-        );
+          timeout: 60000,
+        });
 
         this.logger.log(`✅ [WhatsApp Ótima] Resposta recebida: ${response.status} ${response.statusText}`);
         this.logger.debug(`📄 [WhatsApp Ótima] Response body: ${JSON.stringify(response.data)}`);
@@ -190,5 +184,19 @@ export class WhatsappOtimaProvider extends BaseProvider {
       maxRetries: 3,
       delays: [1000, 2000, 5000], // 1s, 2s, 5s
     };
+  }
+
+  /**
+   * Ótima HSM (doc interna): telefone em formato nacional, sem prefixo 55 duplicado.
+   */
+  private normalizePhoneForOtimaHsm(telefone: string): string {
+    if (!telefone) {
+      return telefone;
+    }
+    let n = telefone.trim().replace(/[\s()\-]/g, '');
+    if (n.startsWith('55') && n.length > 11) {
+      n = n.slice(2);
+    }
+    return n;
   }
 }

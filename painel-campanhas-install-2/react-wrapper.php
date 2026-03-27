@@ -37,6 +37,7 @@ if (empty($current_page)) {
         'painel/controle-custo/cadastro' => 'controle-custo-cadastro',
         'painel/controle-custo/relatorio' => 'controle-custo-relatorio',
         'painel/campanha-arquivo' => 'campanha-arquivo',
+        'painel/validador' => 'validador',
     ];
     if (isset($route_map[$request_uri])) {
         $current_page = $route_map[$request_uri];
@@ -115,21 +116,28 @@ usort($js_files, function($a, $b) {
         error_log('🔵 [React Wrapper] Home URL: ' . home_url());
         error_log('🔵 [React Wrapper] Admin URL: ' . admin_url('admin-ajax.php'));
 
+        $pc_user = wp_get_current_user();
+        $pc_roles = ($pc_user && $pc_user->ID) ? array_values((array) $pc_user->roles) : [];
+
         $ajax_data = [
             'ajaxurl' => $ajax_url,
             'ajaxUrl' => $ajax_url,
             'nonce' => wp_create_nonce('pc_nonce'),
             'cmNonce' => wp_create_nonce('campaign-manager-nonce'),
+            'validatorNonce' => wp_create_nonce('pc_wa_validator'),
             'csvNonce' => wp_create_nonce('pc_csv_download'),
             'adminPostUrl' => $site_url . '/wp-admin/admin-post.php',
             'homeUrl' => home_url('/'),
             'siteUrl' => $site_url,
             'restUrl' => rest_url('campaigns/v1/'),
+            'restNonce' => wp_create_nonce('wp_rest'),
+            'validadorMetricasRest' => rest_url('api/v1/validador/metricas'),
             'currentUser' => [
                 'id' => get_current_user_id(),
-                'name' => wp_get_current_user()->display_name ?? '',
-                'email' => wp_get_current_user()->user_email ?? '',
+                'name' => $pc_user->display_name ?? '',
+                'email' => $pc_user->user_email ?? '',
                 'isAdmin' => current_user_can('manage_options'),
+                'roles' => $pc_roles,
             ],
             'currentPage' => $current_page ?? 'home',
             'debug' => [
@@ -141,6 +149,12 @@ usort($js_files, function($a, $b) {
         ];
 
         echo wp_json_encode($ajax_data, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT); ?>;
+
+        window.pc_user_data = <?php echo wp_json_encode([
+            'display_name' => $pc_user->display_name ?? '',
+            'user_email' => $pc_user->user_email ?? '',
+            'roles' => $pc_roles,
+        ], JSON_UNESCAPED_SLASHES); ?>;
 
         // Debug no console
         console.log('🔵 [React Wrapper] pcAjax configurado:', window.pcAjax);

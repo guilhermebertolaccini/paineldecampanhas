@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Play, Trash2, Clock, CheckCircle, Pause, Loader2, Info,
-  Users, Filter, RefreshCw, Hash, Layers,
+  Users, Filter, RefreshCw, Hash, Layers, Pencil,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -35,7 +35,20 @@ import {
   toggleRecurring,
   executeRecurringNow,
   getRecurringEstimates,
+  saveRecurring,
+  getIscas,
 } from "@/lib/api";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 
 interface ParsedFilter {
   column?: string;
@@ -50,9 +63,14 @@ interface RecurringCampaign {
   tabela_origem: string;
   filtros_json?: string;
   providers_config?: string;
+  /** Decodificado pelo PHP em `handle_get_recurring` */
+  providers_config_parsed?: Record<string, unknown>;
   template_id: string;
   template_code?: string;
   template_source?: string;
+  broker_code?: string;
+  customer_code?: string;
+  carteira?: string;
   record_limit?: string | number;
   ativo: number | boolean | string;
   ultima_execucao?: string;
@@ -84,6 +102,8 @@ const OPERATOR_LABELS: Record<string, string> = {
   in: "em",
   not_in: "não está em",
   exclude_recent: "excluir recentes",
+  is_null: "é nulo",
+  is_not_null: "não é nulo",
 };
 
 const formatFilterValue = (value: any): string => {
@@ -91,6 +111,38 @@ const formatFilterValue = (value: any): string => {
   if (Array.isArray(value)) return value.join(", ");
   return String(value);
 };
+
+const CONFIG_META_KEYS = new Set([
+  "mode",
+  "percentages",
+  "providers",
+  "exclude_recent_phones",
+  "exclude_recent_hours",
+  "bait_ids",
+]);
+
+/** Lê objeto já parseado pelo backend ou faz parse da string `providers_config`. */
+function getProvidersConfigParsed(campaign: RecurringCampaign | Record<string, unknown>): Record<string, any> {
+  const p = (campaign as RecurringCampaign).providers_config_parsed;
+  if (p && typeof p === "object" && p !== null && !Array.isArray(p)) {
+    return { ...p } as Record<string, any>;
+  }
+  const raw = (campaign as RecurringCampaign).providers_config;
+  if (!raw || typeof raw !== "string") return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? { ...parsed } : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeBaitIds(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((x) => parseInt(String(x), 10))
+    .filter((n) => !Number.isNaN(n) && n > 0);
+}
 
 const parseProviderNames = (config?: string): string => {
   if (!config) return "—";
@@ -104,10 +156,7 @@ const parseProviderNames = (config?: string): string => {
     }
     if (typeof parsed === "object" && parsed !== null) {
       const mode = parsed.mode ? `${parsed.mode}` : "";
-      const ids = Object.keys(parsed).filter(
-        (k) =>
-          !["mode", "percentages", "exclude_recent_phones", "exclude_recent_hours"].includes(k),
-      );
+      const ids = Object.keys(parsed).filter((k) => !CONFIG_META_KEYS.has(k));
       return [mode, ...ids].filter(Boolean).join(" · ") || "—";
     }
     return String(parsed) || "—";
@@ -309,6 +358,114 @@ export default function CampanhasRecorrentes() {
     },
   });
 
+  const [editOpen, setEditOpen] = useState(false);
+  const [editSource, setEditSource] = useState<RecurringCampaign | null>(null);
+  const [editNome, setEditNome] = useState("");
+  const [editIncludeBaits, setEditIncludeBaits] = useState(false);
+  const [editSelectedBaitIds, setEditSelectedBaitIds] = useState<number[]>([]);
+
+  const { data: editBaits = [] } = useQuery({
+    queryKey: ["baits-recurring-edit"],
+    queryFn: getIscas,
+    enabled: editOpen,
+  });
+
+  const openEditDialog = (c: RecurringCampaign) => {
+    setEditSource(c);
+    setEditNome(c.nome_campanha || "");
+    const inc = Number(c.include_baits) === 1;
+    setEditIncludeBaits(inc);
+    const cfg = getProvidersConfigParsed(c);
+    setEditSelectedBaitIds(normalizeBaitIds(cfg.bait_ids));
+    setEditOpen(true);
+  };
+
+  // Filtro legado com include_baits e sem `bait_ids` no JSON: equivale a todas as iscas ativas
+  useEffect(() => {
+    if (!editOpen || !editIncludeBaits || !editSource) return;
+    const cfg = getProvidersConfigParsed(editSource);
+    if (normalizeBaitIds(cfg.bait_ids).length > 0) return;
+    if (!Array.isArray(editBaits) || editBaits.length === 0) return;
+    setEditSelectedBaitIds((prev) => {
+      if (prev.length > 0) return prev;
+      return editBaits
+        .map((b: { id?: unknown }) => Number(b.id))
+        .filter((n: number) => !Number.isNaN(n) && n > 0);
+    });
+  }, [editOpen, editIncludeBaits, editSource, editBaits]);
+
+  const saveEditMutation = useMutation({
+    mutationFn: async () => {
+      if (!editSource) throw new Error("Nenhum filtro selecionado");
+      const cfg = getProvidersConfigParsed(editSource);
+      if (editIncludeBaits) {
+        cfg.bait_ids = [...editSelectedBaitIds];
+      } else {
+        delete cfg.bait_ids;
+      }
+
+      let filters: unknown = [];
+      if (editSource.filtros_json) {
+        try {
+          filters = JSON.parse(editSource.filtros_json);
+        } catch {
+          filters = [];
+        }
+      }
+
+      let throttling: Record<string, unknown> = {};
+      if (editSource.throttling_config) {
+        try {
+          throttling =
+            typeof editSource.throttling_config === "string"
+              ? JSON.parse(editSource.throttling_config)
+              : (editSource.throttling_config as Record<string, unknown>);
+        } catch {
+          throttling = {};
+        }
+      }
+
+      const excludePhones = Number(cfg.exclude_recent_phones ?? 1);
+      const excludeHours = Number(cfg.exclude_recent_hours ?? 48);
+
+      return saveRecurring({
+        id: parseInt(String(editSource.id), 10),
+        nome_campanha: editNome.trim(),
+        table_name: editSource.tabela_origem,
+        carteira: editSource.carteira || "",
+        providers_config: cfg,
+        filters: Array.isArray(filters) ? filters : [],
+        template_id:
+          editSource.template_source === "local" && editSource.template_id
+            ? parseInt(String(editSource.template_id), 10)
+            : null,
+        template_code: editSource.template_code ?? "",
+        template_source: editSource.template_source || "local",
+        broker_code: editSource.broker_code,
+        customer_code: editSource.customer_code,
+        record_limit: parseInt(String(editSource.record_limit || 0), 10) || 0,
+        exclude_recent_phones: excludePhones,
+        exclude_recent_hours: excludeHours,
+        include_baits: editIncludeBaits ? 1 : 0,
+        throttling_type: editSource.throttling_type || "none",
+        throttling_config: throttling,
+      });
+    },
+    onSuccess: () => {
+      toast({ title: "Filtro atualizado", description: "As alterações foram salvas." });
+      setEditOpen(false);
+      setEditSource(null);
+      queryClient.invalidateQueries({ queryKey: ["recurring-campaigns"] });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Erro ao salvar",
+        description: error.message || "Não foi possível atualizar o filtro.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleToggleActive = (campaign: RecurringCampaign) => {
     toggleMutation.mutate({
       id: campaign.id,
@@ -474,6 +631,15 @@ export default function CampanhasRecorrentes() {
                         )}
                         Gerar Agora
                       </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openEditDialog(campaign as RecurringCampaign)}
+                        title="Editar nome e iscas"
+                      >
+                        <Pencil className="h-4 w-4 sm:mr-1" />
+                        <span className="hidden sm:inline">Editar</span>
+                      </Button>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
@@ -592,12 +758,146 @@ export default function CampanhasRecorrentes() {
                       </Badge>
                     </div>
                   </div>
+
+                  {(() => {
+                    const pcfg = getProvidersConfigParsed(campaign as RecurringCampaign);
+                    const baitIds = normalizeBaitIds(pcfg.bait_ids);
+                    const inc = Number(campaign.include_baits) === 1;
+                    if (!inc && baitIds.length === 0) return null;
+                    return (
+                      <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-sm">
+                        <span className="font-medium text-foreground">Iscas: </span>
+                        {!inc ? (
+                          <span className="text-muted-foreground">desligado (há IDs salvos no JSON legado)</span>
+                        ) : baitIds.length > 0 ? (
+                          <span>
+                            {baitIds.length} selecionada(s) no filtro
+                            <span className="text-muted-foreground text-xs ml-1">
+                              (IDs: {baitIds.slice(0, 8).join(", ")}
+                              {baitIds.length > 8 ? "…" : ""})
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">
+                            todas as iscas ativas (nenhum <code className="text-xs">bait_ids</code> no JSON — legado)
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </CardContent>
               </Card>
             );
           })}
         </div>
       )}
+
+      <Dialog
+        open={editOpen}
+        onOpenChange={(open) => {
+          setEditOpen(open);
+          if (!open) setEditSource(null);
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Editar filtro salvo</DialogTitle>
+            <DialogDescription>
+              Atualize o nome e as iscas usadas quando a opção estiver ativa. O campo{" "}
+              <strong>providers_config</strong> no servidor passa a refletir o array{" "}
+              <code className="text-xs">bait_ids</code>.
+            </DialogDescription>
+          </DialogHeader>
+          {editSource && (
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <Label htmlFor="edit-nome-recurring">Nome da campanha</Label>
+                <Input
+                  id="edit-nome-recurring"
+                  value={editNome}
+                  onChange={(e) => setEditNome(e.target.value)}
+                  placeholder="Nome do filtro salvo"
+                />
+              </div>
+              <div className="rounded-lg border border-dashed border-border p-3 space-y-3">
+                <div className="flex items-center gap-3">
+                  <Checkbox
+                    id="edit-include-baits-recurring"
+                    checked={editIncludeBaits}
+                    onCheckedChange={(checked) => {
+                      const on = !!checked;
+                      setEditIncludeBaits(on);
+                      if (on && Array.isArray(editBaits) && editBaits.length) {
+                        setEditSelectedBaitIds(
+                          editBaits
+                            .map((b: { id?: unknown }) => Number(b.id))
+                            .filter((n: number) => !Number.isNaN(n) && n > 0),
+                        );
+                      } else if (!on) {
+                        setEditSelectedBaitIds([]);
+                      }
+                    }}
+                  />
+                  <Label htmlFor="edit-include-baits-recurring" className="font-medium leading-snug cursor-pointer">
+                    Incluir iscas ao gerar campanha
+                  </Label>
+                </div>
+                {editIncludeBaits && (
+                  <div className="space-y-2 max-h-52 overflow-y-auto pl-0.5">
+                    {Array.isArray(editBaits) && editBaits.length === 0 && (
+                      <p className="text-xs text-muted-foreground">Carregando iscas…</p>
+                    )}
+                    {Array.isArray(editBaits) &&
+                      editBaits.map((isca: { id?: unknown; telefone?: string; nome?: string }) => {
+                        const id = Number(isca.id);
+                        if (!id) return null;
+                        return (
+                          <label
+                            key={id}
+                            className="flex items-center gap-2 text-sm cursor-pointer rounded-md px-1 py-0.5 hover:bg-muted/80"
+                          >
+                            <Checkbox
+                              checked={editSelectedBaitIds.includes(id)}
+                              onCheckedChange={(ck) => {
+                                const on = !!ck;
+                                setEditSelectedBaitIds((prev) =>
+                                  on ? [...prev, id] : prev.filter((x) => x !== id),
+                                );
+                              }}
+                            />
+                            <span className="truncate">
+                              {isca.telefone}
+                              {isca.nome ? ` — ${isca.nome}` : ""}
+                            </span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setEditOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              onClick={() => saveEditMutation.mutate()}
+              disabled={!editNome.trim() || saveEditMutation.isPending}
+            >
+              {saveEditMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              Salvar alterações
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

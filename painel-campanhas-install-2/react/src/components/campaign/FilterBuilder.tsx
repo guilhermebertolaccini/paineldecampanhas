@@ -26,6 +26,11 @@ interface FilterBuilderProps {
     onChange: (filters: FilterItem[]) => void;
 }
 
+const OPERATORS_NULL = [
+    { value: "is_null", label: "É nulo (IS NULL)" },
+    { value: "is_not_null", label: "Não é nulo (IS NOT NULL)" },
+];
+
 const OPERATORS_TEXT = [
     { value: "equals", label: "Igual a" },
     { value: "not_equals", label: "Diferente de" },
@@ -33,6 +38,7 @@ const OPERATORS_TEXT = [
     { value: "not_contains", label: "Não contém" },
     { value: "starts_with", label: "Começa com" },
     { value: "ends_with", label: "Termina com" },
+    ...OPERATORS_NULL,
 ];
 
 const OPERATORS_NUMBER = [
@@ -42,6 +48,7 @@ const OPERATORS_NUMBER = [
     { value: "greater_equals", label: "Maior ou igual a" },
     { value: "less", label: "Menor que" },
     { value: "less_equals", label: "Menor ou igual a" },
+    ...OPERATORS_NULL,
 ];
 
 const OPERATORS_SELECT = [
@@ -49,6 +56,7 @@ const OPERATORS_SELECT = [
     { value: "not_equals", label: "Diferente de" },
     { value: "in", label: "Está na lista" },
     { value: "not_in", label: "Não está na lista" },
+    ...OPERATORS_NULL,
 ];
 
 export function FilterBuilder({ availableFilters, filters, onChange }: FilterBuilderProps) {
@@ -78,9 +86,9 @@ export function FilterBuilder({ availableFilters, filters, onChange }: FilterBui
                         updated.operator = "";
                         updated.value = "";
                     }
-
-                    // Reset value when operator changes to something incompatible (optional, but good UX)
-                    // For now we keep it simple
+                    if (field === "operator" && (value === "is_null" || value === "is_not_null")) {
+                        updated.value = "";
+                    }
 
                     return updated;
                 }
@@ -133,6 +141,7 @@ export function FilterBuilder({ availableFilters, filters, onChange }: FilterBui
                             );
                             const operators = getOperators(filter.column);
                             const isSelect = filterDef?.type === "select" || filterDef?.options;
+                            const noValueOp = filter.operator === "is_null" || filter.operator === "is_not_null";
 
                             return (
                                 <div key={filter.id} className="flex flex-col sm:flex-row gap-3 items-end sm:items-center p-3 border rounded-lg bg-muted/20">
@@ -185,7 +194,11 @@ export function FilterBuilder({ availableFilters, filters, onChange }: FilterBui
                                     {/* Value Input */}
                                     <div className="w-full sm:w-1/3 space-y-1.5">
                                         <Label className="text-xs text-muted-foreground">Valor</Label>
-                                        {isSelect && (filter.operator === 'equals' || filter.operator === 'not_equals') ? (
+                                        {noValueOp ? (
+                                            <p className="text-xs text-muted-foreground py-2 px-1 border rounded-md bg-muted/30">
+                                                Este operador não usa valor.
+                                            </p>
+                                        ) : isSelect && (filter.operator === 'equals' || filter.operator === 'not_equals') ? (
                                             <Select
                                                 value={filter.value}
                                                 onValueChange={(v) => updateFilter(filter.id, "value", v)}

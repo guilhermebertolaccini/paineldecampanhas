@@ -28,6 +28,17 @@ import Ranking from "./pages/painel/Ranking";
 import LineHealth from "./pages/painel/LineHealth";
 import TrackingSalesforce from "./pages/painel/TrackingSalesforce";
 import RelatoriosDetalhados from "./pages/painel/RelatoriosDetalhados";
+import Validador from "./pages/painel/Validador";
+
+function isWpSubscriber(): boolean {
+  if (typeof window === "undefined") return false;
+  const w = window as unknown as {
+    pc_user_data?: { roles?: string[] };
+    pcAjax?: { currentUser?: { roles?: string[] } };
+  };
+  const r = w.pc_user_data?.roles ?? w.pcAjax?.currentUser?.roles;
+  return Array.isArray(r) && r.includes("subscriber");
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -67,11 +78,19 @@ function RouterSync() {
         'saude-linhas': '/#/painel/saude-linhas',
         'tracking-salesforce': '/#/painel/tracking-salesforce',
         'relatorios-detalhados': '/#/painel/relatorios-detalhados',
+        'validador': '/#/painel/validador',
       };
 
       const targetRoute = routeMap[currentPage];
       if (targetRoute) {
-        window.location.hash = targetRoute.replace('/#', '');
+        let hashPart = targetRoute.replace("/#", "");
+        if (
+          isWpSubscriber() &&
+          (hashPart.includes("aprovar-campanhas") || hashPart.includes("api-manager"))
+        ) {
+          hashPart = "painel/home";
+        }
+        window.location.hash = hashPart;
       }
     }
   }, [location]);
@@ -83,8 +102,14 @@ const App = () => {
   // Detecta página inicial baseado na URL do WordPress ou hash
   const getInitialRoute = () => {
     // Tenta pegar da URL atual
-    const hash = window.location.hash.replace('#', '');
-    if (hash && hash !== '/') {
+    const hash = window.location.hash.replace("#", "");
+    if (hash && hash !== "/") {
+      if (
+        isWpSubscriber() &&
+        (hash.includes("aprovar-campanhas") || hash.includes("api-manager"))
+      ) {
+        return "/painel/home";
+      }
       return hash;
     }
 
@@ -92,28 +117,36 @@ const App = () => {
     const currentPage = (window as any).pcAjax?.currentPage;
     if (currentPage) {
       const routeMap: Record<string, string> = {
-        'login': '/painel/login',
-        'home': '/painel/home',
-        'campanhas': '/painel/campanhas',
-        'nova-campanha': '/painel/nova-campanha',
-        'campanha-arquivo': '/painel/campanha-arquivo',
-        'campanhas-recorrentes': '/painel/campanhas-recorrentes',
-        'aprovar-campanhas': '/painel/aprovar-campanhas',
-        'mensagens': '/painel/mensagens',
-        'relatorios': '/painel/relatorios',
-        'controle-custo': '/painel/controle-custo',
-        'controle-custo-cadastro': '/painel/controle-custo/cadastro',
-        'controle-custo-relatorio': '/painel/controle-custo/relatorio',
-        'configuracoes': '/painel/configuracoes',
-        'blocklist': '/painel/blocklist',
-        'api-manager': '/painel/api-manager',
-        'iscas': '/painel/iscas',
-        'ranking': '/painel/ranking',
-        'saude-linhas': '/painel/saude-linhas',
-        'tracking-salesforce': '/painel/tracking-salesforce',
-        'relatorios-detalhados': '/painel/relatorios-detalhados',
+        login: "/painel/login",
+        home: "/painel/home",
+        campanhas: "/painel/campanhas",
+        "nova-campanha": "/painel/nova-campanha",
+        "campanha-arquivo": "/painel/campanha-arquivo",
+        "campanhas-recorrentes": "/painel/campanhas-recorrentes",
+        "aprovar-campanhas": "/painel/aprovar-campanhas",
+        mensagens: "/painel/mensagens",
+        relatorios: "/painel/relatorios",
+        "controle-custo": "/painel/controle-custo",
+        "controle-custo-cadastro": "/painel/controle-custo/cadastro",
+        "controle-custo-relatorio": "/painel/controle-custo/relatorio",
+        configuracoes: "/painel/configuracoes",
+        blocklist: "/painel/blocklist",
+        "api-manager": "/painel/api-manager",
+        iscas: "/painel/iscas",
+        ranking: "/painel/ranking",
+        "saude-linhas": "/painel/saude-linhas",
+        "tracking-salesforce": "/painel/tracking-salesforce",
+        "relatorios-detalhados": "/painel/relatorios-detalhados",
+        validador: "/painel/validador",
       };
-      return routeMap[currentPage] || '/painel/home';
+      const mapped = routeMap[currentPage] || "/painel/home";
+      if (
+        isWpSubscriber() &&
+        (mapped.includes("aprovar-campanhas") || mapped.includes("api-manager"))
+      ) {
+        return "/painel/home";
+      }
+      return mapped;
     }
 
     return '/painel/home';
@@ -140,7 +173,10 @@ const App = () => {
               <Route path="nova-campanha" element={<NovaCampanha />} />
               <Route path="campanha-arquivo" element={<CampanhaArquivo />} />
               <Route path="campanhas-recorrentes" element={<CampanhasRecorrentes />} />
-              <Route path="aprovar-campanhas" element={<AprovarCampanhas />} />
+              <Route
+                path="aprovar-campanhas"
+                element={isWpSubscriber() ? <Navigate to="/painel/home" replace /> : <AprovarCampanhas />}
+              />
               <Route path="mensagens" element={<Mensagens />} />
               <Route path="relatorios" element={<Relatorios />} />
               <Route path="controle-custo" element={<ControleCusto />} />
@@ -148,12 +184,16 @@ const App = () => {
               <Route path="controle-custo/relatorio" element={<RelatorioCusto />} />
               <Route path="configuracoes" element={<Configuracoes />} />
               <Route path="blocklist" element={<Blocklist />} />
-              <Route path="api-manager" element={<ApiManager />} />
+              <Route
+                path="api-manager"
+                element={isWpSubscriber() ? <Navigate to="/painel/home" replace /> : <ApiManager />}
+              />
               <Route path="iscas" element={<Iscas />} />
               <Route path="ranking" element={<Ranking />} />
               <Route path="saude-linhas" element={<LineHealth />} />
               <Route path="tracking-salesforce" element={<TrackingSalesforce />} />
               <Route path="relatorios-detalhados" element={<RelatoriosDetalhados />} />
+              <Route path="validador" element={<Validador />} />
             </Route>
 
             {/* Catch-all */}

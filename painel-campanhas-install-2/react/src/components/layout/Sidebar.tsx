@@ -21,6 +21,7 @@ import {
   Trophy,
   Activity,
   Satellite,
+  Phone,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -30,7 +31,54 @@ interface NavItem {
   href: string;
   icon: React.ElementType;
   adminOnly?: boolean;
+  /** Oculto para usuários com role WordPress `subscriber` (assinante). */
+  subscriberForbidden?: boolean;
   children?: { label: string; href: string }[];
+}
+
+function getWpUserRoles(): string[] {
+  if (typeof window === "undefined") return [];
+  const w = window as unknown as {
+    pc_user_data?: { roles?: string[] };
+    pcAjax?: { currentUser?: { roles?: string[] } };
+  };
+  const fromPc = w.pc_user_data?.roles;
+  if (Array.isArray(fromPc)) return fromPc;
+  const fromAjax = w.pcAjax?.currentUser?.roles;
+  return Array.isArray(fromAjax) ? fromAjax : [];
+}
+
+function getWpUserProfile(): { name: string; email: string } {
+  if (typeof window === "undefined") return { name: "", email: "" };
+  const w = window as unknown as {
+    pc_user_data?: { display_name?: string; user_email?: string };
+    pcAjax?: { currentUser?: { name?: string; email?: string } };
+  };
+  const ud = w.pc_user_data;
+  if (ud) {
+    return {
+      name: (ud.display_name ?? "").trim() || "Usuário",
+      email: (ud.user_email ?? "").trim() || "",
+    };
+  }
+  const cu = w.pcAjax?.currentUser;
+  return {
+    name: (cu?.name ?? "").trim() || "Usuário",
+    email: (cu?.email ?? "").trim() || "",
+  };
+}
+
+function initialsFromName(name: string, email: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+  if (parts.length === 1 && parts[0].length >= 2) {
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+  const e = email.trim();
+  if (e.length >= 2) return e.slice(0, 2).toUpperCase();
+  return "?";
 }
 
 const navItems: NavItem[] = [
@@ -38,8 +86,9 @@ const navItems: NavItem[] = [
   { label: "Minhas Campanhas", href: "/painel/campanhas", icon: FileText },
   { label: "Nova Campanha", href: "/painel/nova-campanha", icon: PlusCircle },
   { label: "Campanha via Arquivo", href: "/painel/campanha-arquivo", icon: Upload },
+  { label: "Validador WhatsApp", href: "/painel/validador", icon: Phone },
   { label: "Campanhas Recorrentes", href: "/painel/campanhas-recorrentes", icon: RefreshCw },
-  { label: "Aprovar Campanhas", href: "/painel/aprovar-campanhas", icon: CheckCircle, adminOnly: true },
+  { label: "Aprovar Campanhas", href: "/painel/aprovar-campanhas", icon: CheckCircle, adminOnly: true, subscriberForbidden: true },
   { label: "Templates de Mensagem", href: "/painel/mensagens", icon: MessageSquare },
   {
     label: "Relatórios",
@@ -65,13 +114,19 @@ const navItems: NavItem[] = [
   { label: "Blocklist", href: "/painel/blocklist", icon: Shield, adminOnly: true },
   { label: "Saúde das Linhas", href: "/painel/saude-linhas", icon: Activity },
   { label: "Tracking Salesforce", href: "/painel/tracking-salesforce", icon: Satellite, adminOnly: true },
-  { label: "API Manager", href: "/painel/api-manager", icon: Key, adminOnly: true },
+  { label: "API Manager", href: "/painel/api-manager", icon: Key, adminOnly: true, subscriberForbidden: true },
 ];
 
 export function Sidebar() {
   const location = useLocation();
   const [expandedItems, setExpandedItems] = useState<string[]>(["Controle de Custo", "Relatórios"]);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
+
+  const roles = getWpUserRoles();
+  const isSubscriber = roles.includes("subscriber");
+  const visibleNavItems = isSubscriber ? navItems.filter((item) => !item.subscriberForbidden) : navItems;
+  const { name: userName, email: userEmail } = getWpUserProfile();
+  const userInitials = initialsFromName(userName, userEmail);
 
   const toggleExpanded = (label: string) => {
     setExpandedItems((prev) =>
@@ -143,7 +198,7 @@ export function Sidebar() {
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto sidebar-scroll px-3 py-4">
           <ul className="space-y-1">
-            {navItems.map((item) => (
+            {visibleNavItems.map((item) => (
               <li key={item.label}>
                 {item.children ? (
                   <div>
@@ -217,11 +272,11 @@ export function Sidebar() {
         <div className="border-t border-sidebar-border p-4 shrink-0">
           <div className="flex items-center gap-3 rounded-lg bg-sidebar-accent p-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-sidebar-primary text-sidebar-primary-foreground text-sm font-semibold">
-              AD
+              {userInitials}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-sidebar-foreground truncate">Admin</p>
-              <p className="text-xs text-sidebar-muted truncate">admin@empresa.com</p>
+              <p className="text-sm font-medium text-sidebar-foreground truncate">{userName}</p>
+              <p className="text-xs text-sidebar-muted truncate">{userEmail || "—"}</p>
             </div>
             <button
               onClick={handleLogout}
