@@ -1838,7 +1838,7 @@ class Painel_Campanhas
         // Sanitiza os dados da credencial
         $sanitized_data = [];
         foreach ($credential_data as $key => $value) {
-            if ($key === 'url') {
+            if ($key === 'url' || $key === 'api_url') {
                 $sanitized_data[$key] = esc_url_raw($value);
             } elseif ($key === 'channel_ids') {
                 if (is_array($value)) {
@@ -1964,7 +1964,7 @@ class Painel_Campanhas
         // Sanitiza os dados da credencial
         $sanitized_data = [];
         foreach ($credential_data as $key => $value) {
-            if ($key === 'url') {
+            if ($key === 'url' || $key === 'api_url') {
                 $sanitized_data[$key] = esc_url_raw($value);
             } elseif ($key === 'channel_ids') {
                 if (is_array($value)) {
@@ -2582,6 +2582,53 @@ class Painel_Campanhas
         return $records;
     }
 
+    /**
+     * Valor de um campo do registro (CSV merge + base) com chave case-insensitive.
+     */
+    private function get_cpf_record_field_ci(array $record, $column_name)
+    {
+        if ($column_name === null || $column_name === '') {
+            return '';
+        }
+        $col = (string) $column_name;
+        if (array_key_exists($col, $record)) {
+            return $record[$col];
+        }
+        foreach ($record as $k => $v) {
+            if (strcasecmp((string) $k, $col) === 0) {
+                return $v;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Resolve o mapeamento TECHIA (chave API → coluna CSV/base) para uma linha.
+     *
+     * @param array $variables_map Formato do React: { "documento": { "type":"field", "value":"CPF" }, ... }
+     */
+    private function resolve_techia_variables_for_row(array $record, $variables_map)
+    {
+        $out = [];
+        if (!is_array($variables_map)) {
+            return $out;
+        }
+        foreach ($variables_map as $tech_key => $mapping) {
+            $key = (string) $tech_key;
+            $col = '';
+            if (is_array($mapping) && isset($mapping['value'])) {
+                $col = (string) $mapping['value'];
+            } elseif (is_string($mapping)) {
+                $col = $mapping;
+            }
+            $raw = $this->get_cpf_record_field_ci($record, $col);
+            $out[$key] = $raw !== null && $raw !== '' ? (string) $raw : '';
+        }
+
+        return $out;
+    }
+
     private function get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent = 0)
     {
         error_log('🔵 [get_cpf_records] Efetuando busca na tabela: ' . $table_name . ' | Match Field: ' . $match_field . ' | Values count: ' . count($values));
@@ -2827,7 +2874,9 @@ class Painel_Campanhas
             }
 
             $only_sf = $this->is_salesforce_only_providers($providers_config);
+            $is_techia_discador = ($template_source === 'techia_discador' && is_array($variables_map) && count($variables_map) > 0);
             $is_template_ok = $only_sf
+                || $is_techia_discador
                 || ($template_source === 'local' && $template_id > 0)
                 || (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code))
                 || (($template_source === 'gosac_oficial' || $template_source === 'noah_oficial' || $template_source === 'robbu_oficial') && !empty($template_code));
@@ -2840,6 +2889,8 @@ class Painel_Campanhas
             // Carrega template
             if ($only_sf) {
                 $message_content = 'Salesforce Marketing Cloud: conteúdo definido na automação.';
+            } elseif ($template_source === 'techia_discador') {
+                $message_content = 'TECHIA Discador: mailing sem template; variáveis por linha no JSON da mensagem.';
             } elseif ($template_source === 'local') {
                 $template = get_post($template_id);
                 if (!$template || $template->post_type !== 'message_template') {
@@ -2951,6 +3002,8 @@ class Painel_Campanhas
                 // CDA_RCS usa prefixo R (RCS) para buscar credenciais RCS (URL importarcs), não CDA (URL importar/campanha)
                 if ($provider === 'CDA_RCS') {
                     $prefix = 'R';
+                } elseif ($this->is_techia_provider($provider)) {
+                    $prefix = 'T';
                 }
                 $agendamento_id = $prefix . $agendamento_base_id;
 
@@ -2960,8 +3013,8 @@ class Painel_Campanhas
                         $telefone = substr($telefone, 2);
                     }
 
-                    // Para templates Ótima/GOSAC/NOAH/Salesforce, não substitui placeholders (será resolvido no microserviço / SFMC)
-                    if (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'robbu_oficial']) || $only_sf) {
+                    // Para templates Ótima/GOSAC/NOAH/Salesforce/TECHIA, não substitui placeholders (será resolvido no microserviço / SFMC)
+                    if (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'robbu_oficial', 'techia_discador']) || $only_sf) {
                         $mensagem_final = $message_content;
                     } else {
                         $mensagem_final = $this->replace_placeholders($message_content, $record);
@@ -3035,6 +3088,15 @@ class Painel_Campanhas
                         $mensagem_para_armazenar = json_encode([
                             'template_source' => 'salesforce',
                             'note' => 'Conteúdo definido na automação Salesforce/MC.',
+                        ]);
+                    } elseif ($template_source === 'techia_discador') {
+                        $techia_vars = $this->resolve_techia_variables_for_row($record, $variables_map);
+                        $mensagem_para_armazenar = json_encode([
+                            'template_source' => 'techia_discador',
+                            'template_code' => '',
+                            'variables_map' => $variables_map,
+                            'variables' => $techia_vars,
+                            'original_message' => $mensagem_final,
                         ]);
                     }
 
@@ -3201,6 +3263,41 @@ class Painel_Campanhas
 
         if (isset($credentials[$provider][$env_id])) {
             return $credentials[$provider][$env_id];
+        }
+
+        return null;
+    }
+
+    /**
+     * Fornecedor TECHIA / TECH_IA (discador) — prefixo de agendamento deve ser T no NestJS.
+     */
+    private function is_techia_provider($provider)
+    {
+        if (!is_string($provider) || $provider === '') {
+            return false;
+        }
+        $norm = strtoupper(str_replace('_', '', $provider));
+
+        return $norm === 'TECHIA';
+    }
+
+    /**
+     * Credenciais TECHIA gravadas pelo API Manager (acm_provider_credentials → techia → env_id).
+     */
+    private function resolve_techia_acm_block(array $acm_all, $env_id)
+    {
+        if (empty($acm_all['techia']) || !is_array($acm_all['techia'])) {
+            return null;
+        }
+        $by_env = $acm_all['techia'];
+        $key_str = (string) $env_id;
+        $key_int = is_numeric($env_id) ? (string) intval($env_id) : $key_str;
+
+        if (isset($by_env[$key_str]) && is_array($by_env[$key_str])) {
+            return $by_env[$key_str];
+        }
+        if ($key_int !== $key_str && isset($by_env[$key_int]) && is_array($by_env[$key_int])) {
+            return $by_env[$key_int];
         }
 
         return null;
@@ -3716,6 +3813,8 @@ class Painel_Campanhas
             } elseif ($provider === 'CDA_RCS') {
                 // CDA_RCS usa prefixo R (RCS) para buscar credenciais RCS (URL importarcs), não CDA (URL importar/campanha)
                 $prefix = 'R';
+            } elseif ($this->is_techia_provider($provider)) {
+                $prefix = 'T';
             }
             $agendamento_id = $prefix . $agendamento_base_id;
 
@@ -5947,6 +6046,8 @@ class Painel_Campanhas
                 $prefix = strtoupper(substr($provider, 0, 1));
                 if ($provider === 'CDA_RCS') {
                     $prefix = 'R';
+                } elseif ($this->is_techia_provider($provider)) {
+                    $prefix = 'T';
                 }
                 $campaign_name_clean = preg_replace('/[^a-zA-Z0-9]/', '', $campaign['nome_campanha']);
                 $campaign_name_short = substr($campaign_name_clean, 0, 30);
@@ -6889,6 +6990,23 @@ class Painel_Campanhas
 
             return rest_ensure_response($credentials);
         } else {
+            // TECHIA (API Manager → acm_provider_credentials['techia'][idgis_ambiente])
+            if (strtoupper($provider) === 'TECHIA') {
+                $acm_all = get_option('acm_provider_credentials', []);
+                $block = $this->resolve_techia_acm_block(is_array($acm_all) ? $acm_all : [], $env_id);
+                if (is_array($block) && $this->has_valid_credentials($block)) {
+                    error_log('✅ [REST API] Credenciais TECHIA (acm_provider_credentials) env_id=' . $env_id);
+
+                    return rest_ensure_response($block);
+                }
+
+                return new WP_Error(
+                    'no_credentials',
+                    'Credenciais TECHIA não encontradas para env_id ' . $env_id . '. Configure no API Manager (TECHIA) ou credenciais dinâmicas.',
+                    ['status' => 404]
+                );
+            }
+
             // Providers dinâmicos (GOSAC, NOAH) - busca credenciais por envId
             global $wpdb;
             $table = $wpdb->prefix . 'api_consumer_credentials';
@@ -9211,6 +9329,8 @@ class Painel_Campanhas
         $prefix = strtoupper(substr($provider, 0, 1));
         if ($provider === 'CDA_RCS') {
             $prefix = 'R';
+        } elseif ($this->is_techia_provider($provider)) {
+            $prefix = 'T';
         }
         $agendamento_id = $prefix . $agendamento_base_id;
 

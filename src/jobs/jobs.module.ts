@@ -14,6 +14,7 @@ import { GosacOficialSendProcessor } from './providers/gosac-oficial-send.proces
 import { GosacOficialStartProcessor } from './providers/gosac-oficial-start.processor';
 import { NoahOficialSendProcessor } from './providers/noah-oficial-send.processor';
 import { RobbOficialSendProcessor } from './providers/robbu-oficial-send.processor';
+import { TechiaSendProcessor } from './providers/techia-send.processor';
 import { CampaignsModule } from '../campaigns/campaigns.module';
 import { ProvidersModule } from '../providers/providers.module';
 import { WebhookModule } from '../webhook/webhook.module';
@@ -38,6 +39,7 @@ import { PrismaModule } from '../prisma/prisma.module';
       { name: queueNames.GOSAC_OFICIAL_START },
       { name: queueNames.NOAH_OFICIAL_SEND },
       { name: queueNames.ROBBU_OFICIAL_SEND },
+      { name: queueNames.TECHIA_SEND },
     ),
     CampaignsModule,
     ProvidersModule,
@@ -59,6 +61,7 @@ import { PrismaModule } from '../prisma/prisma.module';
     GosacOficialStartProcessor,
     NoahOficialSendProcessor,
     RobbOficialSendProcessor,
+    TechiaSendProcessor,
   ],
   exports: [BullModule],
 })

@@ -15,6 +15,21 @@ import {
   TECHIA_MAX_BATCH_SIZE,
 } from './techia.interface';
 import { chunkArray, splitBrazilPhoneForTechia } from './techia-discador.utils';
+import {
+  parseTechiaVariablesFromMensagem,
+  pickTechiaScalar,
+  type TechiaRowVariables,
+} from './techia-payload.utils';
+
+const TECHIA_CORE_VAR_KEYS = new Set([
+  'campanha_origem',
+  'contrato',
+  'documento',
+  'valor',
+  'atraso',
+  'COD_DEPARA',
+  'nome',
+]);
 
 @Injectable()
 export class TechiaProvider extends BaseProvider {
@@ -31,10 +46,12 @@ export class TechiaProvider extends BaseProvider {
 
   validateCredentials(credentials: ProviderCredentials): boolean {
     const c = credentials as TechiaProviderCredentials;
-    const origin =
-      (typeof c.campanha_origem === 'string' && c.campanha_origem.trim()) ||
-      (typeof c.campaign_origin_id === 'string' && c.campaign_origin_id.trim());
-    return !!origin;
+    const tok =
+      (typeof c.bearer_token === 'string' && c.bearer_token.trim() !== '') ||
+      (typeof c.authorization === 'string' && c.authorization.trim() !== '') ||
+      (typeof c.api_token === 'string' && c.api_token.trim() !== '') ||
+      (typeof c.token === 'string' && c.token.trim() !== '');
+    return !!tok;
   }
 
   /**
@@ -57,7 +74,6 @@ export class TechiaProvider extends BaseProvider {
       const v = rawBearer.trim();
       headers['Authorization'] = v.startsWith('Bearer ') ? v : `Bearer ${v}`;
     } else if (typeof rawToken === 'string' && rawToken.trim() !== '') {
-      // Provisório: muitas APIs usam Bearer; se for X-Api-Key, trocar aqui.
       headers['Authorization'] = `Bearer ${rawToken.trim()}`;
     }
 
@@ -79,18 +95,73 @@ export class TechiaProvider extends BaseProvider {
     return Math.min(TECHIA_MAX_BATCH_SIZE, Math.floor(n));
   }
 
-  private mapRowToContact(
+  private mergeExtraTechiaFields(
+    base: TechiaContact,
+    vars: TechiaRowVariables,
+  ): void {
+    const b = base as Record<string, unknown>;
+    for (const [k, v] of Object.entries(vars)) {
+      if (TECHIA_CORE_VAR_KEYS.has(k)) continue;
+      if (v === undefined || v === null || String(v).trim() === '') continue;
+      b[k] = String(v).trim();
+    }
+  }
+
+  /**
+   * Monta um item do array do discador a partir do JSON `mensagem` (WordPress)
+   * e do telefone normalizado na linha.
+   */
+  private buildDiscadorItem(
     row: CampaignData,
-    campanhaOrigem: string,
-    numeros: { ddd: string; telefone: string }[],
-  ): TechiaContact {
+    credentials: ProviderCredentials,
+  ): TechiaContact | null {
+    const vars =
+      row.variables && Object.keys(row.variables).length > 0
+        ? (row.variables as TechiaRowVariables)
+        : parseTechiaVariablesFromMensagem(row.mensagem);
+
+    const split = splitBrazilPhoneForTechia(row.telefone);
+    if (!split) {
+      return null;
+    }
+
+    const credOrigem = this.resolveCampanhaOrigem(credentials);
+    const campanhaOrigem =
+      pickTechiaScalar(vars, 'campanha_origem', '').trim() || credOrigem;
+    if (!campanhaOrigem) {
+      this.logger.warn(
+        `TECHIA: linha ignorada — sem campanha_origem (mapeamento e credencial vazios).`,
+      );
+      return null;
+    }
+
+    const documentoRaw = pickTechiaScalar(vars, 'documento', row.cpf_cnpj ?? '');
+    const documento = documentoRaw.replace(/\D/g, '');
+    const contrato = pickTechiaScalar(
+      vars,
+      'contrato',
+      String(row.idcob_contrato ?? ''),
+    );
+    const nome = pickTechiaScalar(vars, 'nome', row.nome ?? '');
+    const valor = pickTechiaScalar(vars, 'valor', '');
+    const atraso = pickTechiaScalar(vars, 'atraso', '');
+    const codDepara =
+      pickTechiaScalar(vars, 'COD_DEPARA', '') ||
+      pickTechiaScalar(vars, 'cod_depara', '');
+
     const base: TechiaContact = {
       campanha_origem: campanhaOrigem,
-      contrato: String(row.idcob_contrato ?? '').trim(),
-      documento: String(row.cpf_cnpj ?? '').replace(/\D/g, ''),
-      numeros,
-      nome: String(row.nome ?? '').trim(),
+      contrato,
+      documento,
+      valor,
+      atraso,
+      COD_DEPARA: codDepara,
+      nome,
+      numeros: [split],
     };
+
+    this.mergeExtraTechiaFields(base, vars);
+
     return base;
   }
 
@@ -102,7 +173,7 @@ export class TechiaProvider extends BaseProvider {
       return {
         success: false,
         error:
-          'Credenciais TECHIA: informe campanha_origem (ou campaign_origin_id) vindo do painel/API Manager.',
+          'Credenciais TECHIA: configure token (API Manager) para autenticação na API.',
       };
     }
 
@@ -110,7 +181,6 @@ export class TechiaProvider extends BaseProvider {
       return { success: false, error: 'Nenhum dado para enviar' };
     }
 
-    const campanhaOrigem = this.resolveCampanhaOrigem(credentials);
     const url =
       (credentials.api_url as string)?.trim() ||
       process.env.TECHIA_DISCADOR_URL?.trim() ||
@@ -119,29 +189,35 @@ export class TechiaProvider extends BaseProvider {
     const batchSize = this.resolveBatchSize(credentials);
     const contacts: TechiaContact[] = [];
     let skippedPhones = 0;
+    let skippedCampanha = 0;
 
     for (const row of data) {
-      const split = splitBrazilPhoneForTechia(row.telefone);
-      if (!split) {
-        skippedPhones++;
-        this.logger.warn(
-          `Telefone inválido para TECHIA (DDD+8/9 dígitos após 55): ${row.telefone}`,
-        );
+      const phoneOk = !!splitBrazilPhoneForTechia(row.telefone);
+      const item = this.buildDiscadorItem(row, credentials);
+      if (!item) {
+        if (!phoneOk) {
+          skippedPhones++;
+          this.logger.warn(
+            `Telefone inválido para TECHIA (DDD+8/9 após 55): ${row.telefone}`,
+          );
+        } else {
+          skippedCampanha++;
+        }
         continue;
       }
-      contacts.push(this.mapRowToContact(row, campanhaOrigem, [split]));
+      contacts.push(item);
     }
 
     if (contacts.length === 0) {
       return {
         success: false,
-        error: `Nenhum contato com telefone válido para o discador TECHIA (ignorados: ${skippedPhones}).`,
+        error: `Nenhum contato válido para TECHIA (telefones inválidos: ${skippedPhones}, sem campanha_origem: ${skippedCampanha}).`,
       };
     }
 
-    if (skippedPhones > 0) {
+    if (skippedPhones > 0 || skippedCampanha > 0) {
       this.logger.warn(
-        `TECHIA: ${skippedPhones} linha(s) ignoradas por telefone inválido; enviando ${contacts.length}.`,
+        `TECHIA: ignoradas ${skippedPhones} linha(s) por telefone e ${skippedCampanha} por campanha_origem; enviando ${contacts.length}.`,
       );
     }
 
@@ -181,7 +257,12 @@ export class TechiaProvider extends BaseProvider {
       return {
         success: true,
         message: `Enviados ${contacts.length} contatos à TECHIA em ${chunks.length} lote(s).`,
-        data: { batches: chunks.length, sent: contacts.length, skipped: skippedPhones },
+        data: {
+          batches: chunks.length,
+          sent: contacts.length,
+          skippedPhones,
+          skippedCampanha,
+        },
       };
     } catch (error: unknown) {
       return this.handleError(error, { provider: 'TECHIA' });

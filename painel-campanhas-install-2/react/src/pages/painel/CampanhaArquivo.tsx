@@ -61,6 +61,7 @@ const providers = [
   { id: "NOAH", name: "NOAH" },
   { id: "NOAH_OFICIAL", name: "Noah Oficial" },
   { id: "ROBBU_OFICIAL", name: "Robbu Oficial" },
+  { id: "TECH_IA", name: "TECHIA (Discador)" },
   { id: "RCS", name: "RCS" },
   { id: "SALESFORCE", name: "Salesforce" },
 ];
@@ -76,8 +77,20 @@ const PROVIDER_TO_SOURCE_MAP: Record<string, string[]> = {
   NOAH: [],
   NOAH_OFICIAL: ["noah_oficial"],
   ROBBU_OFICIAL: ["robbu_oficial"],
+  TECH_IA: [],
   RCS: [],
 };
+
+/** Campos do discador TECHIA — mapeamento fixo (sem template). */
+const TECHIA_FIXED_VARIABLE_KEYS = [
+  "documento",
+  "nome",
+  "contrato",
+  "valor",
+  "atraso",
+  "COD_DEPARA",
+  "campanha_origem",
+] as const;
 
 async function readCsvHeadersFromFile(file: File): Promise<string[]> {
   const blob = file.slice(0, Math.min(file.size, 262144));
@@ -465,6 +478,9 @@ export default function CampanhaArquivo() {
   const fieldSourceLabel = csvHeaders.length > 0 ? 'CSV' : 'BD';
 
   const mapperVariableKeys = useMemo(() => {
+    if (provider === "TECH_IA") {
+      return [...TECHIA_FIXED_VARIABLE_KEYS];
+    }
     const sel = selectedTemplateForMapper;
     if (!sel) return [];
     if (sel.source === 'otima_wpp' && otimaWppMapperVariableKeys.length > 0) return otimaWppMapperVariableKeys;
@@ -490,7 +506,40 @@ export default function CampanhaArquivo() {
     noahOfficialMapperVariableKeys,
     gosacMapperVariableKeys,
     templateVariables,
+    provider,
   ]);
+
+  /** Sugestão inicial de colunas CSV para cada chave TECHIA (analista pode ajustar). */
+  useEffect(() => {
+    if (provider !== "TECH_IA") return;
+    setTemplateVariables((prev) => {
+      const h = csvHeaders;
+      if (h.length === 0) {
+        const empty: Record<string, VarMapping> = {};
+        for (const k of TECHIA_FIXED_VARIABLE_KEYS) {
+          empty[k] = { type: "field", value: "" };
+        }
+        return Object.keys(prev).length > 0 ? prev : empty;
+      }
+      const guess = (re: RegExp) => h.find((x) => re.test(x)) || "";
+      const next: Record<string, VarMapping> = { ...prev };
+      let changed = false;
+      for (const key of TECHIA_FIXED_VARIABLE_KEYS) {
+        if (next[key]?.value && String(next[key].value).trim() !== "") continue;
+        let col = "";
+        if (key === "nome") col = guess(/^nome$/i) || h[0];
+        else if (key === "documento") col = guess(/cpf|cnpj|documento/i) || h[0];
+        else if (key === "contrato") col = guess(/contrato|id.*contrato|idcob/i) || h[0];
+        else if (key === "valor") col = guess(/^valor$/i) || guess(/vlr|amount/i) || "";
+        else if (key === "atraso") col = guess(/atraso|dias|dias_atraso/i) || "";
+        else if (key === "COD_DEPARA") col = guess(/depara|cod.*depara|COD_DEPARA/i) || "";
+        else if (key === "campanha_origem") col = guess(/campanha|origem|cod.*campanha/i) || "";
+        next[key] = { type: "field", value: col || h[0] };
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [provider, csvHeaders]);
 
   const skipResetRef = useRef(true);
   useEffect(() => {
@@ -639,8 +688,9 @@ export default function CampanhaArquivo() {
     }
 
     const salesforceOnly = provider === "SALESFORCE";
+    const isTechiaDiscador = provider === "TECH_IA";
 
-    if (!salesforceOnly && !template) {
+    if (!salesforceOnly && !isTechiaDiscador && !template) {
       toast({
         title: "Template obrigatório",
         description: "Por favor, selecione um template de mensagem",
@@ -649,9 +699,23 @@ export default function CampanhaArquivo() {
       return;
     }
 
+    if (isTechiaDiscador) {
+      const missing = TECHIA_FIXED_VARIABLE_KEYS.filter(
+        (k) => !(templateVariables[k]?.value && String(templateVariables[k].value).trim()),
+      );
+      if (missing.length > 0) {
+        toast({
+          title: "Mapeamento TECHIA incompleto",
+          description: `Associe uma coluna do CSV a cada campo: ${missing.join(", ")}`,
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     const selectedTemplate = templates.find((t) => t.id === template);
 
-    if (!salesforceOnly && (selectedTemplate?.source === 'otima_rcs' || selectedTemplate?.source === 'otima_wpp') && !brokerCode) {
+    if (!salesforceOnly && !isTechiaDiscador && (selectedTemplate?.source === 'otima_rcs' || selectedTemplate?.source === 'otima_wpp') && !brokerCode) {
       toast({
         title: "Broker obrigatório",
         description: "Por favor, selecione um broker da Ótima",
@@ -660,7 +724,7 @@ export default function CampanhaArquivo() {
       return;
     }
 
-    if (!salesforceOnly && selectedTemplate?.source === 'gosac_oficial' && !gosacConnectionId) {
+    if (!salesforceOnly && !isTechiaDiscador && selectedTemplate?.source === 'gosac_oficial' && !gosacConnectionId) {
       toast({
         title: "Ilha obrigatória",
         description: "Selecione a ilha (conexão) por qual o disparo será enviado",
@@ -709,6 +773,8 @@ export default function CampanhaArquivo() {
     const isOtimaTemplate = selectedTemplate?.source === 'otima_rcs' || selectedTemplate?.source === 'otima_wpp' || selectedTemplate?.source === 'otima';
     const templateSource = salesforceOnly
       ? 'salesforce'
+      : isTechiaDiscador
+        ? 'techia_discador'
       : isOtimaTemplate
       ? (provider === 'OTIMA_WPP' ? 'otima_wpp' : 'otima_rcs')
       : (selectedTemplate?.source || 'local');
@@ -720,11 +786,11 @@ export default function CampanhaArquivo() {
       carteira: carteira || '',
       wallet_id: walletIdForOtima || selectedCarteiraObj?.id_carteira || '',
       fornecedor: provider.toUpperCase(),
-      template_id: salesforceOnly ? null : (selectedTemplate?.source === 'local' ? parseInt(template, 10) : null),
-      template_code: salesforceOnly ? null : (selectedTemplate?.templateCode || null),
+      template_id: salesforceOnly || isTechiaDiscador ? null : (selectedTemplate?.source === 'local' ? parseInt(template, 10) : null),
+      template_code: salesforceOnly || isTechiaDiscador ? null : (selectedTemplate?.templateCode || null),
       template_source: templateSource,
-      broker_code: salesforceOnly ? null : (brokerCode || selectedTemplate?.brokerCode || null),
-      customer_code: salesforceOnly
+      broker_code: salesforceOnly || isTechiaDiscador ? null : (brokerCode || selectedTemplate?.brokerCode || null),
+      customer_code: salesforceOnly || isTechiaDiscador
         ? null
         : (selectedTemplate?.customerCode || walletIdForOtima || selectedCarteiraObj?.id_carteira || null),
       variables_map: salesforceOnly ? null : (Object.keys(templateVariables).length > 0 ? templateVariables : null),
@@ -972,6 +1038,17 @@ export default function CampanhaArquivo() {
               </div>
             )}
 
+            {provider === "TECH_IA" && (
+              <Alert className="border-cyan-200 bg-cyan-50/50 dark:bg-cyan-950/20">
+                <FileText className="h-4 w-4 text-cyan-700" />
+                <AlertDescription className="text-sm">
+                  <strong>TECHIA (discador):</strong> não há template de mensagem. Mapeie abaixo cada campo do discador para uma coluna do CSV
+                  (telefone continua vindo do cruzamento CPF/telefone + arquivo).
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {provider !== "TECH_IA" && (
             <div className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <Label>Template <span className="text-red-500">*</span></Label>
@@ -1102,6 +1179,7 @@ export default function CampanhaArquivo() {
                 </PopoverContent>
               </Popover>
             </div>
+            )}
 
             <div className="space-y-3 rounded-lg border border-border p-4">
               <div className="flex items-center gap-2">
@@ -1183,13 +1261,20 @@ export default function CampanhaArquivo() {
             </div>
 
             {mapperVariableKeys.length > 0 && (
-              <TemplateVariableMapper
-                variables={mapperVariableKeys}
-                mapping={templateVariables}
-                onChange={setTemplateVariables}
-                fieldOptions={fieldOptionsForMapper}
-                fieldSourceLabel={fieldSourceLabel}
-              />
+              <div className="space-y-2">
+                {provider === "TECH_IA" && (
+                  <p className="text-sm font-medium text-foreground">
+                    Mapeamento TECHIA — colunas do CSV
+                  </p>
+                )}
+                <TemplateVariableMapper
+                  variables={mapperVariableKeys}
+                  mapping={templateVariables}
+                  onChange={setTemplateVariables}
+                  fieldOptions={fieldOptionsForMapper}
+                  fieldSourceLabel={fieldSourceLabel}
+                />
+              </div>
             )}
 
             {tempId && (
@@ -1279,7 +1364,7 @@ export default function CampanhaArquivo() {
                 !campaignName.trim() ||
                 !file ||
                 !tempId ||
-                (!template && provider !== "SALESFORCE") ||
+                (!template && provider !== "SALESFORCE" && provider !== "TECH_IA") ||
                 !provider ||
                 !tableName ||
                 createMutation.isPending ||

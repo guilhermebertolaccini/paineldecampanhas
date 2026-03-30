@@ -7,6 +7,8 @@ export interface CampaignData {
   idcob_contrato: string;
   cpf_cnpj: string;
   mensagem: string;
+  /** Preenchido pelo WordPress em fluxos como TECHIA (JSON com `variables` por linha). */
+  variables?: Record<string, string>;
   data_cadastro?: string;
   midia_campanha?: string;
   /** ID da linha no WordPress (`envios_pendentes` etc.) — usado em `externalKey` NOAH quando disponível */

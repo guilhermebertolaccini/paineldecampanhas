@@ -244,6 +244,8 @@ export class CampaignsService {
       'F': 'GOSAC_OFICIAL',
       'H': 'NOAH_OFICIAL',
       'B': 'ROBBU_OFICIAL',
+      /** Discador / mailing TECHIA — `agendamento_id` deve começar com T no WordPress. */
+      'T': 'TECHIA',
     };
 
     const provider = providerMap[prefix];
@@ -365,6 +367,17 @@ export class CampaignsService {
         // Já recebem no formato correto (ROBBU: company, username, password, invenio_private_token)
         return credentials;
 
+      case 'TECHIA':
+        return {
+          ...credentials,
+          campanha_origem:
+            credentials.campanha_origem ||
+            credentials.campaign_origin_id ||
+            credentials.campanhaOrigem ||
+            '',
+          api_url: credentials.api_url || credentials.techia_api_url,
+        };
+
       case 'SALESFORCE': {
         // WordPress REST pode devolver objeto; em edge cases pode vir string JSON.
         // API Manager grava operacao + automation_id por idgis em acm_provider_credentials.
@@ -420,6 +433,8 @@ export class CampaignsService {
       'client_secret',
       'password',
       'mkc_client_secret',
+      'bearer_token',
+      'api_token',
     ];
 
     for (const field of sensitiveFields) {

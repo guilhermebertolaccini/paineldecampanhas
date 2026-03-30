@@ -23,6 +23,8 @@ export const queueNames = {
   GOSAC_OFICIAL_START: 'gosac-oficial-start',
   NOAH_OFICIAL_SEND: 'noah-oficial-send',
   ROBBU_OFICIAL_SEND: 'robbu-oficial-send',
+  /** Exportação / discador TECHIA (mailing em lote). */
+  TECHIA_SEND: 'techia-send',
 } as const;
 
 export type QueueName = typeof queueNames[keyof typeof queueNames];

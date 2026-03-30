@@ -43,12 +43,13 @@ export interface TechiaProviderCredentials {
   authorization?: string;
   api_token?: string;
   token?: string;
-  /** Tamanho máximo de itens por POST (default 500, máx. sugerido 1000). */
+  /** Tamanho máximo de itens por POST (padrão e teto 1000). */
   batch_size?: number;
 }
 
 export const TECHIA_DISCADOR_DEFAULT_URL =
   'https://digital.concilig.techiasolutions.com.br/api/agendamento_discador_array';
 
-export const TECHIA_DEFAULT_BATCH_SIZE = 500;
+/** Padrão alinhado ao volume típico por POST (máx. {@link TECHIA_MAX_BATCH_SIZE}). */
+export const TECHIA_DEFAULT_BATCH_SIZE = 1000;
 export const TECHIA_MAX_BATCH_SIZE = 1000;

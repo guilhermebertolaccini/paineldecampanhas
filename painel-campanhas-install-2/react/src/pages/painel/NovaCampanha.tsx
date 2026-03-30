@@ -71,7 +71,7 @@ const providers = [
   { id: "NOAH_OFICIAL", name: "Noah Oficial", available: true },
   { id: "ROBBU_OFICIAL", name: "Robbu Oficial", available: true },
   { id: "SALESFORCE", name: "Salesforce", available: true },
-  { id: "TECH_IA", name: "Tech IA", available: true },
+  { id: "TECH_IA", name: "TECHIA (Discador)", available: true },
 ];
 
 function userCanManageOptions(): boolean {

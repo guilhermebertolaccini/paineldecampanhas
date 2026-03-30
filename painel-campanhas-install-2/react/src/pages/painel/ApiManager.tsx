@@ -277,6 +277,9 @@ function RobbuWebhookCard() {
   );
 }
 
+const TECHIA_DISCADOR_DEFAULT_URL =
+  'https://digital.concilig.techiasolutions.com.br/api/agendamento_discador_array';
+
 const PROVIDERS = [
   { value: 'gosac', label: 'GOSAC' },
   { value: 'gosac_oficial', label: 'Gosac Oficial' },
@@ -284,6 +287,163 @@ const PROVIDERS = [
   { value: 'noah_oficial', label: 'Noah Oficial' },
   { value: 'salesforce', label: 'Salesforce' },
 ];
+
+function TechiaDiscadorCard() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [envId, setEnvId] = useState('');
+  const [token, setToken] = useState('');
+  const [campanhaOrigem, setCampanhaOrigem] = useState('');
+  const [apiUrl, setApiUrl] = useState(TECHIA_DISCADOR_DEFAULT_URL);
+
+  const loadMutation = useMutation({
+    mutationFn: async () => {
+      if (!envId.trim()) {
+        throw new Error('Informe o ID do ambiente (idgis_ambiente)');
+      }
+      return getCredential('techia', envId.trim());
+    },
+    onSuccess: (raw: any) => {
+      const d = raw?.data ?? raw;
+      if (d && typeof d === 'object') {
+        setToken(typeof d.token === 'string' ? d.token : '');
+        setCampanhaOrigem(typeof d.campanha_origem === 'string' ? d.campanha_origem : '');
+        setApiUrl(
+          typeof d.api_url === 'string' && d.api_url.trim()
+            ? d.api_url.trim()
+            : TECHIA_DISCADOR_DEFAULT_URL
+        );
+      }
+      toast({ title: 'Credenciais TECHIA carregadas' });
+    },
+    onError: (error: any) => {
+      toast({
+        title: 'Não foi possível carregar',
+        description: error?.message ?? 'Verifique o Environment ID ou crie com Salvar',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (!envId.trim()) {
+        throw new Error('ID do ambiente (idgis_ambiente) é obrigatório');
+      }
+      const credential_data = {
+        token: token.trim(),
+        campanha_origem: campanhaOrigem.trim(),
+        api_url: apiUrl.trim() || TECHIA_DISCADOR_DEFAULT_URL,
+      };
+      if (!credential_data.token) {
+        throw new Error('Token de autenticação é obrigatório');
+      }
+      try {
+        await getCredential('techia', envId.trim());
+        await updateCredential('techia', envId.trim(), credential_data);
+        return 'updated' as const;
+      } catch {
+        await createCredential({
+          provider: 'techia',
+          env_id: envId.trim(),
+          credential_data,
+        });
+        return 'created' as const;
+      }
+    },
+    onSuccess: (mode) => {
+      toast({
+        title: mode === 'updated' ? 'Credenciais TECHIA atualizadas' : 'Credenciais TECHIA criadas',
+      });
+      queryClient.invalidateQueries({ queryKey: ['dynamic-credentials'] });
+    },
+    onError: (error: any) => {
+      toast({
+        title: 'Erro ao salvar TECHIA',
+        description: error?.message ?? 'Tente novamente',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  return (
+    <Card className="border-cyan-300/80 bg-cyan-50/30 dark:bg-cyan-950/20">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-cyan-800 dark:text-cyan-300">
+          <Link2 className="h-5 w-5" />
+          TECHIA — Discador / mailing
+        </CardTitle>
+        <CardDescription>
+          Credenciais por ambiente (<code className="text-xs">idgis_ambiente</code>), gravadas em{' '}
+          <code className="text-xs">acm_provider_credentials</code> sob a chave{' '}
+          <code className="text-xs">techia</code>. O microserviço NestJS consulta{' '}
+          <code className="text-xs">GET .../credentials/techia/&#123;env&#125;</code>.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4 max-w-2xl">
+        <div className="space-y-2">
+          <Label>Environment ID (idgis_ambiente) *</Label>
+          <Input
+            value={envId}
+            onChange={(e) => setEnvId(e.target.value)}
+            placeholder="Ex.: 3641 — o mesmo valor dos registros da campanha"
+            className="font-mono text-sm"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>Token de autenticação *</Label>
+          <div className="relative">
+            <Input
+              type="password"
+              autoComplete="new-password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="Bearer / API key conforme a TECHIA informar"
+              className="pr-10 font-mono text-sm"
+            />
+          </div>
+        </div>
+        <div className="space-y-2">
+          <Label>Campanha origem padrão</Label>
+          <Input
+            value={campanhaOrigem}
+            onChange={(e) => setCampanhaOrigem(e.target.value)}
+            placeholder="Fallback quando campanha_origem não vier mapeada no CSV"
+            className="text-sm"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>URL da API</Label>
+          <Input
+            value={apiUrl}
+            onChange={(e) => setApiUrl(e.target.value)}
+            placeholder={TECHIA_DISCADOR_DEFAULT_URL}
+            className="font-mono text-xs sm:text-sm"
+          />
+          <p className="text-xs text-muted-foreground">
+            Padrão da documentação TECHIA; altere apenas se o endpoint mudar.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={loadMutation.isPending}
+            onClick={() => loadMutation.mutate()}
+          >
+            {loadMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            <span className="ml-2">Carregar</span>
+          </Button>
+          <Button type="button" size="sm" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
+            {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            <span className="ml-2">Salvar credenciais</span>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function ApiManager() {
   const { toast } = useToast();
@@ -726,6 +886,8 @@ export default function ApiManager() {
 
       {/* ── Robbu Webhook ───────────────────────────────────────────────────── */}
       <RobbuWebhookCard />
+
+      <TechiaDiscadorCard />
 
       {/* Master API Key */}
       <Card className="border-primary/30 bg-primary/5">
@@ -1804,6 +1966,16 @@ function DynamicCredentialsList() {
               {cred.data?.automation_id && (
                 <p>
                   <span className="font-medium">Automation ID:</span> {cred.data.automation_id}
+                </p>
+              )}
+              {cred.provider === 'techia' && cred.data?.campanha_origem && (
+                <p>
+                  <span className="font-medium">Campanha origem:</span> {cred.data.campanha_origem}
+                </p>
+              )}
+              {cred.provider === 'techia' && cred.data?.api_url && (
+                <p>
+                  <span className="font-medium">API URL:</span> {cred.data.api_url}
                 </p>
               )}
               {cred.data?.company && (

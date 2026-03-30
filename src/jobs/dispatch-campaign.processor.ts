@@ -22,6 +22,7 @@ export class DispatchCampaignProcessor extends WorkerHost {
     @InjectQueue(queueNames.GOSAC_OFICIAL_SEND) private readonly gosacOficialQueue: Queue,
     @InjectQueue(queueNames.NOAH_OFICIAL_SEND) private readonly noahOficialQueue: Queue,
     @InjectQueue(queueNames.ROBBU_OFICIAL_SEND) private readonly robbuOficialQueue: Queue,
+    @InjectQueue(queueNames.TECHIA_SEND) private readonly techiaQueue: Queue,
   ) {
     super();
   }
@@ -208,6 +209,7 @@ export class DispatchCampaignProcessor extends WorkerHost {
       'GOSAC_OFICIAL': this.gosacOficialQueue,
       'NOAH_OFICIAL': this.noahOficialQueue,
       'ROBBU_OFICIAL': this.robbuOficialQueue,
+      'TECHIA': this.techiaQueue,
     };
 
     const queue = queueMap[provider];
