@@ -66,13 +66,27 @@ interface Props {
     variables: string[];                                     // ["var1", "var2", ...]
     mapping: Record<string, VarMapping>;
     onChange: (mapping: Record<string, VarMapping>) => void;
+    /** Se definido, substitui {@link DB_FIELDS} no modo "campo" (ex.: cabeçalhos do CSV). */
+    fieldOptions?: { value: string; label: string }[];
+    /** Rótulo do botão de campo dinâmico (padrão: "BD" ou "CSV" quando `fieldOptions` vem do arquivo). */
+    fieldSourceLabel?: string;
 }
 
-export function TemplateVariableMapper({ variables, mapping, onChange }: Props) {
+export function TemplateVariableMapper({
+    variables,
+    mapping,
+    onChange,
+    fieldOptions,
+    fieldSourceLabel,
+}: Props) {
     if (!variables || variables.length === 0) return null;
 
+    const options = fieldOptions && fieldOptions.length > 0 ? fieldOptions : DB_FIELDS;
+    const defaultFieldValue = options[0]?.value ?? "nome";
+    const sourceBtnLabel = fieldSourceLabel ?? (fieldOptions && fieldOptions.length > 0 ? "CSV" : "BD");
+
     const update = (varName: string, patch: Partial<VarMapping>) => {
-        const current = mapping[varName] ?? { type: "field", value: "nome" };
+        const current = mapping[varName] ?? { type: "field", value: defaultFieldValue };
         onChange({ ...mapping, [varName]: { ...current, ...patch } });
     };
 
@@ -83,12 +97,14 @@ export function TemplateVariableMapper({ variables, mapping, onChange }: Props) 
                 <span className="text-sm font-semibold">Mapeamento de Variáveis do Template</span>
             </div>
             <p className="text-xs text-muted-foreground mb-3">
-                Defina o valor de cada variável do template. Pode usar um campo do banco de dados ou digitar um texto fixo.
+                {fieldOptions && fieldOptions.length > 0
+                    ? "Ligue cada variável do template a uma coluna do CSV ou a um texto fixo."
+                    : "Defina o valor de cada variável do template. Pode usar um campo do banco de dados ou digitar um texto fixo."}
             </p>
 
             <div className="space-y-2">
                 {variables.map((varName) => {
-                    const current = mapping[varName] ?? { type: "field", value: "nome" };
+                    const current = mapping[varName] ?? { type: "field", value: defaultFieldValue };
                     const label =
                         varName.startsWith("-") && varName.endsWith("-")
                             ? varName
@@ -107,9 +123,9 @@ export function TemplateVariableMapper({ variables, mapping, onChange }: Props) 
                                     size="sm"
                                     variant={current.type === "field" ? "default" : "ghost"}
                                     className="h-8 px-2 rounded-none text-xs gap-1"
-                                    onClick={() => update(varName, { type: "field", value: "nome" })}
+                                    onClick={() => update(varName, { type: "field", value: defaultFieldValue })}
                                 >
-                                    <Database className="h-3 w-3" /> BD
+                                    <Database className="h-3 w-3" /> {sourceBtnLabel}
                                 </Button>
                                 <Button
                                     type="button"
@@ -129,7 +145,7 @@ export function TemplateVariableMapper({ variables, mapping, onChange }: Props) 
                                         <SelectValue placeholder="Escolha o campo..." />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        {DB_FIELDS.map((f) => (
+                                        {options.map((f) => (
                                             <SelectItem key={f.value} value={f.value} className="text-xs">
                                                 {f.label}
                                             </SelectItem>
@@ -207,13 +223,71 @@ export function collectPlaceholdersSourceText(template: unknown): string {
         if (typeof rc.text === "string") parts.push(rc.text);
     }
 
-    if (raw.components) parts.push(walkComponents(raw.components));
+    if (Array.isArray(raw.components)) parts.push(walkComponents(raw.components));
+    if (Array.isArray(t.components) && t.components !== raw.components) {
+        parts.push(walkComponents(t.components));
+    }
     const nested = raw.template;
     if (nested && typeof nested === "object" && Array.isArray(nested.components)) {
         parts.push(walkComponents(nested.components));
     }
 
     return parts.filter(Boolean).join("\n");
+}
+
+/** Conta parâmetros do BODY ({{n}} ou example.body_text) — Cloud API / NOAH. */
+function inferNoahParameterCountFromComponents(components: unknown): number {
+    if (!Array.isArray(components)) return 0;
+    let fromPlaceholders = 0;
+    let fromExample = 0;
+    for (const c of components) {
+        if (!c || typeof c !== "object") continue;
+        const comp = c as Record<string, any>;
+        const typ = String(comp.type ?? comp.Type ?? "").toLowerCase();
+        if (typ !== "body") continue;
+        const txt = typeof comp.text === "string" ? comp.text : "";
+        const re = /\{\{(\d+)\}\}/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(txt)) !== null) {
+            const d = parseInt(m[1], 10);
+            if (!Number.isNaN(d)) fromPlaceholders = Math.max(fromPlaceholders, d);
+        }
+        const ex = comp.example;
+        if (ex && typeof ex === "object" && Array.isArray(ex.body_text) && ex.body_text.length > 0) {
+            const first = ex.body_text[0];
+            if (Array.isArray(first)) fromExample = Math.max(fromExample, first.length);
+        }
+    }
+    return Math.max(fromPlaceholders, fromExample);
+}
+
+/**
+ * NOAH Oficial: variáveis em `{{1}}`, `{{2}}` no texto do template ou contagem via `components[].example.body_text`.
+ * Aceita `source` `noah_oficial` (fluxo atual) ou `noah` se a API passar assim.
+ */
+export function listNoahOfficialVariableKeysFromTemplate(template: unknown): string[] {
+    if (!template || typeof template !== "object") return [];
+    const t = template as Record<string, any>;
+    const src = String(t.source ?? "");
+    if (src !== "noah_oficial" && src !== "noah") return [];
+
+    const text = collectPlaceholdersSourceText(template);
+    const fromText = extractVariables(text);
+    if (fromText.length > 0) return fromText;
+
+    const n = inferNoahParameterCountFromComponents(t.components);
+    if (n <= 0) return [];
+    return Array.from({ length: n }, (_, i) => String(i + 1));
+}
+
+export function buildInitialVariableMappingFromNoahOfficial(template: unknown): Record<string, VarMapping> | null {
+    const keys = listNoahOfficialVariableKeysFromTemplate(template);
+    if (keys.length === 0) return null;
+    const init: Record<string, VarMapping> = {};
+    for (const k of keys) {
+        init[k] = { type: "field", value: "nome" };
+    }
+    return init;
 }
 
 /**

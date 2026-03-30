@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
+import { randomUUID } from 'crypto';
 import { firstValueFrom } from 'rxjs';
 import { BaseProvider } from '../base/base.provider';
 import {
@@ -10,18 +11,42 @@ import {
 } from '../base/provider.interface';
 
 /**
+ * Parâmetro de variável no corpo do template (contrato NOAH / Cloud API).
+ */
+export type NoahHsmTextParameter = {
+  type: 'text';
+  text: string;
+};
+
+/**
+ * Bloco `components` para template HSM — `type: "body"` + `parameters` ordenados ({{1}}, {{2}}, …).
+ */
+export type NoahHsmBodyComponent = {
+  type: 'body';
+  parameters: NoahHsmTextParameter[];
+};
+
+/**
+ * Payload raiz POST `/v1/api/external/:apiId/send-template` (documentação NOAH).
+ */
+export type NoahSendTemplatePayload = {
+  number: string;
+  channelId: number;
+  templateId?: number;
+  templateName: string;
+  language: string;
+  components: NoahHsmBodyComponent[];
+  externalKey: string;
+};
+
+/**
  * NOAH Oficial API Provider
- * Documentação: API Noah - Guia de integração
  *
- * Endpoints:
- * - POST /v1/api/external/:apiId - Envio de texto
- * - POST /v1/api/external/:apiId/send-template - Envio de template aprovado
- * - GET /v1/api/external/:apiId/message-templates - Lista templates
- * - GET /v1/api/external/:apiId/phone-quality?channelId=X - Saúde da linha
- * - GET /v1/api/external/:apiId/channels - Lista canais WABA
+ * Rotas (base salva no WP já com apiId):
+ * - POST {baseUrl}/send-template — HSM / template aprovado
+ * - POST {baseUrl} — texto livre (sem /send-template)
  *
- * Auth: Authorization: Bearer {token}
- * Credenciais dinâmicas por carteira: url (base com apiId) + token
+ * Auth: `INTEGRATION <token>` ou token já prefixado (alinhado ao WordPress).
  */
 @Injectable()
 export class NoahOficialProvider extends BaseProvider {
@@ -50,8 +75,76 @@ export class NoahOficialProvider extends BaseProvider {
   }
 
   /**
-   * Envia mensagens para a API NOAH Oficial.
-   * A API NOAH envia uma mensagem por requisição - fazemos loop sequencial.
+   * Base armazenada: `https://.../v1/api/external/{apiId}` (sem barra final).
+   * URL final HSM: base + `/send-template` (evita duplicar se já vier sufixado).
+   */
+  private resolveNoahSendTemplateUrl(storedBaseUrl: string): string {
+    const trimmed = storedBaseUrl.trim().replace(/\/+$/, '');
+    const suffix = '/send-template';
+    const lower = trimmed.toLowerCase();
+    if (lower.endsWith(suffix)) {
+      return trimmed;
+    }
+    return `${trimmed}${suffix}`;
+  }
+
+  /**
+   * `externalKey` — chave exata da doc (K maiúsculo). ID estável quando houver id/envio_id da linha; senão UUID.
+   */
+  private buildNoahExternalKey(item: CampaignData, index: number): string {
+    if (item.id != null && String(item.id).trim() !== '') {
+      return `pc_envio_${String(item.id)}`;
+    }
+    if (item.envio_id != null && String(item.envio_id).trim() !== '') {
+      return `pc_envio_${String(item.envio_id)}`;
+    }
+    const contrato =
+      item.idcob_contrato != null && String(item.idcob_contrato).trim() !== ''
+        ? String(item.idcob_contrato)
+        : 'na';
+    return `noah_${contrato}_${index}_${randomUUID()}`;
+  }
+
+  /**
+   * Garante estrutura exata: `[{ "type": "body", "parameters": [{ "type": "text", "text": "..." }] }]`.
+   * Normaliza `BODY` → `body` e descarta entradas inválidas.
+   */
+  private normalizeNoahTemplateComponents(
+    components: unknown,
+  ): NoahHsmBodyComponent[] {
+    if (!Array.isArray(components)) return [];
+    const out: NoahHsmBodyComponent[] = [];
+
+    for (const c of components) {
+      if (!c || typeof c !== 'object') continue;
+      const comp = c as Record<string, unknown>;
+      const typ = String(comp.type ?? comp.Type ?? '').toLowerCase();
+      if (typ !== 'body') continue;
+
+      const rawParams = comp.parameters;
+      if (!Array.isArray(rawParams)) continue;
+
+      const parameters: NoahHsmTextParameter[] = [];
+      for (const p of rawParams) {
+        if (!p || typeof p !== 'object') continue;
+        const pr = p as Record<string, unknown>;
+        const pType = String(pr.type ?? 'text').toLowerCase();
+        const text = pr.text != null ? String(pr.text) : '';
+        if (pType === 'text') {
+          parameters.push({ type: 'text', text });
+        }
+      }
+
+      if (parameters.length > 0) {
+        out.push({ type: 'body', parameters });
+      }
+    }
+
+    return out;
+  }
+
+  /**
+   * Envia mensagens para a API NOAH Oficial (uma requisição por destinatário).
    */
   async send(
     data: CampaignData[],
@@ -72,19 +165,17 @@ export class NoahOficialProvider extends BaseProvider {
     }
 
     const baseUrl = (credentials.url as string).replace(/\/$/, '');
-    const authHeader =
-      (credentials.token as string).startsWith('Bearer ')
-        ? (credentials.token as string)
-        : `Bearer ${credentials.token}`;
+    const rawTok = String(credentials.token ?? '').trim();
+    const authHeader = this.buildNoahAuthorizationHeader(rawTok);
 
     let successCount = 0;
     let lastError: string | null = null;
 
     for (let i = 0; i < data.length; i++) {
       const item = data[i];
-      const phone = this.normalizePhoneNumber(item.telefone);
+      const number = this.normalizePhoneNumber(item.telefone);
       const name = item.nome || '';
-      const externalKey = `camp_${item.idcob_contrato || i}_${Date.now()}`;
+      const externalKey = this.buildNoahExternalKey(item, i);
 
       try {
         const isTemplate = this.detectTemplateMessage(item.mensagem);
@@ -92,8 +183,7 @@ export class NoahOficialProvider extends BaseProvider {
           await this.sendTemplateMessage(
             baseUrl,
             authHeader,
-            phone,
-            name,
+            number,
             item,
             externalKey,
           );
@@ -101,7 +191,7 @@ export class NoahOficialProvider extends BaseProvider {
           await this.sendTextMessage(
             baseUrl,
             authHeader,
-            phone,
+            number,
             name,
             item.mensagem,
             externalKey,
@@ -114,7 +204,7 @@ export class NoahOficialProvider extends BaseProvider {
           err.message ||
           'Erro desconhecido ao enviar';
         this.logger.warn(
-          `Falha ao enviar para ${phone} (${i + 1}/${data.length}): ${lastError}`,
+          `Falha ao enviar para ${number} (${i + 1}/${data.length}): ${lastError}`,
         );
       }
     }
@@ -135,6 +225,19 @@ export class NoahOficialProvider extends BaseProvider {
         failed: data.length - successCount,
       },
     };
+  }
+
+  /**
+   * API NOAH Oficial: `INTEGRATION <token>` nas rotas externas (WordPress).
+   * Aceita token já prefixado (INTEGRATION / Bearer).
+   */
+  private buildNoahAuthorizationHeader(token: string): string {
+    if (!token) return '';
+    const t = token.trim();
+    if (/^(Bearer|INTEGRATION)\s+/i.test(t)) {
+      return t;
+    }
+    return `INTEGRATION ${t}`;
   }
 
   private detectTemplateMessage(mensagem: string): boolean {
@@ -189,48 +292,82 @@ export class NoahOficialProvider extends BaseProvider {
     baseUrl: string,
     authHeader: string,
     number: string,
-    contactName: string,
     item: CampaignData,
     externalKey: string,
   ): Promise<void> {
-    let parsed: any = {};
+    let parsed: Record<string, unknown> = {};
     try {
-      parsed =
+      const raw =
         typeof item.mensagem === 'string' && item.mensagem.trim().startsWith('{')
           ? JSON.parse(item.mensagem)
           : {};
+      parsed = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
     } catch {
       throw new Error('Mensagem template inválida (JSON malformado)');
     }
 
     const channelId = parsed.channelId ?? parsed.channel_id;
-    const templateId = parsed.templateId ?? parsed.template_id;
-    const templateName = parsed.templateName ?? parsed.template_name;
-    const language = parsed.language ?? 'pt_BR';
-    const components = parsed.components ?? [];
+    const templateIdRaw = parsed.templateId ?? parsed.template_id;
+    const templateName =
+      (parsed.templateName ?? parsed.template_name ?? parsed.template_code) as
+        | string
+        | undefined;
+    const language = (parsed.language as string) ?? 'pt_BR';
 
-    if (!channelId || !templateName) {
+    let componentsRaw = Array.isArray(parsed.components)
+      ? parsed.components
+      : [];
+
+    if (
+      (!componentsRaw || componentsRaw.length === 0) &&
+      parsed.variables_map &&
+      typeof parsed.variables_map === 'object' &&
+      !Array.isArray(parsed.variables_map)
+    ) {
+      const built = this.buildNoahComponentsFromVariablesMap(
+        parsed.variables_map as Record<string, unknown>,
+        item,
+      );
+      if (built.length > 0) {
+        componentsRaw = built;
+      }
+    }
+
+    const components = this.normalizeNoahTemplateComponents(componentsRaw);
+
+    if (!channelId || !templateName || String(templateName).trim() === '') {
       throw new Error(
         'Template NOAH requer channelId e templateName no JSON da mensagem',
       );
     }
 
-    const payload = {
+    const url = this.resolveNoahSendTemplateUrl(baseUrl);
+
+    const payload: NoahSendTemplatePayload = {
       number,
       channelId: Number(channelId),
-      templateId: templateId ? Number(templateId) : undefined,
-      templateName,
-      language,
+      templateName: String(templateName).trim(),
+      language: String(language),
       components,
       externalKey,
     };
 
-    const url = `${baseUrl}/send-template`;
+    const tid =
+      templateIdRaw !== undefined && templateIdRaw !== null && templateIdRaw !== ''
+        ? Number(templateIdRaw)
+        : NaN;
+    if (!Number.isNaN(tid) && tid > 0) {
+      payload.templateId = tid;
+    }
+
+    this.logger.debug(
+      `NOAH send-template → ${url} | externalKey=${externalKey} | number=${number}`,
+    );
 
     await this.executeWithRetry(
       async () => {
         const result = await firstValueFrom(
-          this.httpService.post(url, payload, {
+          this.httpService.post<unknown>(url, payload, {
             headers: {
               'Content-Type': 'application/json',
               Accept: 'application/json',
@@ -244,5 +381,50 @@ export class NoahOficialProvider extends BaseProvider {
       this.getRetryStrategy(),
       { provider: 'NOAH_OFICIAL' },
     );
+  }
+
+  /**
+   * Converte `variables_map` do painel (`{ type, value }` por chave `1`, `2`, …) em um único bloco `body.parameters` na ordem {{1}}, {{2}}.
+   */
+  private buildNoahComponentsFromVariablesMap(
+    variablesMap: Record<string, unknown>,
+    item: CampaignData,
+  ): NoahHsmBodyComponent[] {
+    const keys = Object.keys(variablesMap);
+    if (keys.length === 0) return [];
+
+    const allNumeric = keys.every((k) => /^\d+$/.test(k));
+    const ordered = allNumeric
+      ? [...keys].sort((a, b) => parseInt(a, 10) - parseInt(b, 10))
+      : keys;
+
+    const bodyParams: NoahHsmTextParameter[] = [];
+    const row = item as unknown as Record<string, unknown>;
+
+    for (const varName of ordered) {
+      const mapping = variablesMap[varName];
+      let text = '';
+      if (
+        mapping &&
+        typeof mapping === 'object' &&
+        !Array.isArray(mapping) &&
+        'type' in mapping &&
+        'value' in mapping
+      ) {
+        const m = mapping as { type: string; value: string };
+        if (m.type === 'field') {
+          const col = String(m.value ?? '');
+          text = String(row[col] ?? row[col.toUpperCase()] ?? '');
+        } else {
+          text = String(m.value ?? '');
+        }
+      } else if (typeof mapping === 'string' && mapping !== '') {
+        text = String(row[mapping] ?? row[mapping.toUpperCase()] ?? '');
+      }
+      bodyParams.push({ type: 'text', text });
+    }
+
+    if (bodyParams.length === 0) return [];
+    return [{ type: 'body', parameters: bodyParams }];
   }
 }

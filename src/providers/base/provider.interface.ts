@@ -9,6 +9,9 @@ export interface CampaignData {
   mensagem: string;
   data_cadastro?: string;
   midia_campanha?: string;
+  /** ID da linha no WordPress (`envios_pendentes` etc.) — usado em `externalKey` NOAH quando disponível */
+  id?: string | number;
+  envio_id?: string | number;
 }
 
 export interface ProviderResponse {

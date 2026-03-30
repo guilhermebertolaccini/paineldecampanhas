@@ -36,6 +36,8 @@ import { Progress } from "@/components/ui/progress";
 
 export interface Campaign {
   id: string;
+  /** ID técnico (`agendamento_id` no MySQL) — obrigatório para cancelar; se ausente, usa-se `name`. */
+  agendamentoId?: string;
   name: string;
   status: "pending" | "approved" | "sent" | "denied" | "scheduled" | "cancelled" | string;
   /** Status bruto do MySQL (ex.: processando) — útil para UI de progresso. */
@@ -187,7 +189,7 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
   const cancelMutation = useMutation({
     mutationFn: () =>
       cancelCampanha({
-        agendamento_id: cancelTarget!.name,
+        agendamento_id: cancelTarget!.agendamentoId ?? cancelTarget!.name,
         fornecedor: cancelTarget!.fornecedor ?? cancelTarget!.provider,
         motivo: cancelMotivo.trim(),
       }),

@@ -561,6 +561,16 @@ export const createCpfCampaign = (data: Record<string, any>) => {
     show_already_sent: data.show_already_sent || 0,
   };
 
+  if (data.nome_campanha != null && String(data.nome_campanha).trim() !== '') {
+    payload.nome_campanha = String(data.nome_campanha).trim();
+  }
+  if (data.wallet_id != null && String(data.wallet_id).trim() !== '') {
+    payload.wallet_id = String(data.wallet_id).trim();
+  }
+  if (data.fornecedor != null && String(data.fornecedor).trim() !== '') {
+    payload.fornecedor = String(data.fornecedor).trim();
+  }
+
   if (data.include_baits) {
     payload.bait_ids = JSON.stringify(Array.isArray(data.bait_ids) ? data.bait_ids : []);
   }

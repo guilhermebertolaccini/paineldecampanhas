@@ -102,6 +102,10 @@ class Painel_Campanhas
         if (empty($has_cancel)) {
             $wpdb->query("ALTER TABLE `{$table}` ADD COLUMN cancelado_por bigint(20) UNSIGNED NULL DEFAULT NULL");
         }
+        $has_nome_campanha = $wpdb->get_results("SHOW COLUMNS FROM `{$table}` LIKE 'nome_campanha'");
+        if (empty($has_nome_campanha)) {
+            $wpdb->query("ALTER TABLE `{$table}` ADD COLUMN nome_campanha varchar(255) NULL DEFAULT NULL AFTER agendamento_id");
+        }
     }
 
     /**
@@ -2256,54 +2260,124 @@ class Painel_Campanhas
         }
 
         $content = file_get_contents($file['tmp_name']);
-        $lines = array_filter(array_map('trim', explode("\n", $content)));
+        if (is_string($content) && strlen($content) >= 3 && substr($content, 0, 3) === "\xEF\xBB\xBF") {
+            $content = substr($content, 3);
+        }
+
+        $raw_lines = preg_split("/\r\n|\n|\r/", (string) $content);
+        $lines = [];
+        foreach ($raw_lines as $ln) {
+            $ln = trim((string) $ln);
+            if ($ln !== '') {
+                $lines[] = $ln;
+            }
+        }
 
         if (empty($lines)) {
             wp_send_json_error('Arquivo CSV vazio');
         }
 
-        // Remove primeira linha se for cabeçalho (verifica se contém palavras como NOME, TELEFONE, CPF)
-        $first_line = strtoupper($lines[0]);
-        if (strpos($first_line, 'NOME') !== false || strpos($first_line, 'TELEFONE') !== false || strpos($first_line, 'CPF') !== false) {
-            array_shift($lines); // Remove cabeçalho
+        $first_line = $lines[0];
+        $comma_count = substr_count($first_line, ',');
+        $semi_count = substr_count($first_line, ';');
+        $delimiter = ($semi_count > $comma_count) ? ';' : ',';
+
+        $parse_csv_line = function ($line) use ($delimiter) {
+            return str_getcsv((string) $line, $delimiter);
+        };
+
+        $header_upper = strtoupper($first_line);
+        $has_header = (strpos($header_upper, 'NOME') !== false
+            || strpos($header_upper, 'TELEFONE') !== false
+            || strpos($header_upper, 'CPF') !== false
+            || strpos($header_upper, 'CELULAR') !== false);
+
+        if ($has_header) {
+            $headers = array_map(function ($h) {
+                $h = trim((string) $h, " \t\n\r\0\x0B\"'");
+                return $h !== '' ? $h : 'col';
+            }, $parse_csv_line($first_line));
+            array_shift($lines);
+        } else {
+            $ncol = count($parse_csv_line($first_line));
+            $headers = [];
+            for ($i = 0; $i < $ncol; $i++) {
+                $headers[] = 'col_' . $i;
+            }
         }
 
-        // Extrai valores do CSV (formato: NOME;TELEFONE;CPF ou similar)
+        $seen_h = [];
+        foreach ($headers as $i => $h) {
+            $base = $h;
+            $n = 2;
+            while (isset($seen_h[$h])) {
+                $h = $base . '_' . $n;
+                ++$n;
+            }
+            $seen_h[$h] = true;
+            $headers[$i] = $h;
+        }
+
         $values = [];
+        $rows_by_match = [];
+
         foreach ($lines as $line) {
-            // Remove espaços e quebras de linha
-            $line = trim($line);
-            if (empty($line)) {
+            $line = trim((string) $line);
+            if ($line === '') {
                 continue;
             }
 
-            // Divide por ponto e vírgula ou vírgula
-            $columns = preg_split('/[;,]/', $line);
-            $columns = array_map('trim', $columns);
+            $columns = $parse_csv_line($line);
+            $columns = array_map(function ($c) {
+                return trim((string) $c, " \t\n\r\"'");
+            }, $columns);
+            while (count($columns) < count($headers)) {
+                $columns[] = '';
+            }
+            if (count($columns) > count($headers)) {
+                $columns = array_slice($columns, 0, count($headers));
+            }
 
+            $row = [];
+            foreach ($headers as $i => $h) {
+                $row[$h] = $columns[$i] ?? '';
+            }
+
+            $match_raw = null;
             if ('cpf' === $match_field) {
-                // Procura CPF nas colunas (geralmente última ou terceira)
-                // Tenta encontrar um valor com 11 dígitos
                 foreach ($columns as $col) {
-                    $value = preg_replace('/[^0-9]/', '', $col);
+                    $value = preg_replace('/[^0-9]/', '', (string) $col);
                     if (strlen($value) === 11) {
-                        $values[] = $value;
-                        break; // Encontrou, passa para próxima linha
+                        $match_raw = $value;
+                        break;
                     }
                 }
             } else {
-                // Procura telefone nas colunas (geralmente segunda coluna)
-                // Tenta encontrar um valor com 10 ou 11 dígitos
                 foreach ($columns as $col) {
-                    $value = preg_replace('/[^0-9]/', '', $col);
+                    $value = preg_replace('/[^0-9]/', '', (string) $col);
                     $length = strlen($value);
-                    // Telefone pode ter de 10 até 13 dígitos (com ou sem 55, com ou sem nono dígito)
                     if ($length >= 10 && $length <= 13) {
-                        $values[] = $value;
-                        break; // Encontrou, passa para próxima linha
+                        $match_raw = $value;
+                        break;
                     }
                 }
             }
+
+            if ($match_raw === null || $match_raw === '') {
+                continue;
+            }
+
+            $match_key = ('cpf' === $match_field)
+                ? $match_raw
+                : $this->normalize_phone_cpf_campaign_key($match_raw);
+
+            if ($match_key === '') {
+                continue;
+            }
+
+            $values[] = $match_raw;
+            $row['_match'] = $match_key;
+            $rows_by_match[$match_key] = $row;
         }
 
         $values = array_values(array_unique($values));
@@ -2323,7 +2397,9 @@ class Painel_Campanhas
         $temp_file = $uploads_dir . $temp_id . '.json';
         $payload = [
             'match_field' => $match_field,
-            'values' => $values
+            'values' => $values,
+            'headers' => $headers,
+            'rows_by_match' => $rows_by_match,
         ];
         file_put_contents($temp_file, wp_json_encode($payload));
 
@@ -2331,7 +2407,8 @@ class Painel_Campanhas
             'temp_id' => $temp_id,
             'count' => count($values),
             'preview' => array_slice($values, 0, 5),
-            'match_field' => $match_field
+            'match_field' => $match_field,
+            'headers' => $headers,
         ]);
     }
 
@@ -2461,6 +2538,48 @@ class Painel_Campanhas
         }
 
         return $payload;
+    }
+
+    /**
+     * Normaliza telefone para chave de cruzamento CSV ↔ registro (igual ao IN em build_cpf_match_condition).
+     */
+    private function normalize_phone_cpf_campaign_key($phone)
+    {
+        $val = preg_replace('/[^0-9]/', '', (string) $phone);
+        if (strlen($val) > 11 && substr($val, 0, 2) === '55') {
+            $val = substr($val, 2);
+        }
+        return $val;
+    }
+
+    /**
+     * Injeta colunas do CSV (por CPF/telefone normalizado) nos registros vindos da base.
+     *
+     * @param array  $records       Lista de registros (referência get_cpf_records).
+     * @param array  $rows_by_match mapa string normalizada => array coluna => valor
+     * @param string $match_field   cpf|telefone
+     */
+    private function merge_csv_rows_into_cpf_records(array $records, array $rows_by_match, $match_field)
+    {
+        foreach ($records as &$rec) {
+            if ($match_field === 'cpf') {
+                $k = preg_replace('/[^0-9]/', '', (string) ($rec['cpf_cnpj'] ?? ''));
+            } else {
+                $k = $this->normalize_phone_cpf_campaign_key($rec['telefone'] ?? '');
+            }
+            if ($k === '' || !isset($rows_by_match[$k]) || !is_array($rows_by_match[$k])) {
+                continue;
+            }
+            foreach ($rows_by_match[$k] as $colName => $cellVal) {
+                if ($colName === '_match') {
+                    continue;
+                }
+                $rec[(string) $colName] = $cellVal;
+            }
+        }
+        unset($rec);
+
+        return $records;
     }
 
     private function get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent = 0)
@@ -2678,6 +2797,8 @@ class Painel_Campanhas
             check_ajax_referer('pc_nonce', 'nonce');
             if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
 
+            $this->maybe_add_envios_cancel_columns();
+
             global $wpdb;
             $table_name = sanitize_text_field($_POST['table_name'] ?? '');
             $temp_id = sanitize_text_field($_POST['temp_id'] ?? '');
@@ -2697,6 +2818,7 @@ class Painel_Campanhas
             $variables_map_json = stripslashes($_POST['variables_map'] ?? '{}');
             $variables_map = json_decode($variables_map_json, true);
             $carteira = sanitize_text_field($_POST['carteira'] ?? '');
+            $nome_campanha_post = sanitize_text_field(wp_unslash($_POST['nome_campanha'] ?? ''));
 
             // id_carteira da carteira selecionada (herança para todos os registros da fila)
             $campaign_id_carteira = '';
@@ -2748,6 +2870,14 @@ class Painel_Campanhas
 
             // Busca registros usando o método que já remove duplicatas
             $records = $this->get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent);
+
+            $rows_by_match = [];
+            if (is_array($temp_payload) && !empty($temp_payload['rows_by_match']) && is_array($temp_payload['rows_by_match'])) {
+                $rows_by_match = $temp_payload['rows_by_match'];
+            }
+            if (!empty($rows_by_match)) {
+                $records = $this->merge_csv_rows_into_cpf_records($records, $rows_by_match, $match_field);
+            }
 
             if (empty($records)) {
                 wp_send_json_error('Nenhum registro encontrado');
@@ -2806,6 +2936,9 @@ class Painel_Campanhas
             $current_user_id = get_current_user_id();
             $agendamento_base_id = date('YmdHis', current_time('timestamp'));
             $total_inserted = 0;
+            $nome_campanha_row = $nome_campanha_post !== ''
+                ? $nome_campanha_post
+                : ('Campanha por arquivo ' . $agendamento_base_id);
 
             if (empty($wpdb->get_results("SHOW COLUMNS FROM {$envios_table} LIKE 'carteira_id'"))) {
                 $wpdb->query("ALTER TABLE {$envios_table} ADD COLUMN carteira_id bigint(20) DEFAULT NULL");
@@ -2916,13 +3049,14 @@ class Painel_Campanhas
                         'mensagem' => $mensagem_para_armazenar,
                         'fornecedor' => $provider,
                         'agendamento_id' => $agendamento_id,
+                        'nome_campanha' => $nome_campanha_row,
                         'status' => 'pendente_aprovacao',
                         'current_user_id' => $current_user_id,
                         'valido' => 1,
                         'data_cadastro' => current_time('mysql')
                     ];
 
-                    $wpdb->insert($envios_table, $insert_data, ['%s', '%s', '%d', '%s', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s']);
+                    $wpdb->insert($envios_table, $insert_data, ['%s', '%s', '%d', '%s', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s']);
                     $total_inserted++;
                 }
             }
@@ -3637,8 +3771,37 @@ class Painel_Campanhas
                     $noah_components = [];
                     if (!empty($variables_map) && is_array($variables_map)) {
                         $body_params = [];
-                        foreach ($variables_map as $var_name => $field) {
-                            $val = $record[$field] ?? $record[strtoupper($field)] ?? '';
+                        $var_keys = array_keys($variables_map);
+                        $all_numeric_keys = count($var_keys) > 0;
+                        foreach ($var_keys as $vk) {
+                            if (!is_string($vk) && !is_int($vk)) {
+                                $all_numeric_keys = false;
+                                break;
+                            }
+                            $sk = (string) $vk;
+                            if (!preg_match('/^\d+$/', $sk)) {
+                                $all_numeric_keys = false;
+                                break;
+                            }
+                        }
+                        if ($all_numeric_keys) {
+                            usort($var_keys, function ($a, $b) {
+                                return intval($a) <=> intval($b);
+                            });
+                        }
+                        foreach ($var_keys as $var_name) {
+                            $field = $variables_map[$var_name];
+                            $val = '';
+                            if (is_array($field) && isset($field['type'], $field['value'])) {
+                                if ($field['type'] === 'field') {
+                                    $col = $field['value'];
+                                    $val = $record[$col] ?? $record[strtoupper((string) $col)] ?? '';
+                                } else {
+                                    $val = (string) ($field['value'] ?? '');
+                                }
+                            } elseif (is_string($field) && $field !== '') {
+                                $val = $record[$field] ?? $record[strtoupper($field)] ?? '';
+                            }
                             $body_params[] = ['type' => 'text', 'text' => (string) $val];
                         }
                         if (!empty($body_params)) {
@@ -9634,7 +9797,8 @@ class Painel_Campanhas
                 MAX(t1.motivo_cancelamento) AS motivo_cancelamento,
                 MAX(t1.cancelado_por) AS cancelado_por_id,
                 MAX(t1.id_carteira) AS id_carteira,
-                MAX(cv.nome) AS nome_carteira
+                MAX(cv.nome) AS nome_carteira,
+                MAX(t1.nome_campanha) AS nome_campanha
             FROM `{$envios_table}` AS t1
             LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
             LEFT JOIN `{$carteiras_table}` AS cv
@@ -9671,8 +9835,10 @@ class Painel_Campanhas
         }
 
         if ($search) {
-            $query .= " AND (t1.agendamento_id LIKE %s)";
-            $params[] = '%' . $wpdb->esc_like($search) . '%';
+            $query .= " AND (t1.agendamento_id LIKE %s OR COALESCE(t1.nome_campanha, '') LIKE %s)";
+            $like = '%' . $wpdb->esc_like($search) . '%';
+            $params[] = $like;
+            $params[] = $like;
         }
 
         $query = $wpdb->prepare($query, $params);
@@ -9716,9 +9882,14 @@ class Painel_Campanhas
                 }
             }
 
+            $ag_id = (string) ($camp['agendamento_id'] ?? '');
+            $nome_amigavel = trim((string) ($camp['nome_campanha'] ?? ''));
+            $nome_exibicao = $nome_amigavel !== '' ? $nome_amigavel : $ag_id;
+
             return [
                 'id' => $camp['agendamento_id'] . '-' . $camp['provider'],
-                'name' => $camp['agendamento_id'],
+                'agendamento_id' => $ag_id,
+                'name' => $nome_exibicao,
                 'status' => $this->map_campanha_status_ui($camp['status']),
                 'statusRaw' => (string) ($camp['status'] ?? ''),
                 'provider' => strtoupper($camp['provider']),
@@ -10573,50 +10744,53 @@ class Painel_Campanhas
                     } else {
                         error_log('🔴 [Gosac] getTemplatesByWallet falhou: ' . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
                     }
-                } elseif ($provider === 'noah_oficial') {
-                    $base_url = rtrim($data['url'], '/');
-                    $token_raw = trim($data['token'] ?? '');
-                    $token = $token_raw;
-                    if (!empty($token)) {
-                        $token = preg_replace('/^(Bearer|INTEGRATION)\s+/i', '', $token);
-                        $token = 'INTEGRATION ' . $token;
-                    }
+                }
+            } elseif ($provider === 'noah_oficial') {
+                $base_url = rtrim($data['url'], '/');
+                $token_raw = trim($data['token'] ?? '');
+                $token = $token_raw;
+                if (!empty($token)) {
+                    $token = preg_replace('/^(Bearer|INTEGRATION)\s+/i', '', $token);
+                    $token = 'INTEGRATION ' . $token;
+                }
 
-                    if (!empty($base_url) && !empty($token)) {
-                        $url = $base_url . '/message-templates';
-                        $response = wp_remote_get($url, [
-                            'headers' => [
-                                'Authorization' => $token,
-                                'Content-Type' => 'application/json',
-                                'Accept' => 'application/json',
-                            ],
-                            'timeout' => 15,
-                            'sslverify' => false,
-                        ]);
+                if (!empty($base_url) && !empty($token)) {
+                    $url = $base_url . '/message-templates';
+                    $response = wp_remote_get($url, [
+                        'headers' => [
+                            'Authorization' => $token,
+                            'Content-Type' => 'application/json',
+                            'Accept' => 'application/json',
+                        ],
+                        'timeout' => 15,
+                        'sslverify' => false,
+                    ]);
 
-                        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
-                            $body = wp_remote_retrieve_body($response);
-                            $templates_data = json_decode($body, true);
-                            $items = is_array($templates_data) ? (isset($templates_data['data']) ? $templates_data['data'] : (isset($templates_data['templates']) ? $templates_data['templates'] : $templates_data)) : [];
+                    if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+                        $body = wp_remote_retrieve_body($response);
+                        $templates_data = json_decode($body, true);
+                        $items = is_array($templates_data) ? (isset($templates_data['data']) ? $templates_data['data'] : (isset($templates_data['templates']) ? $templates_data['templates'] : $templates_data)) : [];
 
-                            if (is_array($items)) {
-                                foreach ($items as $tpl) {
-                                    $all_templates[] = [
-                                        'id' => $tpl['id'] ?? $tpl['templateId'] ?? '',
-                                        'name' => $tpl['name'] ?? $tpl['templateName'] ?? '',
-                                        'content' => '',
-                                        'category' => $tpl['category'] ?? '',
-                                        'language' => $tpl['language'] ?? 'pt_BR',
-                                        'status' => $tpl['status'] ?? '',
-                                        'provider' => 'Noah Oficial',
-                                        'id_ambient' => $id_ambient,
-                                        'templateName' => $tpl['name'] ?? $tpl['templateName'] ?? '',
-                                        'templateId' => $tpl['templateId'] ?? $tpl['id'] ?? '',
-                                        'channelId' => $tpl['channelId'] ?? '',
-                                    ];
-                                }
+                        if (is_array($items)) {
+                            foreach ($items as $tpl) {
+                                $all_templates[] = [
+                                    'id' => $tpl['id'] ?? $tpl['templateId'] ?? '',
+                                    'name' => $tpl['name'] ?? $tpl['templateName'] ?? '',
+                                    'content' => '',
+                                    'category' => $tpl['category'] ?? '',
+                                    'language' => $tpl['language'] ?? 'pt_BR',
+                                    'status' => $tpl['status'] ?? '',
+                                    'provider' => 'Noah Oficial',
+                                    'id_ambient' => $id_ambient,
+                                    'templateName' => $tpl['name'] ?? $tpl['templateName'] ?? '',
+                                    'templateId' => $tpl['templateId'] ?? $tpl['id'] ?? '',
+                                    'channelId' => $tpl['channelId'] ?? '',
+                                    'components' => $tpl['components'] ?? [],
+                                ];
                             }
                         }
+                    } else {
+                        error_log('🔴 [Noah] getTemplatesByWallet falhou: ' . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
                     }
                 }
                 // robbu_oficial: templates via pc_get_robbu_oficial_templates (não dependem da carteira)

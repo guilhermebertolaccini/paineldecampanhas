@@ -10,6 +10,8 @@ import {
   collectPlaceholdersSourceText,
   buildInitialVariableMappingFromOtimaWpp,
   listOtimaWppVariableKeysFromTemplate,
+  buildInitialVariableMappingFromNoahOfficial,
+  listNoahOfficialVariableKeysFromTemplate,
 } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -313,6 +315,29 @@ export default function NovaCampanha() {
   const otimaWppMapperVariableKeys = useMemo(() => {
     if (formData.templateSource !== "otima_wpp") return [];
     const fromTpl = listOtimaWppVariableKeysFromTemplate(selectedTemplateObj);
+    const fromState = Object.keys(templateVariables);
+    if (fromTpl.length === 0) return fromState;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const k of fromTpl) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    for (const k of fromState) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    return out;
+  }, [formData.templateSource, selectedTemplateObj, templateVariables]);
+
+  /** NOAH Oficial: chaves `1`,`2`,… ou de `{{n}}` / example.body_text; mantém ordem do template + extras no estado. */
+  const noahOfficialMapperVariableKeys = useMemo(() => {
+    if (formData.templateSource !== "noah_oficial" && formData.templateSource !== "noah") return [];
+    const fromTpl = listNoahOfficialVariableKeysFromTemplate(selectedTemplateObj);
     const fromState = Object.keys(templateVariables);
     if (fromTpl.length === 0) return fromState;
     const seen = new Set<string>();
@@ -827,9 +852,14 @@ export default function NovaCampanha() {
 
     const formattedFilters = buildFilterPayload(filters);
 
-    if (formData.templateSource === "otima_wpp" && Object.keys(templateVariables).length > 0) {
+    if (
+      (formData.templateSource === "otima_wpp" ||
+        formData.templateSource === "noah_oficial" ||
+        formData.templateSource === "noah") &&
+      Object.keys(templateVariables).length > 0
+    ) {
       console.log(
-        "[NovaCampanha] variables_map (payload schedule/saveRecurring → WP → Nest whatsapp-otima: chaves = placeholders API, valores = { type: 'field'|'text', value: string }):",
+        "[NovaCampanha] variables_map (payload → WP; NOAH/Ótima: { type: 'field'|'text', value: string } por chave):",
         JSON.stringify(templateVariables),
       );
     }
@@ -1396,11 +1426,14 @@ export default function NovaCampanha() {
                                   setSelectedTemplateObj(selectedTemplate ?? null);
 
                                   const otimaWppMap = buildInitialVariableMappingFromOtimaWpp(selectedTemplate);
+                                  const noahOfficialMap = buildInitialVariableMappingFromNoahOfficial(selectedTemplate);
                                   const contentToParse =
                                     collectPlaceholdersSourceText(selectedTemplate ?? null) || '';
 
                                   if (otimaWppMap) {
                                     setTemplateVariables(otimaWppMap);
+                                  } else if (noahOfficialMap) {
+                                    setTemplateVariables(noahOfficialMap);
                                   } else {
                                     const detectedVars = extractVariables(contentToParse);
                                     const initMap: Record<string, VarMapping> = {};
@@ -1552,13 +1585,19 @@ export default function NovaCampanha() {
                 </div>
               )}
 
-              {/* Variable Mapper — only for Ótima templates */}
-              {(formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp') && (
+              {/* Variable Mapper — Ótima RCS/WPP e NOAH Oficial (Cloud API {{1}}, {{2}}, …) */}
+              {(formData.templateSource === "otima_rcs" ||
+                formData.templateSource === "otima_wpp" ||
+                formData.templateSource === "noah_oficial" ||
+                formData.templateSource === "noah") && (
                 <TemplateVariableMapper
                   variables={
                     formData.templateSource === "otima_wpp" && otimaWppMapperVariableKeys.length > 0
                       ? otimaWppMapperVariableKeys
-                      : Object.keys(templateVariables)
+                      : (formData.templateSource === "noah_oficial" || formData.templateSource === "noah") &&
+                          noahOfficialMapperVariableKeys.length > 0
+                        ? noahOfficialMapperVariableKeys
+                        : Object.keys(templateVariables)
                   }
                   mapping={templateVariables}
                   onChange={setTemplateVariables}

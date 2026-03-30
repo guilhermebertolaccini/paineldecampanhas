@@ -2,7 +2,18 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Upload, FileText, CheckCircle, AlertCircle, Loader2, X, Check, ChevronsUpDown, RefreshCw } from "lucide-react";
-import { TemplateVariableMapper, VarMapping, extractVariables, resolveVariables, collectPlaceholdersSourceText, buildInitialVariableMappingFromOtimaWpp, listOtimaWppVariableKeysFromTemplate } from "@/components/campaign/TemplateVariableMapper";
+import {
+  TemplateVariableMapper,
+  VarMapping,
+  DB_FIELDS,
+  extractVariables,
+  resolveVariables,
+  collectPlaceholdersSourceText,
+  buildInitialVariableMappingFromOtimaWpp,
+  listOtimaWppVariableKeysFromTemplate,
+  buildInitialVariableMappingFromNoahOfficial,
+  listNoahOfficialVariableKeysFromTemplate,
+} from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -26,7 +37,6 @@ import { useToast } from "@/hooks/use-toast";
 import {
   uploadCampaignFile,
   getMessages,
-  previewCount,
   createCpfCampaign,
   getAvailableBases,
   getCarteiras,
@@ -55,6 +65,32 @@ const providers = [
   { id: "SALESFORCE", name: "Salesforce" },
 ];
 
+const PROVIDER_TO_SOURCE_MAP: Record<string, string[]> = {
+  GOSAC_OFICIAL: ["gosac_oficial"],
+  OTIMA_WPP: ["otima_wpp"],
+  OTIMA_RCS: ["otima_rcs"],
+  SALESFORCE: [],
+  CDA: [],
+  CDA_RCS: [],
+  GOSAC: [],
+  NOAH: [],
+  NOAH_OFICIAL: ["noah_oficial"],
+  ROBBU_OFICIAL: ["robbu_oficial"],
+  RCS: [],
+};
+
+async function readCsvHeadersFromFile(file: File): Promise<string[]> {
+  const blob = file.slice(0, Math.min(file.size, 262144));
+  const text = await blob.text();
+  const firstLine = text.split(/\r?\n/).find((l) => l.trim().length > 0);
+  if (!firstLine) return [];
+  const semi = (firstLine.match(/;/g) || []).length;
+  const comma = (firstLine.match(/,/g) || []).length;
+  const delim = semi > comma ? ";" : ",";
+  const cells = firstLine.split(delim).map((c) => c.trim().replace(/^"|"$/g, ""));
+  return [...new Set(cells.filter(Boolean))];
+}
+
 export default function CampanhaArquivo() {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -77,6 +113,8 @@ export default function CampanhaArquivo() {
   const [selectedTemplateObj, setSelectedTemplateObj] = useState<any>(null);
   const [openTemplateDropdown, setOpenTemplateDropdown] = useState(false);
   const [gosacConnectionId, setGosacConnectionId] = useState<string>("");
+  const [campaignName, setCampaignName] = useState("");
+  const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
 
   // Buscar carteiras (deve vir antes do useMemo que a usa)
   const { data: carteiras = [] } = useQuery({
@@ -105,7 +143,7 @@ export default function CampanhaArquivo() {
   } = useQuery({
     queryKey: ['otima-templates', walletIdForOtima, carteira],
     queryFn: () => getOtimaTemplates(walletIdForOtima, carteira),
-    enabled: !!carteira,
+    enabled: !!carteira && (provider === "OTIMA_WPP" || provider === "OTIMA_RCS"),
     staleTime: 60 * 1000,
     gcTime: 5 * 60 * 1000,
   });
@@ -135,13 +173,14 @@ export default function CampanhaArquivo() {
   const { data: externalTemplatesData = [], isLoading: externalTemplatesLoading } = useQuery({
     queryKey: ['external-templates', carteira],
     queryFn: () => getTemplatesByWallet(carteira),
-    enabled: !!carteira,
+    enabled: !!carteira && (provider === "NOAH_OFICIAL" || provider === "GOSAC_OFICIAL"),
   });
 
   // Templates GOSAC Oficial (estáticos)
   const { data: gosacTemplatesData = [], isLoading: gosacTemplatesLoading } = useQuery({
     queryKey: ['gosac-oficial-templates'],
     queryFn: getGosacOficialTemplates,
+    enabled: provider === "GOSAC_OFICIAL",
     staleTime: 5 * 60 * 1000,
   });
 
@@ -149,7 +188,7 @@ export default function CampanhaArquivo() {
   const { data: gosacConnectionsData = [], isLoading: gosacConnectionsLoading } = useQuery({
     queryKey: ['gosac-oficial-connections', carteira],
     queryFn: () => getGosacOficialConnections({ carteira }),
-    enabled: !!carteira && (provider === 'GOSAC_OFICIAL' || selectedTemplateObj?.source === 'gosac_oficial'),
+    enabled: !!carteira && provider === "GOSAC_OFICIAL",
     staleTime: 2 * 60 * 1000,
   });
 
@@ -157,6 +196,7 @@ export default function CampanhaArquivo() {
   const { data: robbuTemplatesData = [], isLoading: robbuTemplatesLoading } = useQuery({
     queryKey: ['robbu-oficial-templates'],
     queryFn: getRobbuOficialTemplates,
+    enabled: provider === "ROBBU_OFICIAL",
     staleTime: 5 * 60 * 1000,
   });
 
@@ -165,9 +205,7 @@ export default function CampanhaArquivo() {
     queryFn: getIscas,
   });
 
-  // Processar e mesclar templates
-  const templates = useMemo(() => {
-    // Templates Locais
+  const mergedTemplates = useMemo(() => {
     const local = (localTemplatesData || []).map((t: any) => ({
       id: String(t.id),
       name: t.title || '',
@@ -178,82 +216,91 @@ export default function CampanhaArquivo() {
       walletName: null,
     }));
 
-    // Templates Ótima (já vem com wallet_id do backend)
     const otima = Array.isArray(otimaTemplatesData)
       ? otimaTemplatesData.map((t: any) => {
-          const isWpp = t.source === "otima_wpp";
-          const code = t.template_code || "";
+          const isWpp = t.source === 'otima_wpp';
+          const code = t.template_code || '';
           const id =
-            t.id != null && String(t.id) !== ""
+            t.id != null && String(t.id) !== ''
               ? String(t.id)
               : isWpp && code
-                ? `wpp_${code}_${t.wallet_id || ""}`
-                : `otima_${code}_${t.wallet_id || ""}`;
+                ? `wpp_${code}_${t.wallet_id || ''}`
+                : `otima_${code}_${t.wallet_id || ''}`;
           return {
             id,
-            name: isWpp ? (code || t.name || "Template WhatsApp") : (t.name || t.template_code || ""),
-            source: t.source || "otima_rcs",
+            name: isWpp ? (code || t.name || 'Template WhatsApp') : (t.name || t.template_code || ''),
+            source: t.source || 'otima_rcs',
             templateCode: code,
-            brokerCode: t.broker_code || "",
-            customerCode: t.customer_code || "",
+            brokerCode: t.broker_code || '',
+            customerCode: t.customer_code || '',
             walletId: t.wallet_id,
             walletName: t.wallet_name,
             imageUrl: t.image_url || null,
-            content: t.content || "",
+            content: t.content || '',
             variable_sample: t.variable_sample ?? null,
             variableSample: t.variable_sample ?? null,
             category: t.category,
             status: t.status,
             accounts: t.accounts,
-            raw_data: t.raw_data && typeof t.raw_data === "object" ? t.raw_data : t,
+            raw_data: t.raw_data && typeof t.raw_data === 'object' ? t.raw_data : t,
           };
         })
       : [];
 
-    // Templates Externos (GOSAC Oficial + NOAH Oficial)
-    const external = Array.isArray(externalTemplatesData) ? externalTemplatesData.map((t: any) => {
-      const isGosac = t.provider === 'Gosac Oficial';
-      const isNoah = t.provider === 'Noah Oficial';
-      const isRobbu = t.provider === 'Robbu Oficial';
-      const source = isGosac ? 'gosac_oficial' : (isNoah ? 'noah_oficial' : (isRobbu ? 'robbu_oficial' : (t.source || 'external')));
+    const external = Array.isArray(externalTemplatesData)
+      ? externalTemplatesData.map((t: any) => {
+          const isGosac = t.provider === 'Gosac Oficial';
+          const isNoah = t.provider === 'Noah Oficial';
+          const isRobbu = t.provider === 'Robbu Oficial';
+          const source = isGosac
+            ? 'gosac_oficial'
+            : isNoah
+              ? 'noah_oficial'
+              : isRobbu
+                ? 'robbu_oficial'
+                : t.source || 'external';
+          return {
+            id: `${t.provider}_${t.id}_${t.id_ambient}`,
+            name: t.name || t.id || '',
+            source,
+            templateCode: t.templateName || t.name || '',
+            walletId: t.id_ambient,
+            walletName: t.wallet_name || `${t.provider} (${t.id_ambient})`,
+            channelId: t.channelId,
+            templateId: t.templateId,
+            templateName: t.templateName || t.name,
+            language: t.language || 'pt_BR',
+            content: t.content || '',
+            components: t.components,
+          };
+        })
+      : [];
+
+    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : []).map((t: any) => {
+      const numId =
+        typeof t.templateId === 'number' && t.templateId > 0
+          ? t.templateId
+          : typeof t.id === 'number' && t.id > 0
+            ? t.id
+            : parseInt(String(t.id), 10) || 0;
       return {
-        id: `${t.provider}_${t.id}_${t.id_ambient}`,
+        id: `Gosac Oficial_${t.id ?? t.name}_${t.id_ambient || 'default'}`,
         name: t.name || t.id || '',
-        source,
-        templateCode: t.templateName || t.name || '',
-        walletId: t.id_ambient,
-        walletName: t.wallet_name || `${t.provider} (${t.id_ambient})`,
-        channelId: t.channelId,
-        templateId: t.templateId,
-        templateName: t.templateName || t.name,
+        source: 'gosac_oficial',
+        templateCode: t.name || t.id || '',
+        walletId: t.id_ambient || 'default',
+        walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
+        channelId: null,
+        templateId: numId > 0 ? numId : t.id,
+        templateName: t.name || t.id,
+        connectionId: t.connectionId ?? null,
+        variableComponents: t.variableComponents ?? [],
         language: t.language || 'pt_BR',
         content: t.content || '',
+        components: t.components,
       };
-    }) : [];
+    });
 
-    // Templates GOSAC Oficial - templateId numérico (API exige)
-    const gosac = (Array.isArray(gosacTemplatesData) ? gosacTemplatesData : []).map((t: any) => {
-        const numId = (typeof t.templateId === 'number' && t.templateId > 0) ? t.templateId
-          : (typeof t.id === 'number' && t.id > 0) ? t.id
-          : (parseInt(String(t.id), 10) || 0);
-        return {
-          id: `Gosac Oficial_${t.id ?? t.name}_${t.id_ambient || 'default'}`,
-          name: t.name || t.id || '',
-          source: 'gosac_oficial',
-          templateCode: t.name || t.id || '',
-          walletId: t.id_ambient || 'default',
-          walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
-          channelId: null,
-          templateId: numId > 0 ? numId : t.id,
-          templateName: t.name || t.id,
-          connectionId: t.connectionId ?? null,
-          variableComponents: t.variableComponents ?? [],
-          language: t.language || 'pt_BR',
-          content: t.content || '',
-        };
-      });
-
-    // Templates Robbu Oficial (estáticos)
     const robbu = (Array.isArray(robbuTemplatesData) ? robbuTemplatesData : []).map((t: any) => ({
       id: `Robbu Oficial_${t.id || t.name}_static`,
       name: t.name || t.id || '',
@@ -266,73 +313,197 @@ export default function CampanhaArquivo() {
       templateName: t.templateName || t.name || t.id,
       language: t.language || 'pt_BR',
       content: t.content || '',
+      components: t.components,
     }));
-
-    console.log('📋 [CampanhaArquivo] Templates locais:', local.length);
-    console.log('📋 [CampanhaArquivo] Templates Ótima:', otima.length);
-    console.log('📋 [CampanhaArquivo] Templates GOSAC/NOAH:', external.length);
 
     const selectedWallet = carteira
       ? (carteiras as any[]).find((c: any) => String(c.id) === String(carteira))
       : null;
     const walletCode = selectedWallet?.id_carteira ? String(selectedWallet.id_carteira) : null;
 
-    // Ótima templates only make sense for OTIMA_RCS / OTIMA_WPP providers.
-    const OTIMA_PROVIDERS = ['OTIMA_RCS', 'OTIMA_WPP'];
-    const otimaProviderSelected = !provider || OTIMA_PROVIDERS.includes(provider);
+    const otimaFiltrados = otima.filter((t) => {
+      if (carteira && walletCode) {
+        return String(t.walletId) === walletCode || String(t.customerCode) === walletCode;
+      }
+      return true;
+    });
 
-    // Filter Ótima templates: must match provider type AND wallet
-    const otimaFiltrados = otimaProviderSelected
-      ? otima.filter(t => {
-        if (carteira && walletCode) {
+    const externalFiltrados = external.filter((t) => {
+      if (t.source === 'robbu_oficial' || t.source === 'gosac_oficial') return false;
+      if (carteira && walletCode) {
+        return String(t.walletId) === walletCode;
+      }
+      return true;
+    });
+
+    return [...local, ...otimaFiltrados, ...externalFiltrados, ...gosac, ...robbu];
+  }, [
+    localTemplatesData,
+    otimaTemplatesData,
+    externalTemplatesData,
+    gosacTemplatesData,
+    robbuTemplatesData,
+    carteira,
+    carteiras,
+  ]);
+
+  const filteredTemplates = useMemo(() => {
+    if (!provider) return [];
+    const selectedSources = PROVIDER_TO_SOURCE_MAP[provider] ?? [];
+    const selectedWallet = carteira
+      ? (carteiras as any[]).find((c: any) => String(c.id) === String(carteira))
+      : null;
+    const walletCode = selectedWallet?.id_carteira ? String(selectedWallet.id_carteira) : null;
+
+    return mergedTemplates.filter((t: any) => {
+      if (t.source !== 'local') {
+        if (selectedSources.length === 0) return false;
+        if (!selectedSources.includes(t.source)) return false;
+        if (
+          carteira &&
+          walletCode &&
+          (t.source === 'otima_wpp' || t.source === 'otima_rcs' || t.source === 'noah_oficial')
+        ) {
           return String(t.walletId) === walletCode || String(t.customerCode) === walletCode;
         }
         return true;
-      })
-      : [];
-
-    // GOSAC/NOAH templates: show when provider is GOSAC_OFICIAL/NOAH_OFICIAL or none selected, filter by wallet
-    const EXTERNAL_PROVIDERS = ['GOSAC_OFICIAL', 'NOAH_OFICIAL', 'ROBBU_OFICIAL'];
-    const externalProviderSelected = !provider || EXTERNAL_PROVIDERS.includes(provider);
-    const externalFiltrados = externalProviderSelected
-      ? external.filter(t => {
-        if (t.source === 'robbu_oficial') return false; // Robbu vem de robbuFiltrados
-        if (t.source === 'gosac_oficial') return false; // GOSAC vem de gosacFiltrados
-        if (carteira && walletCode) {
-          return String(t.walletId) === walletCode;
-        }
-        return true;
-      })
-      : [];
-
-    // GOSAC: sempre mostrar quando GOSAC_OFICIAL ou nenhum provider
-    const gosacFiltrados = (!provider || provider === 'GOSAC_OFICIAL') ? gosac : [];
-
-    // Robbu: sempre mostrar quando ROBBU_OFICIAL ou nenhum provider (estáticos, não dependem da carteira)
-    const robbuFiltrados = (!provider || provider === 'ROBBU_OFICIAL') ? robbu : [];
-
-    console.log('📋 [CampanhaArquivo] Templates Ótima filtrados:', otimaFiltrados.length);
-    console.log('📋 [CampanhaArquivo] Templates GOSAC/NOAH filtrados:', externalFiltrados.length);
-    console.log('📋 [CampanhaArquivo] Templates GOSAC:', gosacFiltrados.length);
-    console.log('📋 [CampanhaArquivo] Templates Robbu:', robbuFiltrados.length);
-
-    // Filter local templates: show if no metadata (backward compat)
-    // else strict match on provider AND wallet
-    const noneSelected = !provider;
-    const localFiltrados = local.filter((t: any) => {
+      }
       const hasProviderMeta = !!t.provider;
       const hasWalletMeta = !!t.walletId;
-
-      if (!hasProviderMeta && !hasWalletMeta) return true; // backward compat
-
-      const providerMatch = !hasProviderMeta || noneSelected || t.provider === provider;
+      if (!hasProviderMeta && !hasWalletMeta) return true;
+      const providerMatch = !hasProviderMeta || t.provider === provider;
       const walletMatch = !hasWalletMeta || !walletCode || String(t.walletId) === walletCode;
-
       return providerMatch && walletMatch;
     });
+  }, [mergedTemplates, provider, carteira, carteiras]);
 
-    return [...localFiltrados, ...otimaFiltrados, ...externalFiltrados, ...gosacFiltrados, ...robbuFiltrados];
-  }, [localTemplatesData, otimaTemplatesData, externalTemplatesData, gosacTemplatesData, robbuTemplatesData, carteira, carteiras, provider]);
+  const templates = filteredTemplates;
+
+  const otimaBrokersForTemplate = useMemo(() => {
+    const list = Array.isArray(otimaBrokersData) ? otimaBrokersData : [];
+    const isDiag = (b: any) => String(b.code ?? '').startsWith('error_');
+    if (provider === 'OTIMA_WPP') {
+      return list.filter(
+        (b: any) =>
+          isDiag(b) ||
+          b.channel === 'wpp' ||
+          (!b.channel && /wpp|whatsapp/i.test(String(b.name ?? ''))),
+      );
+    }
+    if (provider === 'OTIMA_RCS') {
+      return list.filter(
+        (b: any) =>
+          isDiag(b) ||
+          b.channel === 'rcs' ||
+          (!b.channel && /rcs/i.test(String(b.name ?? ''))),
+      );
+    }
+    return list;
+  }, [otimaBrokersData, provider]);
+
+  const selectedTemplateForMapper = templates.find((t) => t.id === template) as any;
+
+  const noahOfficialMapperVariableKeys = useMemo(() => {
+    const sel = selectedTemplateForMapper;
+    if (!sel || (sel.source !== 'noah_oficial' && sel.source !== 'noah')) return [];
+    const fromTpl = listNoahOfficialVariableKeysFromTemplate(sel);
+    const fromState = Object.keys(templateVariables);
+    if (fromTpl.length === 0) return fromState;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const k of fromTpl) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    for (const k of fromState) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    return out;
+  }, [selectedTemplateForMapper, templateVariables]);
+
+  const gosacMapperVariableKeys = useMemo(() => {
+    const sel = selectedTemplateForMapper;
+    if (!sel || sel.source !== 'gosac_oficial') return [];
+    const comps = sel.variableComponents;
+    if (!Array.isArray(comps) || comps.length === 0) return Object.keys(templateVariables);
+    const keys = comps.map((c: any) => String(c.variable ?? '')).filter(Boolean);
+    if (keys.length === 0) return Object.keys(templateVariables);
+    return [...new Set([...keys, ...Object.keys(templateVariables)])];
+  }, [selectedTemplateForMapper, templateVariables]);
+
+  const otimaWppMapperVariableKeys = useMemo(() => {
+    if (!selectedTemplateForMapper || selectedTemplateForMapper.source !== 'otima_wpp') return [];
+    const fromTpl = listOtimaWppVariableKeysFromTemplate(selectedTemplateForMapper);
+    const fromState = Object.keys(templateVariables);
+    if (fromTpl.length === 0) return fromState;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const k of fromTpl) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    for (const k of fromState) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    return out;
+  }, [selectedTemplateForMapper, templateVariables]);
+
+  const fieldOptionsForMapper = useMemo(() => {
+    if (csvHeaders.length > 0) return csvHeaders.map((h) => ({ value: h, label: h }));
+    return DB_FIELDS;
+  }, [csvHeaders]);
+  const fieldSourceLabel = csvHeaders.length > 0 ? 'CSV' : 'BD';
+
+  const mapperVariableKeys = useMemo(() => {
+    const sel = selectedTemplateForMapper;
+    if (!sel) return [];
+    if (sel.source === 'otima_wpp' && otimaWppMapperVariableKeys.length > 0) return otimaWppMapperVariableKeys;
+    if (
+      (sel.source === 'noah_oficial' || sel.source === 'noah') &&
+      noahOfficialMapperVariableKeys.length > 0
+    ) {
+      return noahOfficialMapperVariableKeys;
+    }
+    if (sel.source === 'gosac_oficial' && gosacMapperVariableKeys.length > 0) return gosacMapperVariableKeys;
+    if (
+      sel.source === 'otima_rcs' ||
+      sel.source === 'otima_wpp' ||
+      sel.source === 'noah_oficial' ||
+      sel.source === 'noah'
+    ) {
+      return Object.keys(templateVariables);
+    }
+    return [];
+  }, [
+    selectedTemplateForMapper,
+    otimaWppMapperVariableKeys,
+    noahOfficialMapperVariableKeys,
+    gosacMapperVariableKeys,
+    templateVariables,
+  ]);
+
+  const skipResetRef = useRef(true);
+  useEffect(() => {
+    if (skipResetRef.current) {
+      skipResetRef.current = false;
+      return;
+    }
+    setTemplate('');
+    setBrokerCode('');
+    setGosacConnectionId('');
+    setTemplateVariables({});
+    setSelectedTemplateObj(null);
+  }, [carteira, provider]);
 
   const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading || gosacTemplatesLoading || robbuTemplatesLoading || otimaBrokersLoading;
 
@@ -386,6 +557,9 @@ export default function CampanhaArquivo() {
       setTempId(data.temp_id);
       setRecordCount(data.count || 0);
       setMatchField(data.match_field || 'cpf');
+      if (Array.isArray(data.headers) && data.headers.length > 0) {
+        setCsvHeaders(data.headers.map((h: unknown) => String(h)));
+      }
       toast({
         title: "Arquivo validado com sucesso!",
         description: `${data.count} registros encontrados no arquivo.`,
@@ -396,17 +570,6 @@ export default function CampanhaArquivo() {
         title: "Erro ao validar arquivo",
         description: error.message || "Erro ao fazer upload do arquivo",
         variant: "destructive",
-      });
-    },
-  });
-
-  const previewMutation = useMutation({
-    mutationFn: (data: any) => previewCount(data),
-    onSuccess: (data: any) => {
-      setRecordCount(data.count || 0);
-      toast({
-        title: "Preview atualizado",
-        description: `${data.count} registros após aplicar filtros.`,
       });
     },
   });
@@ -443,6 +606,9 @@ export default function CampanhaArquivo() {
     }
 
     setFile(selectedFile);
+    readCsvHeadersFromFile(selectedFile)
+      .then(setCsvHeaders)
+      .catch(() => setCsvHeaders([]));
     uploadMutation.mutate({ file: selectedFile, matchField });
   };
 
@@ -450,9 +616,19 @@ export default function CampanhaArquivo() {
     setFile(null);
     setTempId("");
     setRecordCount(0);
+    setCsvHeaders([]);
   };
 
   const handleSubmit = async () => {
+    if (!campaignName.trim()) {
+      toast({
+        title: "Nome obrigatório",
+        description: "Informe o nome da campanha",
+        variant: "destructive",
+      });
+      return;
+    }
+
     if (!file || !tempId) {
       toast({
         title: "Arquivo obrigatório",
@@ -538,10 +714,13 @@ export default function CampanhaArquivo() {
       : (selectedTemplate?.source || 'local');
 
     const payload: Record<string, any> = {
+      nome_campanha: campaignName.trim(),
       temp_id: tempId,
       table_name: tableName,
       carteira: carteira || '',
-      template_id: salesforceOnly ? null : (selectedTemplate?.source === 'local' ? parseInt(template) : null),
+      wallet_id: walletIdForOtima || selectedCarteiraObj?.id_carteira || '',
+      fornecedor: provider.toUpperCase(),
+      template_id: salesforceOnly ? null : (selectedTemplate?.source === 'local' ? parseInt(template, 10) : null),
       template_code: salesforceOnly ? null : (selectedTemplate?.templateCode || null),
       template_source: templateSource,
       broker_code: salesforceOnly ? null : (brokerCode || selectedTemplate?.brokerCode || null),
@@ -590,114 +769,27 @@ export default function CampanhaArquivo() {
         </AlertDescription>
       </Alert>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Upload Section */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Upload className="h-5 w-5 text-primary" />
-              Upload de Arquivo
-            </CardTitle>
-            <CardDescription>
-              Envie um arquivo CSV com os dados dos clientes
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {!file ? (
-              <label className="flex flex-col items-center justify-center h-48 border-2 border-dashed border-border rounded-xl cursor-pointer hover:border-primary/50 hover:bg-muted/50 transition-colors">
-                <Upload className="h-10 w-10 text-muted-foreground mb-3" />
-                <p className="text-sm font-medium text-foreground">
-                  Clique para selecionar ou arraste o arquivo
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  CSV com colunas: telefone (55+DDD+Número), cpf, nome (obrigatórios)
-                </p>
-                <input
-                  type="file"
-                  accept=".csv"
-                  onChange={handleFileChange}
-                  className="hidden"
-                  disabled={uploadMutation.isPending}
-                />
-              </label>
-            ) : (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-4 rounded-xl bg-muted/50 border">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-                      <FileText className="h-5 w-5 text-primary" />
-                    </div>
-                    <div>
-                      <p className="font-medium text-sm">{file.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {(file.size / 1024).toFixed(1)} KB
-                      </p>
-                    </div>
-                  </div>
-                  <Button variant="ghost" size="icon" onClick={removeFile} disabled={uploadMutation.isPending}>
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-
-                {uploadMutation.isPending && (
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span className="text-sm">Validando arquivo...</span>
-                  </div>
-                )}
-
-                {uploadMutation.isSuccess && tempId && (
-                  <div className="flex items-center gap-2 p-3 rounded-lg bg-success/10 text-success">
-                    <CheckCircle className="h-4 w-4" />
-                    <div className="flex-1">
-                      <p className="text-sm font-medium">Arquivo válido!</p>
-                      <p className="text-xs">
-                        {recordCount.toLocaleString('pt-BR')} registros encontrados
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {uploadMutation.isError && (
-                  <div className="flex items-center gap-2 p-3 rounded-lg bg-destructive/10 text-destructive">
-                    <AlertCircle className="h-4 w-4" />
-                    <p className="text-sm">
-                      {uploadMutation.error instanceof Error
-                        ? uploadMutation.error.message
-                        : "Erro ao validar arquivo"}
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileText className="h-5 w-5 text-primary" />
+            Campanha por arquivo
+          </CardTitle>
+          <CardDescription>
+            Nome, carteira, fornecedor e remetente antes do template; em seguida CSV e mapeamento de variáveis às colunas do arquivo.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
             <div className="space-y-2">
-              <Label>Tipo de Cruzamento</Label>
-              <Select value={matchField} onValueChange={(v: "cpf" | "telefone") => setMatchField(v)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="cpf">CPF</SelectItem>
-                  <SelectItem value="telefone">Telefone</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label htmlFor="campaign-name-file">Nome da campanha <span className="text-red-500">*</span></Label>
+              <Input
+                id="campaign-name-file"
+                value={campaignName}
+                onChange={(e) => setCampaignName(e.target.value)}
+                placeholder="Ex.: Campanha Black Friday — base X"
+              />
             </div>
-          </CardContent>
-        </Card>
 
-        {/* Configuration Section */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5 text-primary" />
-              Configuração
-            </CardTitle>
-            <CardDescription>
-              Configure os detalhes da campanha
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label>Carteira <span className="text-red-500">*</span></Label>
               <Select
@@ -776,8 +868,113 @@ export default function CampanhaArquivo() {
             )}
 
             <div className="space-y-2">
+              <Label>Fornecedor <span className="text-red-500">*</span></Label>
+              <Select value={provider} onValueChange={setProvider}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione um fornecedor" />
+                </SelectTrigger>
+                <SelectContent>
+                  {providers.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Os templates externos (Ótima, NOAH, GOSAC Oficial, Robbu) só são carregados após escolher carteira e fornecedor compatíveis.
+              </p>
+            </div>
+
+            {provider === "GOSAC_OFICIAL" && (
+              <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
+                <Label>Ilha / Conexão (remetente) <span className="text-red-500">*</span></Label>
+                <Select
+                  value={gosacConnectionId}
+                  onValueChange={setGosacConnectionId}
+                  disabled={gosacConnectionsLoading || !carteira}
+                >
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        !carteira
+                          ? "Selecione a carteira primeiro"
+                          : gosacConnectionsLoading
+                            ? "Carregando ilhas..."
+                            : "Selecione a ilha por qual sairá o disparo"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Array.isArray(gosacConnectionsData) && gosacConnectionsData.length === 0 && !gosacConnectionsLoading && carteira && (
+                      <div className="py-2 px-3 text-xs text-muted-foreground italic">
+                        Nenhuma ilha encontrada. Verifique id_carteira e id_ruler na carteira.
+                      </div>
+                    )}
+                    {Array.isArray(gosacConnectionsData) &&
+                      gosacConnectionsData.map((c: any) => (
+                        <SelectItem key={c.id} value={String(c.id)}>
+                          <div className="flex items-center gap-1.5">
+                            <span>{c.name || `Ilha ${c.id}`}</span>
+                            {c.status && (
+                              <Badge variant={c.status === "CONNECTED" ? "default" : "secondary"} className="text-[10px] py-0 px-1">
+                                {c.status}
+                              </Badge>
+                            )}
+                          </div>
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {(provider === "OTIMA_WPP" || provider === "OTIMA_RCS") && (
+              <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
+                <Label>Remetente / Broker Ótima <span className="text-red-500">*</span></Label>
+                <Select disabled={otimaBrokersLoading} value={brokerCode} onValueChange={setBrokerCode}>
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={otimaBrokersLoading ? "Carregando brokers..." : "Número (code) do remetente WPP ou RCS"}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {otimaBrokersForTemplate.length === 0 && !otimaBrokersLoading && (
+                      <div className="py-2 px-3 text-xs text-muted-foreground italic">
+                        Nenhum broker para este canal. Verifique o token no API Manager.
+                      </div>
+                    )}
+                    {otimaBrokersForTemplate.map((b: any, idx: number) => {
+                      const v = String(b.value ?? b.code ?? "");
+                      const isRcs = b.channel === "rcs" || String(b.name ?? "").toLowerCase().includes("rcs");
+                      const isWpp = b.channel === "wpp" || /wpp|whatsapp/i.test(String(b.name ?? ""));
+                      const display = b.label ?? b.name ?? v;
+                      return (
+                        <SelectItem key={`broker-${v || idx}`} value={v}>
+                          <div className="flex items-center gap-1.5">
+                            {isRcs && <Badge className="text-[10px] py-0 px-1 bg-blue-500 text-white shrink-0">RCS</Badge>}
+                            {isWpp && (
+                              <Badge variant="outline" className="text-[10px] py-0 px-1 shrink-0">
+                                WPP
+                              </Badge>
+                            )}
+                            <span>
+                              {display}
+                              {v ? ` (${v})` : ""}
+                            </span>
+                          </div>
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">Use o valor numérico retornado pela Ótima (campo code), não o nome da credencial.</p>
+              </div>
+            )}
+
+            <div className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <Label>Template de Mensagem <span className="text-red-500">*</span></Label>
+                <Label>Template <span className="text-red-500">*</span></Label>
                 {walletIdForOtima && carteira && (provider === "OTIMA_RCS" || provider === "OTIMA_WPP") ? (
                   <Button
                     type="button"
@@ -798,8 +995,11 @@ export default function CampanhaArquivo() {
                   </Button>
                 ) : null}
               </div>
-              {(provider === 'OTIMA_RCS' || provider === 'OTIMA_WPP') && !carteira && (
-                <p className="text-xs text-muted-foreground">Selecione uma carteira para carregar templates Ótima.</p>
+              {!provider && (
+                <p className="text-xs text-muted-foreground">Selecione o fornecedor para listar templates compatíveis.</p>
+              )}
+              {(provider === "OTIMA_RCS" || provider === "OTIMA_WPP") && !carteira && (
+                <p className="text-xs text-muted-foreground">Selecione uma carteira para carregar templates Ótima (wallet / id_carteira).</p>
               )}
               <Popover open={openTemplateDropdown} onOpenChange={setOpenTemplateDropdown}>
                 <PopoverTrigger asChild>
@@ -807,246 +1007,190 @@ export default function CampanhaArquivo() {
                     variant="outline"
                     role="combobox"
                     aria-expanded={openTemplateDropdown}
+                    disabled={!provider}
                     className="w-full justify-between font-normal"
                   >
-                    {template
-                      ? templates.find((t) => t.id === template)?.name || "Template Selecionado"
-                      : templatesLoading ? "Carregando templates..." : "Selecione um template..."}
+                    {!provider
+                      ? "Selecione o fornecedor primeiro…"
+                      : template
+                        ? templates.find((t) => t.id === template)?.name || "Template selecionado"
+                        : templatesLoading
+                          ? "Carregando templates…"
+                          : "Selecione um template…"}
                     {templatesLoading && <Loader2 className="ml-2 h-4 w-4 shrink-0 animate-spin" />}
                     {!templatesLoading && <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />}
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
                   <Command>
-                    <CommandInput placeholder="Buscar template..." disabled={templatesLoading} />
+                    <CommandInput placeholder="Buscar template…" disabled={templatesLoading || !provider} />
                     <CommandList>
                       {templatesLoading ? (
                         <div className="py-6 px-4 flex items-center justify-center gap-2 text-muted-foreground">
                           <Loader2 className="h-4 w-4 animate-spin" />
-                          <span>Carregando templates...</span>
+                          <span>Carregando templates…</span>
                         </div>
                       ) : (
                         <>
-                      <CommandEmpty>Nenhum template encontrado.</CommandEmpty>
-                      <CommandGroup>
-                          {templates.map((t) => {
-                            const isOtima = t.source === 'otima_rcs' || t.source === 'otima_wpp';
-                            return (
-                              <CommandItem
-                                key={t.id}
-                                value={t.name}
-                                onSelect={() => {
-                                  setTemplate(t.id);
-                                  const selectedTpl = templates.find((tpl) => tpl.id === t.id) as any;
-                                  if (selectedTpl?.brokerCode) {
-                                    setBrokerCode(selectedTpl.brokerCode);
-                                  }
-                                  // Save for preview
-                                  setSelectedTemplateObj(selectedTpl ?? null);
-                                  const otimaWppMap = buildInitialVariableMappingFromOtimaWpp(selectedTpl);
-                                  if (otimaWppMap) {
-                                    setTemplateVariables(otimaWppMap);
-                                  } else {
-                                    const rawContent = collectPlaceholdersSourceText(selectedTpl);
-                                    const detectedVars = extractVariables(rawContent);
-                                    const initMap: Record<string, VarMapping> = {};
-                                    detectedVars.forEach((vVar) => {
-                                      initMap[vVar] = { type: "field", value: "nome" };
-                                    });
-                                    setTemplateVariables(initMap);
-                                  }
-                                  setOpenTemplateDropdown(false);
-                                }}
-                              >
-                                <Check
-                                  className={cn(
-                                    "mr-2 h-4 w-4",
-                                    template === t.id ? "opacity-100" : "opacity-0"
-                                  )}
-                                />
-                                <div className="flex flex-col">
-                                  <span className="font-medium text-sm truncate max-w-[400px]" title={t.name}>
-                                    {t.name}
-                                  </span>
-                                  {isOtima && (
-                                    <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                                      {t.source === 'otima_rcs' ? 'Ótima RCS' : 'Ótima WPP'}
+                          <CommandEmpty>Nenhum template para este fornecedor.</CommandEmpty>
+                          <CommandGroup>
+                            {templates.map((t) => {
+                              const isOtima = t.source === "otima_rcs" || t.source === "otima_wpp";
+                              const isNoah = t.source === "noah_oficial";
+                              const isGosac = t.source === "gosac_oficial";
+                              return (
+                                <CommandItem
+                                  key={t.id}
+                                  value={t.name}
+                                  onSelect={() => {
+                                    setTemplate(t.id);
+                                    const selectedTpl = templates.find((tpl) => tpl.id === t.id) as any;
+                                    if (selectedTpl?.brokerCode) {
+                                      setBrokerCode(selectedTpl.brokerCode);
+                                    }
+                                    setSelectedTemplateObj(selectedTpl ?? null);
+                                    const colDefault = csvHeaders[0] || "nome";
+                                    const otimaWppMap = buildInitialVariableMappingFromOtimaWpp(selectedTpl);
+                                    const noahOfficialMap = buildInitialVariableMappingFromNoahOfficial(selectedTpl);
+                                    const rawContent = collectPlaceholdersSourceText(selectedTpl ?? null) || "";
+                                    if (otimaWppMap) {
+                                      setTemplateVariables(otimaWppMap);
+                                    } else if (noahOfficialMap) {
+                                      const col0 = csvHeaders[0] || "nome";
+                                      const patched: Record<string, VarMapping> = {};
+                                      for (const [k, m] of Object.entries(noahOfficialMap)) {
+                                        patched[k] =
+                                          m.type === "field" && m.value === "nome"
+                                            ? { ...m, value: col0 }
+                                            : m;
+                                      }
+                                      setTemplateVariables(patched);
+                                    } else {
+                                      const detectedVars = extractVariables(rawContent);
+                                      const initMap: Record<string, VarMapping> = {};
+                                      detectedVars.forEach((vVar) => {
+                                        initMap[vVar] = { type: "field", value: colDefault };
+                                      });
+                                      setTemplateVariables(initMap);
+                                    }
+                                    setOpenTemplateDropdown(false);
+                                  }}
+                                >
+                                  <Check
+                                    className={cn("mr-2 h-4 w-4", template === t.id ? "opacity-100" : "opacity-0")}
+                                  />
+                                  <div className="flex flex-col">
+                                    <span className="font-medium text-sm truncate max-w-[400px]" title={t.name}>
+                                      {t.name}
                                     </span>
-                                  )}
-                                </div>
-                              </CommandItem>
-                            );
-                          })}
-                        </CommandGroup>
+                                    <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                      {isOtima && (t.source === "otima_rcs" ? "Ótima RCS" : "Ótima WPP")}
+                                      {isNoah && "NOAH Oficial"}
+                                      {isGosac && "GOSAC Oficial"}
+                                      {t.source === "robbu_oficial" && "Robbu Oficial"}
+                                      {t.source === "local" && "Local"}
+                                    </span>
+                                  </div>
+                                </CommandItem>
+                              );
+                            })}
+                          </CommandGroup>
                         </>
                       )}
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
 
-            {(() => {
-              const selectedTpl = templates.find((t) => t.id === template);
-              const isGosac = selectedTpl?.source === 'gosac_oficial';
-              if (isGosac) {
-                return (
-                  <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
-                    <Label>Ilha / Conexão <span className="text-red-500">*</span></Label>
-                    <Select
-                      value={gosacConnectionId}
-                      onValueChange={setGosacConnectionId}
-                      disabled={gosacConnectionsLoading || !carteira}
-                    >
-                      <SelectTrigger>
-                        <SelectValue
-                          placeholder={
-                            !carteira
-                              ? "Selecione a carteira primeiro"
-                              : gosacConnectionsLoading
-                                ? "Carregando ilhas..."
-                                : "Selecione a ilha por qual sairá o disparo"
-                          }
-                        />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {Array.isArray(gosacConnectionsData) && gosacConnectionsData.length === 0 && !gosacConnectionsLoading && carteira && (
-                          <div className="py-2 px-3 text-xs text-muted-foreground italic">
-                            Nenhuma ilha encontrada. Verifique id_carteira e id_ruler na carteira.
-                          </div>
-                        )}
-                        {Array.isArray(gosacConnectionsData) &&
-                          gosacConnectionsData.map((c: any) => (
-                            <SelectItem key={c.id} value={String(c.id)}>
-                              <div className="flex items-center gap-1.5">
-                                <span>{c.name || `Ilha ${c.id}`}</span>
-                                {c.status && (
-                                  <Badge variant={c.status === 'CONNECTED' ? 'default' : 'secondary'} className="text-[10px] py-0 px-1">
-                                    {c.status}
-                                  </Badge>
-                                )}
-                              </div>
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">
-                      Selecione a ilha (conexão) pela qual o disparo será enviado.
-                    </p>
-                  </div>
-                );
-              }
-              return null;
-            })()}
-
-            {(() => {
-              const selectedTpl = templates.find((t) => t.id === template);
-              const isOtima = selectedTpl?.source === 'otima_rcs' || selectedTpl?.source === 'otima_wpp';
-              if (isOtima) {
-                const list = Array.isArray(otimaBrokersData) ? otimaBrokersData : [];
-                const channel = selectedTpl?.source === 'otima_wpp' ? 'wpp' : 'rcs';
-                const brokersFiltered = list.filter(
-                  (b: any) =>
-                    String(b.code ?? '').startsWith('error_') ||
-                    b.channel === channel ||
-                    (!b.channel &&
-                      (channel === 'wpp'
-                        ? /wpp|whatsapp/i.test(String(b.name ?? ''))
-                        : /rcs/i.test(String(b.name ?? '')))),
-                );
-                return (
-                  <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
-                    <Label>Broker Ótima <span className="text-red-500">*</span></Label>
-                    <Select
-                      disabled={otimaBrokersLoading}
-                      value={brokerCode}
-                      onValueChange={setBrokerCode}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder={otimaBrokersLoading ? "Carregando brokers..." : "Selecione o broker para envio"} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {brokersFiltered.length === 0 && !otimaBrokersLoading && (
-                          <div className="py-2 px-3 text-xs text-muted-foreground italic">
-                            Nenhum broker encontrado para este canal. Verifique o token WPP/RCS no API Manager.
-                          </div>
-                        )}
-                        {brokersFiltered.map((b: any, idx: number) => {
-                          const v = String(b.value ?? b.code ?? '');
-                          const isRcs = b.channel === 'rcs' || String(b.name ?? '').toLowerCase().includes('rcs');
-                          const isWpp = b.channel === 'wpp' || /wpp|whatsapp/i.test(String(b.name ?? ''));
-                          const display = b.label ?? b.name ?? v;
-                          return (
-                            <SelectItem key={`broker-${v || idx}`} value={v}>
-                              <div className="flex items-center gap-1.5">
-                                {isRcs && <Badge className="text-[10px] py-0 px-1 bg-blue-500 text-white shrink-0">RCS</Badge>}
-                                {isWpp && <Badge variant="outline" className="text-[10px] py-0 px-1 shrink-0">WPP</Badge>}
-                                <span>{display}{v ? ` (${v})` : ''}</span>
-                              </div>
-                            </SelectItem>
-                          );
-                        })}
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">
-                      Remetente WPP: use o número retornado pela Ótima (campo code), não o nome da credencial.
-                    </p>
-                  </div>
-                );
-              }
-              return null;
-            })()}
-
-            {/* Variable Mapper — only for Ótima templates */}
-            {(() => {
-              const selectedTpl = templates.find((t) => t.id === template) as any;
-              const isOtima = selectedTpl?.source === 'otima_rcs' || selectedTpl?.source === 'otima_wpp';
-              if (!isOtima) return null;
-              let mapperKeys = Object.keys(templateVariables);
-              if (selectedTpl?.source === 'otima_wpp') {
-                const fromTpl = listOtimaWppVariableKeysFromTemplate(selectedTpl);
-                if (fromTpl.length > 0) {
-                  const seen = new Set<string>();
-                  const out: string[] = [];
-                  for (const k of fromTpl) {
-                    if (!seen.has(k)) {
-                      seen.add(k);
-                      out.push(k);
+            <div className="space-y-3 rounded-lg border border-border p-4">
+              <div className="flex items-center gap-2">
+                <Upload className="h-4 w-4 text-primary" />
+                <span className="text-sm font-semibold">Arquivo CSV</span>
+              </div>
+              <div className="space-y-2">
+                <Label>Tipo de cruzamento</Label>
+                <Select
+                  value={matchField}
+                  onValueChange={(v: "cpf" | "telefone") => {
+                    setMatchField(v);
+                    if (file) {
+                      uploadMutation.mutate({ file, matchField: v });
                     }
-                  }
-                  for (const k of Object.keys(templateVariables)) {
-                    if (!seen.has(k)) {
-                      seen.add(k);
-                      out.push(k);
-                    }
-                  }
-                  mapperKeys = out;
-                }
-              }
-              return (
-                <TemplateVariableMapper
-                  variables={mapperKeys}
-                  mapping={templateVariables}
-                  onChange={setTemplateVariables}
-                />
-              );
-            })()}
-
-            <div className="space-y-2">
-              <Label>Fornecedor <span className="text-red-500">*</span></Label>
-              <Select value={provider} onValueChange={setProvider}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione um fornecedor" />
-                </SelectTrigger>
-                <SelectContent>
-                  {providers.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cpf">CPF</SelectItem>
+                    <SelectItem value="telefone">Telefone</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {!file ? (
+                <label className="flex flex-col items-center justify-center min-h-[140px] border-2 border-dashed border-border rounded-xl cursor-pointer hover:border-primary/50 hover:bg-muted/50 transition-colors">
+                  <Upload className="h-8 w-8 text-muted-foreground mb-2" />
+                  <p className="text-sm font-medium text-foreground">Selecione o CSV</p>
+                  <p className="text-xs text-muted-foreground mt-1 px-4 text-center">
+                    Cabeçalhos detectados alimentam o mapeamento de variáveis do template.
+                  </p>
+                  <input
+                    type="file"
+                    accept=".csv"
+                    onChange={handleFileChange}
+                    className="hidden"
+                    disabled={uploadMutation.isPending}
+                  />
+                </label>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-muted/50 border">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <FileText className="h-5 w-5 text-primary shrink-0" />
+                      <div className="min-w-0">
+                        <p className="font-medium text-sm truncate">{file.name}</p>
+                        <p className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(1)} KB</p>
+                      </div>
+                    </div>
+                    <Button variant="ghost" size="icon" onClick={removeFile} disabled={uploadMutation.isPending}>
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  {uploadMutation.isPending && (
+                    <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Validando arquivo…
+                    </div>
+                  )}
+                  {uploadMutation.isSuccess && tempId && (
+                    <div className="flex items-center gap-2 p-3 rounded-lg bg-success/10 text-success text-sm">
+                      <CheckCircle className="h-4 w-4 shrink-0" />
+                      <span>
+                        {recordCount.toLocaleString("pt-BR")} registros — colunas:{" "}
+                        {csvHeaders.length ? csvHeaders.join(", ") : "—"}
+                      </span>
+                    </div>
+                  )}
+                  {uploadMutation.isError && (
+                    <div className="flex items-center gap-2 p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
+                      <AlertCircle className="h-4 w-4 shrink-0" />
+                      {uploadMutation.error instanceof Error ? uploadMutation.error.message : "Erro ao validar arquivo"}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
+
+            {mapperVariableKeys.length > 0 && (
+              <TemplateVariableMapper
+                variables={mapperVariableKeys}
+                mapping={templateVariables}
+                onChange={setTemplateVariables}
+                fieldOptions={fieldOptionsForMapper}
+                fieldSourceLabel={fieldSourceLabel}
+              />
+            )}
 
             {tempId && (
               <div className="rounded-lg bg-muted/50 p-4">
@@ -1132,6 +1276,7 @@ export default function CampanhaArquivo() {
             <Button
               onClick={handleSubmit}
               disabled={
+                !campaignName.trim() ||
                 !file ||
                 !tempId ||
                 (!template && provider !== "SALESFORCE") ||
@@ -1156,7 +1301,6 @@ export default function CampanhaArquivo() {
             </Button>
           </CardContent>
         </Card>
-      </div>
 
       {/* RCS Preview — full width, only for Ótima templates */}
       {selectedTemplateObj && (() => {
