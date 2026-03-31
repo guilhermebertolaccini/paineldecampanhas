@@ -60,3 +60,20 @@ enum MessageStatus {
   RETRYING
 }
 
+/// Histórico do validador WhatsApp (Evolution) — retenção 15 dias via cron NestJS
+model ValidatorHistory {
+  id               String   @id @default(uuid())
+  wpUserId         Int      @map("wp_user_id")
+  nomeArquivo      String   @map("nome_arquivo") @db.VarChar(512)
+  pathOriginal     String   @map("path_original") @db.VarChar(1024)
+  pathValidado     String   @map("path_validado") @db.VarChar(1024)
+  totalLinhas      Int      @map("total_linhas")
+  linhasValidas    Int      @map("linhas_validas")
+  linhasInvalidas  Int      @map("linhas_invalidas")
+  createdAt        DateTime @default(now()) @map("data_criacao") @db.Timestamptz(6)
+
+  @@index([wpUserId, createdAt])
+  @@index([createdAt])
+  @@map("pc_validador_historico")
+}
+

@@ -6,17 +6,16 @@ import { Progress } from "@/components/ui/progress";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { waValidatorUpload, waValidatorStep, fetchValidadorMetricas, fetchValidadorHistorico } from "@/lib/api";
+import {
+  fetchValidadorMetricas,
+  nestValidatorUpload,
+  nestValidatorHistory,
+  nestValidatorDownloadBlob,
+} from "@/lib/api";
 import { Upload, FileSpreadsheet, Loader2, Download, AlertCircle, BarChart3, ChevronDown, History, FileDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-
-function getAdminPostUrl(): string {
-  const pc = (window as any).pcAjax;
-  const u = pc?.adminPostUrl || pc?.siteUrl + "/wp-admin/admin-post.php";
-  return typeof u === "string" ? u : "/wp-admin/admin-post.php";
-}
 
 function localTodayISO(): string {
   const d = new Date();
@@ -35,14 +34,12 @@ type MetricRow = {
 };
 
 type HistoricoItem = {
-  id: number;
+  id: string;
   nome_arquivo: string;
   total_linhas: number;
   linhas_validas: number;
   linhas_invalidas: number;
   data_criacao: string;
-  download_original_nonce: string;
-  download_validado_nonce: string;
 };
 
 function formatHistoricoDataUtc(isoMysql: string): string {
@@ -59,11 +56,14 @@ export default function Validador() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [statusText, setStatusText] = useState("");
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [downloadNonce, setDownloadNonce] = useState<string | null>(null);
-  const [counts, setCounts] = useState<{ processed: number; total: number } | null>(null);
+  const [lastResult, setLastResult] = useState<{
+    id: string;
+    nomeArquivo: string;
+    totalLinhas: number;
+    linhasValidas: number;
+    linhasInvalidas: number;
+  } | null>(null);
 
   const isAdmin = !!(typeof window !== "undefined" && (window as any).pcAjax?.currentUser?.isAdmin);
 
@@ -80,10 +80,15 @@ export default function Validador() {
   const [historicoError, setHistoricoError] = useState<string | null>(null);
 
   const loadHistorico = useCallback(async () => {
+    const uid = Number((window as any).pcAjax?.currentUser?.id);
+    if (!uid) {
+      setHistoricoItems([]);
+      return;
+    }
     setHistoricoLoading(true);
     setHistoricoError(null);
     try {
-      const data = await fetchValidadorHistorico();
+      const data = await nestValidatorHistory(uid);
       setHistoricoItems(data.itens);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -123,19 +128,62 @@ export default function Validador() {
   }, [isAdmin]);
 
   const resetOutput = () => {
-    setJobId(null);
-    setDownloadNonce(null);
-    setProgress(0);
-    setCounts(null);
+    setLastResult(null);
   };
+
+  const triggerBlobDownload = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.rel = "nofollow";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadFromNest = useCallback(
+    async (rowId: string, nomeArquivo: string, type: "original" | "validated") => {
+      const uid = Number((window as any).pcAjax?.currentUser?.id);
+      if (!uid) {
+        toast({ title: "Sessão", description: "Usuário não identificado.", variant: "destructive" });
+        return;
+      }
+      try {
+        const blob = await nestValidatorDownloadBlob(uid, rowId, type);
+        const name =
+          type === "original"
+            ? nomeArquivo.endsWith(".csv") || nomeArquivo.endsWith(".txt")
+              ? nomeArquivo
+              : `${nomeArquivo}.csv`
+            : `${nomeArquivo.replace(/\.(csv|txt)$/i, "")}-validado.csv`;
+        triggerBlobDownload(blob, name);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        toast({ title: "Download", description: msg, variant: "destructive" });
+      }
+    },
+    [toast]
+  );
 
   const runPipeline = useCallback(
     async (file: File) => {
       if (busyRef.current) return;
-      if (!file.name.toLowerCase().endsWith(".csv")) {
+      const lower = file.name.toLowerCase();
+      if (!lower.endsWith(".csv") && !lower.endsWith(".txt")) {
         toast({
           title: "Formato inválido",
-          description: "Envie apenas arquivos .csv",
+          description: "Envie arquivos .csv ou .txt",
+          variant: "destructive",
+        });
+        return;
+      }
+      const wpUserId = Number((window as any).pcAjax?.currentUser?.id);
+      if (!wpUserId) {
+        toast({
+          title: "Sessão",
+          description: "Não foi possível identificar seu usuário. Faça login novamente.",
           variant: "destructive",
         });
         return;
@@ -143,32 +191,20 @@ export default function Validador() {
       busyRef.current = true;
       setProcessing(true);
       resetOutput();
-      setStatusText("Enviando arquivo…");
+      setStatusText("Enviando e processando no microserviço… pode levar vários minutos.");
 
       try {
-        const up = await waValidatorUpload(file);
-        setJobId(up.job_id);
-        setStatusText("Processando contatos na Evolution API… Isso pode levar vários minutos.");
-
-        let done = false;
-        let lastNonce = up.download_nonce ?? "";
-
-        while (!done) {
-          const step = await waValidatorStep(up.job_id);
-          setProgress(step.progress);
-          setCounts({ processed: step.processed, total: step.total });
-          if (step.download_nonce) {
-            lastNonce = step.download_nonce;
-          }
-          done = step.done;
-          if (!done) {
-            await new Promise((r) => setTimeout(r, 400));
-          }
-        }
-
-        setDownloadNonce(lastNonce || null);
-        setProgress(100);
-        setStatusText("Concluído. Baixe o CSV validado abaixo.");
+        const up = await nestValidatorUpload(file, wpUserId);
+        setLastResult({
+          id: up.id,
+          nomeArquivo: up.nomeArquivo,
+          totalLinhas: up.totalLinhas,
+          linhasValidas: up.linhasValidas,
+          linhasInvalidas: up.linhasInvalidas,
+        });
+        setStatusText(
+          `Concluído: ${up.totalLinhas.toLocaleString("pt-BR")} linhas — ${up.linhasValidas.toLocaleString("pt-BR")} com WPP.`
+        );
         toast({ title: "Validação concluída" });
         void loadHistorico();
         if (isAdmin) {
@@ -196,16 +232,12 @@ export default function Validador() {
     void runPipeline(f);
   };
 
-  const downloadHref =
-    jobId && downloadNonce
-      ? `${getAdminPostUrl()}?action=pc_wa_validator_download&job_id=${encodeURIComponent(
-          jobId
-        )}&_wpnonce=${encodeURIComponent(downloadNonce)}`
-      : "";
-
   return (
     <div className="space-y-8 max-w-5xl mx-auto">
-      <PageHeader title="Validador WhatsApp" description="Valide telefones em lote via Evolution API e exporte CSV com coluna WPP." />
+      <PageHeader
+        title="Validador WhatsApp"
+        description="Processamento no microserviço NestJS (streams + Evolution API). Histórico e arquivos ficam no servidor Node por 15 dias."
+      />
 
       <Card>
         <CardHeader>
@@ -214,14 +246,16 @@ export default function Validador() {
             Upload do CSV
           </CardTitle>
           <CardDescription>
-            O arquivo deve conter uma única coluna com cabeçalho <strong>TELEFONE</strong>. Apenas extensão .csv.
+            Coluna obrigatória <strong>TELEFONE</strong>. Formatos <strong>.csv</strong> ou <strong>.txt</strong>. Configure URL e API Key do microserviço em{" "}
+            <strong>API Manager</strong> e variáveis <code className="text-xs">EVOLUTION_API_URL</code> /{" "}
+            <code className="text-xs">EVOLUTION_API_TOKEN</code> no Nest.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <input
             ref={inputRef}
             type="file"
-            accept=".csv,text/csv"
+            accept=".csv,.txt,text/csv,text/plain"
             className="hidden"
             disabled={processing}
             onChange={(e) => {
@@ -273,41 +307,51 @@ export default function Validador() {
             ) : (
               <>
                 <Upload className="mr-2 h-4 w-4" />
-                Selecionar CSV
+                Selecionar arquivo
               </>
             )}
           </Button>
 
           {processing && (
             <div className="space-y-2 pt-2">
-              <Progress value={progress} className="h-2" />
+              <Progress value={33} className="h-2 animate-pulse" />
               <p className="text-sm text-muted-foreground flex items-start gap-2">
                 <Loader2 className="h-4 w-4 shrink-0 animate-spin mt-0.5" />
                 {statusText}
               </p>
-              {counts && (
-                <p className="text-xs text-muted-foreground">
-                  {counts.processed.toLocaleString("pt-BR")} / {counts.total.toLocaleString("pt-BR")} números
-                </p>
-              )}
             </div>
           )}
 
-          {!processing && downloadHref && (
-            <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t">
-              <Button asChild variant="default" className="gap-2">
-                <a href={downloadHref} rel="nofollow">
+          {!processing && lastResult && (
+            <div className="flex flex-col gap-2 pt-4 border-t">
+              <p className="text-sm text-muted-foreground">{statusText}</p>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="gap-2"
+                  onClick={() => void downloadFromNest(lastResult.id, lastResult.nomeArquivo, "original")}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Baixar original
+                </Button>
+                <Button
+                  type="button"
+                  variant="default"
+                  className="gap-2"
+                  onClick={() => void downloadFromNest(lastResult.id, lastResult.nomeArquivo, "validated")}
+                >
                   <Download className="h-4 w-4" />
-                  Baixar CSV validado
-                </a>
-              </Button>
+                  Baixar validado
+                </Button>
+              </div>
             </div>
           )}
 
           <div className="flex gap-2 text-xs text-muted-foreground pt-2">
             <AlertCircle className="h-4 w-4 shrink-0" />
             <span>
-              Configure a Evolution API em <strong>API Manager</strong> antes de usar. O token não é exibido no navegador após salvo.
+              O processamento ocorre no NestJS; a Evolution API é chamada pelo servidor Node (não pelo WordPress).
             </span>
           </div>
         </CardContent>
@@ -317,10 +361,10 @@ export default function Validador() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
             <History className="h-5 w-5 text-primary" />
-            Histórico de validações (últimos 15 dias)
+            Histórico de validações (últimos 15 dias — NestJS)
           </CardTitle>
           <CardDescription>
-            Arquivos ficam disponíveis para download pelo período de retenção; depois são removidos automaticamente.
+            Lista servida por <code className="text-xs bg-muted px-1 rounded">GET /validator/history</code>. Limpeza diária às 02:00 no servidor Node.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -356,47 +400,51 @@ export default function Validador() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  historicoItems.map((row) => {
-                    const origHref = `${getAdminPostUrl()}?action=pc_wa_validator_download_hist_original&historico_id=${row.id}&_wpnonce=${encodeURIComponent(row.download_original_nonce)}`;
-                    const valHref = `${getAdminPostUrl()}?action=pc_wa_validator_download_hist_validado&historico_id=${row.id}&_wpnonce=${encodeURIComponent(row.download_validado_nonce)}`;
-                    return (
-                      <TableRow key={row.id}>
-                        <TableCell className="font-medium max-w-[240px] truncate" title={row.nome_arquivo}>
-                          {row.nome_arquivo || "—"}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
-                          {formatHistoricoDataUtc(row.data_criacao)}
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          <span className="tabular-nums">{row.total_linhas.toLocaleString("pt-BR")}</span> linhas —{" "}
-                          <span className="text-emerald-600 dark:text-emerald-400 font-medium tabular-nums">
-                            {row.linhas_validas.toLocaleString("pt-BR")}
-                          </span>{" "}
-                          WPP /{" "}
-                          <span className="text-muted-foreground tabular-nums">
-                            {row.linhas_invalidas.toLocaleString("pt-BR")}
-                          </span>{" "}
-                          sem WPP
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex flex-col sm:flex-row gap-2 justify-end">
-                            <Button asChild variant="outline" size="sm" className="gap-1 h-8">
-                              <a href={origHref} rel="nofollow">
-                                <FileDown className="h-3.5 w-3.5" />
-                                Original
-                              </a>
-                            </Button>
-                            <Button asChild variant="default" size="sm" className="gap-1 h-8">
-                              <a href={valHref} rel="nofollow">
-                                <Download className="h-3.5 w-3.5" />
-                                Validado
-                              </a>
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
+                  historicoItems.map((row) => (
+                    <TableRow key={row.id}>
+                      <TableCell className="font-medium max-w-[240px] truncate" title={row.nome_arquivo}>
+                        {row.nome_arquivo || "—"}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
+                        {formatHistoricoDataUtc(row.data_criacao)}
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        <span className="tabular-nums">{row.total_linhas.toLocaleString("pt-BR")}</span> linhas —{" "}
+                        <span className="text-emerald-600 dark:text-emerald-400 font-medium tabular-nums">
+                          {row.linhas_validas.toLocaleString("pt-BR")}
+                        </span>{" "}
+                        WPP /{" "}
+                        <span className="text-muted-foreground tabular-nums">
+                          {row.linhas_invalidas.toLocaleString("pt-BR")}
+                        </span>{" "}
+                        sem WPP
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex flex-col sm:flex-row gap-2 justify-end">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="gap-1 h-8"
+                            onClick={() => void downloadFromNest(row.id, row.nome_arquivo, "original")}
+                          >
+                            <FileDown className="h-3.5 w-3.5" />
+                            Original
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="default"
+                            size="sm"
+                            className="gap-1 h-8"
+                            onClick={() => void downloadFromNest(row.id, row.nome_arquivo, "validated")}
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                            Validado
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
                 )}
               </TableBody>
             </Table>

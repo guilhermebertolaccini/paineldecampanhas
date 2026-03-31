@@ -262,6 +262,7 @@ class Painel_Campanhas
         // AJAX para Aprovar Campanhas
         add_action('wp_ajax_pc_get_pending_campaigns', [$this, 'handle_get_pending_campaigns']);
         add_action('wp_ajax_pc_get_microservice_config', [$this, 'handle_get_microservice_config']);
+        add_action('wp_ajax_pc_get_nest_client_config', [$this, 'handle_get_nest_client_config']);
         add_action('wp_ajax_pc_update_campaign_status', [$this, 'handle_update_campaign_status']);
         add_action('wp_ajax_pc_approve_campaign', [$this, 'handle_approve_campaign']);
         add_action('wp_ajax_pc_deny_campaign', [$this, 'handle_deny_campaign']);
@@ -6944,6 +6945,37 @@ class Painel_Campanhas
             'url' => $microservice_url,
             'api_key' => $api_key,
             'dispatch_url' => !empty($microservice_url) ? $this->build_dispatch_url($microservice_url) : ''
+        ]);
+    }
+
+    /**
+     * URL base e API key do NestJS para clientes autenticados (ex.: Validador WhatsApp no SPA).
+     * Mesma origem de credenciais do microserviço; permissão edit_posts (não só administrador).
+     */
+    public function handle_get_nest_client_config()
+    {
+        $this->pc_forbid_subscriber_ajax();
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        $microservice_config = get_option('acm_microservice_config', []);
+        $microservice_url = $microservice_config['url'] ?? '';
+        $microservice_api_key = $microservice_config['api_key'] ?? '';
+        $master_api_key = get_option('acm_master_api_key', '');
+        $api_key = !empty($microservice_api_key) ? $microservice_api_key : $master_api_key;
+
+        $base_url = rtrim((string) $microservice_url, '/');
+        if (substr($base_url, -4) === '/api') {
+            $base_url = substr($base_url, 0, -4);
+        }
+
+        wp_send_json_success([
+            'url' => $base_url,
+            'api_key' => $api_key,
         ]);
     }
 

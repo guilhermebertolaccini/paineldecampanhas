@@ -815,29 +815,134 @@ export const saveEvolutionConfig = (data: { evolution_api_url: string; evolution
     evolution_api_token: data.evolution_api_token ?? '',
   });
 
-/** Validador WhatsApp (CSV) — processamento em etapas */
-export const waValidatorUpload = async (file: File) => {
+/** URL + API key do Nest (WP faz a ponte; requer edit_posts) */
+export async function getNestClientConfig() {
   const { z } = await import('zod');
-  const Schema = z.object({
-    job_id: z.string(),
-    download_nonce: z.string().optional(),
-  });
-  const raw = await wpAjax('pc_wa_validator_upload', { file }, 'validatorNonce');
-  return Schema.parse(raw);
-};
+  const Schema = z.object({ url: z.string(), api_key: z.string() });
+  return Schema.parse(await wpAjax('pc_get_nest_client_config', {}));
+}
 
-export const waValidatorStep = async (jobId: string) => {
+function normalizeNestBaseUrl(url: string): string {
+  let u = (url || '').trim().replace(/\/+$/, '');
+  if (u.toLowerCase().endsWith('/api')) {
+    u = u.slice(0, -4);
+  }
+  return u.replace(/\/+$/, '');
+}
+
+function nestValidatorAuthHeaders(apiKey: string, wpUserId: number): HeadersInit {
+  return {
+    'x-api-key': String(apiKey).trim(),
+    'x-wp-user-id': String(wpUserId),
+  };
+}
+
+/** Validador WhatsApp — upload único processado no NestJS (Evolution API no servidor Node) */
+export async function nestValidatorUpload(file: File, wpUserId: number) {
   const { z } = await import('zod');
-  const Schema = z.object({
-    done: z.boolean(),
-    progress: z.number(),
-    processed: z.number(),
-    total: z.number(),
-    download_nonce: z.string().optional(),
+  const cfg = await getNestClientConfig();
+  const base = normalizeNestBaseUrl(cfg.url);
+  const key = String(cfg.api_key || '').trim();
+  if (!base || !key) {
+    throw new Error('Configure a URL e a API Key do microserviço em API Manager.');
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('wp_user_id', String(wpUserId));
+  const res = await fetch(`${base}/validator/upload`, {
+    method: 'POST',
+    headers: {
+      ...nestValidatorAuthHeaders(key, wpUserId),
+      Accept: 'application/json',
+    },
+    body: fd,
   });
-  const raw = await wpAjax('pc_wa_validator_step', { job_id: jobId }, 'validatorNonce');
-  return Schema.parse(raw);
-};
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const m = (body as { message?: string | string[] })?.message;
+    const msg = Array.isArray(m) ? m.join('; ') : typeof m === 'string' ? m : `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  const Schema = z.object({
+    id: z.string(),
+    nomeArquivo: z.string(),
+    totalLinhas: z.coerce.number(),
+    linhasValidas: z.coerce.number(),
+    linhasInvalidas: z.coerce.number(),
+  });
+  return Schema.parse(body);
+}
+
+export async function nestValidatorHistory(wpUserId: number) {
+  const { z } = await import('zod');
+  const cfg = await getNestClientConfig();
+  const base = normalizeNestBaseUrl(cfg.url);
+  const key = String(cfg.api_key || '').trim();
+  if (!base || !key) {
+    throw new Error('Microserviço não configurado.');
+  }
+  const u = new URL(`${base}/validator/history`);
+  u.searchParams.set('wp_user_id', String(wpUserId));
+  const res = await fetch(u.toString(), {
+    method: 'GET',
+    headers: {
+      ...nestValidatorAuthHeaders(key, wpUserId),
+      Accept: 'application/json',
+    },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const m = (body as { message?: string | string[] })?.message;
+    const msg = Array.isArray(m) ? m.join('; ') : typeof m === 'string' ? m : `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  const Schema = z.object({
+    itens: z.array(
+      z.object({
+        id: z.string(),
+        nome_arquivo: z.string(),
+        total_linhas: z.coerce.number(),
+        linhas_validas: z.coerce.number(),
+        linhas_invalidas: z.coerce.number(),
+        data_criacao: z.string(),
+      })
+    ),
+  });
+  return Schema.parse(body);
+}
+
+export async function nestValidatorDownloadBlob(
+  wpUserId: number,
+  id: string,
+  type: 'original' | 'validated'
+): Promise<Blob> {
+  const cfg = await getNestClientConfig();
+  const base = normalizeNestBaseUrl(cfg.url);
+  const key = String(cfg.api_key || '').trim();
+  if (!base || !key) {
+    throw new Error('Microserviço não configurado.');
+  }
+  const pathType = type === 'original' ? 'original' : 'validated';
+  const u = new URL(
+    `${base}/validator/download/${encodeURIComponent(id)}/${pathType}`
+  );
+  u.searchParams.set('wp_user_id', String(wpUserId));
+  const res = await fetch(u.toString(), {
+    method: 'GET',
+    headers: nestValidatorAuthHeaders(key, wpUserId),
+  });
+  if (!res.ok) {
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      const body = await res.json().catch(() => ({}));
+      const m = (body as { message?: string | string[] })?.message;
+      const msg = Array.isArray(m) ? m.join('; ') : typeof m === 'string' ? m : `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+    throw new Error(`HTTP ${res.status}`);
+  }
+  return res.blob();
+}
 
 /** Métricas agregadas do Validador (REST, só administradores) */
 export async function fetchValidadorMetricas(dataInicio: string, dataFim: string) {
@@ -884,55 +989,6 @@ export async function fetchValidadorMetricas(dataInicio: string, dataFim: string
         total_enviado: z.coerce.number(),
         total_validos: z.coerce.number(),
         taxa_qualidade_pct: z.coerce.number(),
-      })
-    ),
-  });
-
-  return Schema.parse(body);
-}
-
-/** Histórico de validações (REST, usuário logado com edit_posts) */
-export async function fetchValidadorHistorico() {
-  const { z } = await import('zod');
-  const pc = (window as any).pcAjax;
-  const base = pc?.validadorHistoricoRest as string | undefined;
-  if (!base) {
-    throw new Error('validadorHistoricoRest não disponível (recarregue a página).');
-  }
-  const url = new URL(base, window.location.origin);
-
-  const res = await fetch(url.toString(), {
-    method: 'GET',
-    credentials: 'same-origin',
-    headers: {
-      Accept: 'application/json',
-      'X-WP-Nonce': (pc?.restNonce as string) || '',
-    },
-  });
-
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg =
-      typeof body?.message === 'string'
-        ? body.message
-        : typeof body?.code === 'string'
-          ? body.code
-          : `HTTP ${res.status}`;
-    throw new Error(msg);
-  }
-
-  const Schema = z.object({
-    itens: z.array(
-      z.object({
-        id: z.coerce.number(),
-        nome_arquivo: z.string(),
-        total_linhas: z.coerce.number(),
-        linhas_validas: z.coerce.number(),
-        linhas_invalidas: z.coerce.number(),
-        data_criacao: z.string(),
-        job_id: z.string().optional(),
-        download_original_nonce: z.string(),
-        download_validado_nonce: z.string(),
       })
     ),
   });
