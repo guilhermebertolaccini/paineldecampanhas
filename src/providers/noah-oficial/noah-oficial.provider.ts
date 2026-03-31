@@ -46,7 +46,7 @@ export type NoahSendTemplatePayload = {
  * - POST {baseUrl}/send-template — HSM / template aprovado
  * - POST {baseUrl} — texto livre (sem /send-template)
  *
- * Auth: `INTEGRATION <token>` ou token já prefixado (alinhado ao WordPress).
+ * Auth: documentação NOAH — `Authorization: Bearer {token}` (sem prefixo INTEGRATION).
  */
 @Injectable()
 export class NoahOficialProvider extends BaseProvider {
@@ -89,20 +89,63 @@ export class NoahOficialProvider extends BaseProvider {
   }
 
   /**
-   * `externalKey` — chave exata da doc (K maiúsculo). ID estável quando houver id/envio_id da linha; senão UUID.
+   * Valor bruto em `variables` (quando o WP envia JSON por linha) — chaves comuns de contrato/idcob.
+   */
+  private pickNoahVariableField(
+    variables: Record<string, string> | undefined,
+    keys: string[],
+  ): string {
+    if (!variables || typeof variables !== 'object') return '';
+    for (const k of keys) {
+      const direct = variables[k];
+      if (direct != null && String(direct).trim() !== '') {
+        return String(direct).trim();
+      }
+      const lower = k.toLowerCase();
+      for (const [vk, vv] of Object.entries(variables)) {
+        if (vk.toLowerCase() === lower && vv != null && String(vv).trim() !== '') {
+          return String(vv).trim();
+        }
+      }
+    }
+    return '';
+  }
+
+  /**
+   * `externalKey` na raiz do JSON NOAH — relatórios/webhooks.
+   * Prioridade: variables (idcob_contrato / idcob / contrato) → raiz idcob_contrato → id / envio_id → agendamento_id → UUID.
    */
   private buildNoahExternalKey(item: CampaignData, index: number): string {
+    const vars = item.variables;
+    const fromVars = this.pickNoahVariableField(vars, [
+      'idcob_contrato',
+      'idcob',
+      'contrato',
+    ]);
+    if (fromVars) return fromVars;
+
+    if (
+      item.idcob_contrato != null &&
+      String(item.idcob_contrato).trim() !== ''
+    ) {
+      return String(item.idcob_contrato).trim();
+    }
+
     if (item.id != null && String(item.id).trim() !== '') {
-      return `pc_envio_${String(item.id)}`;
+      return String(item.id).trim();
     }
     if (item.envio_id != null && String(item.envio_id).trim() !== '') {
-      return `pc_envio_${String(item.envio_id)}`;
+      return String(item.envio_id).trim();
     }
-    const contrato =
-      item.idcob_contrato != null && String(item.idcob_contrato).trim() !== ''
-        ? String(item.idcob_contrato)
-        : 'na';
-    return `noah_${contrato}_${index}_${randomUUID()}`;
+
+    if (
+      item.agendamento_id != null &&
+      String(item.agendamento_id).trim() !== ''
+    ) {
+      return String(item.agendamento_id).trim();
+    }
+
+    return `noah_${index}_${randomUUID()}`;
   }
 
   /**
@@ -228,16 +271,22 @@ export class NoahOficialProvider extends BaseProvider {
   }
 
   /**
-   * API NOAH Oficial: `INTEGRATION <token>` nas rotas externas (WordPress).
-   * Aceita token já prefixado (INTEGRATION / Bearer).
+   * NOAH exige `Authorization: Bearer {token}`. Remove prefixos legados (`INTEGRATION`, `Bearer`)
+   * que possam vir duplicados ou sujos do banco/credenciais.
    */
   private buildNoahAuthorizationHeader(token: string): string {
     if (!token) return '';
-    const t = token.trim();
-    if (/^(Bearer|INTEGRATION)\s+/i.test(t)) {
-      return t;
+    let raw = String(token).trim();
+    if (!raw) return '';
+    for (let depth = 0; depth < 6; depth++) {
+      const stripped = raw
+        .replace(/^(Bearer|INTEGRATION)\s+/i, '')
+        .trim();
+      if (stripped === raw) break;
+      raw = stripped;
     }
-    return `INTEGRATION ${t}`;
+    if (!raw) return '';
+    return `Bearer ${raw}`;
   }
 
   private detectTemplateMessage(mensagem: string): boolean {

@@ -12,6 +12,8 @@ import {
   listOtimaWppVariableKeysFromTemplate,
   buildInitialVariableMappingFromNoahOfficial,
   listNoahOfficialVariableKeysFromTemplate,
+  buildInitialVariableMappingFromGosacOfficial,
+  listGosacOfficialVariableKeysFromTemplate,
 } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -338,6 +340,29 @@ export default function NovaCampanha() {
   const noahOfficialMapperVariableKeys = useMemo(() => {
     if (formData.templateSource !== "noah_oficial" && formData.templateSource !== "noah") return [];
     const fromTpl = listNoahOfficialVariableKeysFromTemplate(selectedTemplateObj);
+    const fromState = Object.keys(templateVariables);
+    if (fromTpl.length === 0) return fromState;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const k of fromTpl) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    for (const k of fromState) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    return out;
+  }, [formData.templateSource, selectedTemplateObj, templateVariables]);
+
+  /** GOSAC Oficial: mesma ordem que `variableComponents` na API (Nest monta HSM nessa ordem). */
+  const gosacOfficialMapperVariableKeys = useMemo(() => {
+    if (formData.templateSource !== "gosac_oficial") return [];
+    const fromTpl = listGosacOfficialVariableKeysFromTemplate(selectedTemplateObj);
     const fromState = Object.keys(templateVariables);
     if (fromTpl.length === 0) return fromState;
     const seen = new Set<string>();
@@ -855,23 +880,30 @@ export default function NovaCampanha() {
     if (
       (formData.templateSource === "otima_wpp" ||
         formData.templateSource === "noah_oficial" ||
-        formData.templateSource === "noah") &&
+        formData.templateSource === "noah" ||
+        formData.templateSource === "gosac_oficial") &&
       Object.keys(templateVariables).length > 0
     ) {
       console.log(
-        "[NovaCampanha] variables_map (payload → WP; NOAH/Ótima: { type: 'field'|'text', value: string } por chave):",
+        "[NovaCampanha] variables_map (payload → WP; formato { type: 'field'|'text', value: string } por chave):",
         JSON.stringify(templateVariables),
       );
     }
 
     if (formData.is_recurring) {
+      const techiaRecurringOnly =
+        formData.providers.length > 0 && formData.providers.every((p) => p === "TECH_IA");
       const recurringData = {
         nome_campanha: formData.name,
         table_name: formData.base,
         carteira: formData.carteira || '',
-        template_id: formData.templateSource === 'local' ? parseInt(formData.template) : null,
-        template_code: formData.templateCode || null,
-        template_source: formData.templateSource || 'local',
+        template_id: techiaRecurringOnly
+          ? 0
+          : formData.templateSource === "local"
+            ? parseInt(formData.template)
+            : null,
+        template_code: techiaRecurringOnly ? null : formData.templateCode || null,
+        template_source: techiaRecurringOnly ? "techia_discador" : formData.templateSource || "local",
         broker_code: formData.brokerCode || null,
         customer_code: formData.customerCode || null,
         noah_channel_id: formData.noahChannelId || null,
@@ -898,6 +930,7 @@ export default function NovaCampanha() {
       const campaignData = {
         table_name: formData.base,
         carteira: formData.carteira || '',
+        nome_campanha: formData.name.trim(),
         filters: formattedFilters,
         providers_config: providersConfig,
         template_id: formData.templateSource === 'local' ? parseInt(formData.template) : null,
@@ -933,6 +966,28 @@ export default function NovaCampanha() {
         midia_campanha: formData.midia_campanha || '',
       };
 
+      if (campaignData.template_source === "gosac_oficial") {
+        let gvcParsed: unknown = [];
+        try {
+          gvcParsed = JSON.parse(String(campaignData.gosac_variable_components || "[]"));
+        } catch {
+          gvcParsed = campaignData.gosac_variable_components;
+        }
+        console.log("Payload GOSAC:", {
+          nome_campanha: campaignData.nome_campanha,
+          template_source: campaignData.template_source,
+          template_code: campaignData.template_code,
+          gosac_template_id: campaignData.gosac_template_id,
+          gosac_connection_id: campaignData.gosac_connection_id,
+          gosac_variable_components: gvcParsed,
+          variables_map:
+            campaignData.variables_map && Object.keys(campaignData.variables_map).length > 0
+              ? campaignData.variables_map
+              : null,
+          providers_config: campaignData.providers_config,
+        });
+      }
+
       scheduleMutation.mutate(campaignData);
     }
   };
@@ -960,6 +1015,9 @@ export default function NovaCampanha() {
         return true;
       case 5: {
         if (salesforceOnly) return true;
+        const techiaOnlyProviders =
+          formData.providers.length > 0 && formData.providers.every((p) => p === "TECH_IA");
+        if (techiaOnlyProviders && formData.is_recurring) return true;
         if (!formData.template) return false;
         const isOtima = formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp';
         if (isOtima && !formData.brokerCode) return false;
@@ -1427,6 +1485,7 @@ export default function NovaCampanha() {
 
                                   const otimaWppMap = buildInitialVariableMappingFromOtimaWpp(selectedTemplate);
                                   const noahOfficialMap = buildInitialVariableMappingFromNoahOfficial(selectedTemplate);
+                                  const gosacOfficialMap = buildInitialVariableMappingFromGosacOfficial(selectedTemplate);
                                   const contentToParse =
                                     collectPlaceholdersSourceText(selectedTemplate ?? null) || '';
 
@@ -1434,6 +1493,8 @@ export default function NovaCampanha() {
                                     setTemplateVariables(otimaWppMap);
                                   } else if (noahOfficialMap) {
                                     setTemplateVariables(noahOfficialMap);
+                                  } else if (gosacOfficialMap) {
+                                    setTemplateVariables(gosacOfficialMap);
                                   } else {
                                     const detectedVars = extractVariables(contentToParse);
                                     const initMap: Record<string, VarMapping> = {};
@@ -1585,11 +1646,12 @@ export default function NovaCampanha() {
                 </div>
               )}
 
-              {/* Variable Mapper — Ótima RCS/WPP e NOAH Oficial (Cloud API {{1}}, {{2}}, …) */}
+              {/* Variable Mapper — Ótima RCS/WPP, NOAH Oficial e GOSAC Oficial (HSM / variableComponents) */}
               {(formData.templateSource === "otima_rcs" ||
                 formData.templateSource === "otima_wpp" ||
                 formData.templateSource === "noah_oficial" ||
-                formData.templateSource === "noah") && (
+                formData.templateSource === "noah" ||
+                formData.templateSource === "gosac_oficial") && (
                 <TemplateVariableMapper
                   variables={
                     formData.templateSource === "otima_wpp" && otimaWppMapperVariableKeys.length > 0
@@ -1597,7 +1659,9 @@ export default function NovaCampanha() {
                       : (formData.templateSource === "noah_oficial" || formData.templateSource === "noah") &&
                           noahOfficialMapperVariableKeys.length > 0
                         ? noahOfficialMapperVariableKeys
-                        : Object.keys(templateVariables)
+                        : formData.templateSource === "gosac_oficial" && gosacOfficialMapperVariableKeys.length > 0
+                          ? gosacOfficialMapperVariableKeys
+                          : Object.keys(templateVariables)
                   }
                   mapping={templateVariables}
                   onChange={setTemplateVariables}

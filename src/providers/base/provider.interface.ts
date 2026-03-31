@@ -11,9 +11,13 @@ export interface CampaignData {
   variables?: Record<string, string>;
   data_cadastro?: string;
   midia_campanha?: string;
+  /** Nome amigável da campanha (painel) — repassado ao GOSAC Oficial em `name` quando preenchido. */
+  nome_campanha?: string;
   /** ID da linha no WordPress (`envios_pendentes` etc.) — usado em `externalKey` NOAH quando disponível */
   id?: string | number;
   envio_id?: string | number;
+  /** ID do lote no WP — fallback de rastreio NOAH quando não houver contrato */
+  agendamento_id?: string | number;
 }
 
 export interface ProviderResponse {

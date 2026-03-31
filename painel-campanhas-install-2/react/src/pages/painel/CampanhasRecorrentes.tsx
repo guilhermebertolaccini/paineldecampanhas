@@ -49,6 +49,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { RecurringCampaignCreateForm } from "@/components/campaign/RecurringCampaignCreateForm";
 
 interface ParsedFilter {
   column?: string;
@@ -79,6 +80,8 @@ interface RecurringCampaign {
   throttling_type?: string;
   throttling_config?: string;
   include_baits?: number | string;
+  variables_map?: string;
+  template_meta?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +185,15 @@ const getFilters = (campaign: any): ParsedFilter[] => {
 
 const formatNumber = (n: number): string =>
   n.toLocaleString("pt-BR");
+
+function formatTemplateSummary(c: RecurringCampaign): string {
+  const src = c.template_source || "local";
+  if (src === "techia_discador") return "TECHIA Discador";
+  if (src === "salesforce") return "Salesforce / MC";
+  if (c.template_code) return c.template_code;
+  if (c.template_id) return String(c.template_id);
+  return "—";
+}
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -506,12 +518,13 @@ export default function CampanhasRecorrentes() {
       <Alert>
         <Info className="h-4 w-4" />
         <AlertDescription>
-          Para criar novos filtros salvos, vá em{" "}
-          <strong>Nova Campanha</strong> e marque a opção "Salvar Filtros"
-          ao final do formulário. As campanhas geradas terão um cooldown
-          automático de 24h por número.
+          Você pode criar filtros aqui (formulário abaixo) ou em{" "}
+          <strong>Nova Campanha</strong> com &quot;Salvar Filtros&quot;. As campanhas geradas seguem o fluxo de aprovação e
+          throttling configurado.
         </AlertDescription>
       </Alert>
+
+      <RecurringCampaignCreateForm />
 
       {isLoading ? (
         <div className="grid gap-4">
@@ -729,7 +742,7 @@ export default function CampanhasRecorrentes() {
                         <Hash className="h-3 w-3" /> Template
                       </p>
                       <p className="font-medium text-sm truncate">
-                        {campaign.template_code || campaign.template_id || "—"}
+                        {formatTemplateSummary(campaign as RecurringCampaign)}
                         {campaign.template_source && campaign.template_source !== "local" && (
                           <span className="text-xs text-muted-foreground ml-1">
                             ({campaign.template_source})

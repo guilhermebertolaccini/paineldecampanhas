@@ -475,8 +475,14 @@ class Painel_Campanhas
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN carteira_id bigint(20) DEFAULT NULL");
         }
 
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'nome_campanha'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN nome_campanha varchar(255) NULL DEFAULT NULL AFTER agendamento_id");
+        }
+
         $query = $wpdb->prepare("
             SELECT 
+                id,
+                agendamento_id,
                 CONCAT('55', telefone) as telefone,
                 nome,
                 COALESCE(id_carteira, '') as id_carteira,
@@ -486,7 +492,8 @@ class Painel_Campanhas
                 COALESCE(cpf_cnpj, '') as cpf_cnpj,
                 data_cadastro as data_cadastro,
                 mensagem,
-                COALESCE(midia_campanha, '') as midia_campanha
+                COALESCE(midia_campanha, '') as midia_campanha,
+                COALESCE(nome_campanha, '') as nome_campanha
             FROM {$table}
             WHERE agendamento_id = %s
             AND status IN ('pendente_aprovacao', 'pendente')
@@ -522,6 +529,8 @@ class Painel_Campanhas
             }
 
             $formatted_data[] = [
+                'id' => isset($row['id']) ? (string) $row['id'] : '',
+                'agendamento_id' => isset($row['agendamento_id']) ? (string) $row['agendamento_id'] : '',
                 'telefone' => (string) $row['telefone'],
                 'nome' => (string) $row['nome'],
                 'id_carteira' => (string) $id_carteira,
@@ -532,6 +541,7 @@ class Painel_Campanhas
                 'mensagem' => (string) $row['mensagem'],
                 'data_cadastro' => (string) ($row['data_cadastro'] ?: date('Y-m-d H:i:s')),
                 'midia_campanha' => (string) ($row['midia_campanha'] ?? ''),
+                'nome_campanha' => (string) ($row['nome_campanha'] ?? ''),
             ];
         }
 
@@ -2629,6 +2639,136 @@ class Painel_Campanhas
         return $out;
     }
 
+    /**
+     * Monta a lista de variáveis por contato para GOSAC Oficial (HSM), alinhada a variableComponents da API.
+     * Suporta variables_map no formato do React: { "Var1": { "type":"field", "value":"NOME" }, ... }.
+     *
+     * @param array $variable_components Itens com componentId + variable (ex.: "{{1}}" ou "Var1")
+     * @return array<int, array{componentId:int, variable:string, value:string}>
+     */
+    private function resolve_gosac_contact_variables_for_row(array $record, $variables_map, $variable_components)
+    {
+        $out = [];
+        if (!is_array($variables_map)) {
+            $variables_map = [];
+        }
+        $vcs = is_array($variable_components) ? $variable_components : [];
+        foreach ($vcs as $vc) {
+            if (!is_array($vc)) {
+                continue;
+            }
+            $raw_var = isset($vc['variable']) ? (string) $vc['variable'] : '';
+            $comp_id = 0;
+            if (isset($vc['componentId'])) {
+                $comp_id = intval($vc['componentId']);
+            } elseif (isset($vc['component_id'])) {
+                $comp_id = intval($vc['component_id']);
+            }
+            $map_key = $raw_var;
+            if ($raw_var !== '' && preg_match('/^\{\{(.+)\}\}$/u', trim($raw_var), $mm)) {
+                $map_key = trim($mm[1]);
+            }
+            $field = null;
+            if ($raw_var !== '' && array_key_exists($raw_var, $variables_map)) {
+                $field = $variables_map[$raw_var];
+            } elseif ($map_key !== '' && array_key_exists($map_key, $variables_map)) {
+                $field = $variables_map[$map_key];
+            } else {
+                foreach ($variables_map as $vk => $vv) {
+                    if (!is_string($vk)) {
+                        continue;
+                    }
+                    if (strcasecmp($vk, $raw_var) === 0 || strcasecmp($vk, $map_key) === 0) {
+                        $field = $vv;
+                        break;
+                    }
+                }
+            }
+            $val = '';
+            if (is_array($field) && isset($field['type'], $field['value'])) {
+                if ($field['type'] === 'field') {
+                    $val = (string) $this->get_cpf_record_field_ci($record, (string) $field['value']);
+                } else {
+                    $val = (string) ($field['value'] ?? '');
+                }
+            } elseif (is_string($field) && $field !== '') {
+                $val = (string) $this->get_cpf_record_field_ci($record, $field);
+            }
+            $out[] = [
+                'componentId' => $comp_id,
+                'variable' => $raw_var !== '' ? $raw_var : $map_key,
+                'value' => $val,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Variáveis TECHIA a partir das colunas padrão da base (recorrência / sem variables_map no CSV).
+     */
+    private function build_default_techia_variables_from_base_record(array $record)
+    {
+        $ci = function ($key) use ($record) {
+            return $this->get_cpf_record_field_ci($record, $key);
+        };
+        $doc_raw = (string) ($ci('cpf_cnpj') ?: $ci('CPF_CNPJ') ?: $ci('documento') ?: $ci('CPF'));
+        $doc = preg_replace('/\D/', '', $doc_raw);
+
+        return [
+            'documento' => $doc,
+            'nome' => (string) ($ci('nome') ?: $ci('NOME')),
+            'contrato' => (string) ($ci('idcob_contrato') ?: $ci('IDCOB_CONTRATO') ?: $ci('contrato') ?: $ci('CONTRATO')),
+            'valor' => (string) ($ci('valor') ?: $ci('VALOR')),
+            'atraso' => (string) ($ci('atraso') ?: $ci('ATRASO') ?: $ci('dias_atraso') ?: $ci('DIAS_ATRASO')),
+            'COD_DEPARA' => (string) ($ci('COD_DEPARA') ?: $ci('cod_depara')),
+            'campanha_origem' => (string) ($ci('campanha_origem') ?: $ci('CAMPANHA_ORIGEM') ?: $ci('campanha')),
+        ];
+    }
+
+    /**
+     * Colunas extras no SELECT da recorrência (variables_map + TECHIA).
+     */
+    private function recurring_resolve_extra_select_columns($table_name, array $variables_map, $template_source)
+    {
+        global $wpdb;
+        if (empty($table_name)) {
+            return [];
+        }
+        $raw_cols = $wpdb->get_col("SHOW COLUMNS FROM `{$table_name}`");
+        if (empty($raw_cols)) {
+            return [];
+        }
+        $upper_to_actual = [];
+        foreach ($raw_cols as $cn) {
+            $upper_to_actual[strtoupper(str_replace('`', '', $cn))] = str_replace('`', '', $cn);
+        }
+        $want = [];
+        if (!empty($variables_map) && is_array($variables_map)) {
+            foreach ($variables_map as $field) {
+                if (is_array($field) && isset($field['type'], $field['value'])
+                    && $field['type'] === 'field' && is_string($field['value']) && $field['value'] !== '') {
+                    $want[] = strtoupper($field['value']);
+                } elseif (is_string($field) && $field !== '') {
+                    $want[] = strtoupper($field);
+                }
+            }
+        }
+        if ($template_source === 'techia_discador') {
+            foreach (['VALOR', 'ATRASO', 'DIAS_ATRASO', 'COD_DEPARA', 'CAMPANHA_ORIGEM', 'SALDO'] as $d) {
+                $want[] = $d;
+            }
+        }
+        $out = [];
+        foreach (array_unique($want) as $U) {
+            if (isset($upper_to_actual[$U])) {
+                $out[] = $upper_to_actual[$U];
+            }
+        }
+
+        return $out;
+    }
+
     private function get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent = 0)
     {
         error_log('🔵 [get_cpf_records] Efetuando busca na tabela: ' . $table_name . ' | Match Field: ' . $match_field . ' | Values count: ' . count($values));
@@ -3054,13 +3194,26 @@ class Painel_Campanhas
                         $gosac_template_id = intval($_POST['gosac_template_id'] ?? 0);
                         $gosac_connection_id = intval($_POST['gosac_connection_id'] ?? 0);
                         $gosac_variable_components = isset($_POST['gosac_variable_components']) ? json_decode(stripslashes($_POST['gosac_variable_components']), true) : [];
+                        $gosac_vc_list = is_array($gosac_variable_components) ? $gosac_variable_components : [];
+                        $contact_vars = $this->resolve_gosac_contact_variables_for_row($record, $variables_map, $gosac_vc_list);
+                        $gosac_body_parameters = [];
+                        foreach ($contact_vars as $cv) {
+                            $gosac_body_parameters[] = ['type' => 'text', 'text' => (string) ($cv['value'] ?? '')];
+                        }
+                        $gosac_components = [];
+                        if (!empty($gosac_body_parameters)) {
+                            $gosac_components[] = ['type' => 'body', 'parameters' => $gosac_body_parameters];
+                        }
                         $mensagem_para_armazenar = json_encode([
                             'template_code' => $template_code,
                             'template_source' => 'gosac_oficial',
+                            'nome_campanha' => $nome_campanha_row,
                             'id' => $gosac_template_id,
                             'connectionId' => $gosac_connection_id,
                             'variables_map' => $variables_map,
-                            'variableComponents' => is_array($gosac_variable_components) ? $gosac_variable_components : [],
+                            'variableComponents' => $gosac_vc_list,
+                            'contact_variables' => $contact_vars,
+                            'components' => $gosac_components,
                             'original_message' => $mensagem_final,
                         ]);
                     } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
@@ -3348,6 +3501,40 @@ class Painel_Campanhas
 
         $throttling_type = sanitize_text_field($_POST['throttling_type'] ?? 'none');
         $throttling_config_json = stripslashes($_POST['throttling_config'] ?? '{}');
+        $variables_map_stored = null;
+        if (isset($_POST['variables_map'])) {
+            $variables_map_json = stripslashes((string) ($_POST['variables_map'] ?? '{}'));
+            $variables_map_dec = json_decode($variables_map_json, true);
+            $variables_map_stored = (is_array($variables_map_dec) && count($variables_map_dec) > 0)
+                ? wp_json_encode($variables_map_dec, JSON_UNESCAPED_UNICODE)
+                : null;
+        }
+
+        $noah_channel_id = intval($_POST['noah_channel_id'] ?? 0);
+        $noah_template_id = intval($_POST['noah_template_id'] ?? 0);
+        $noah_language = sanitize_text_field($_POST['noah_language'] ?? 'pt_BR');
+        $gosac_template_id = intval($_POST['gosac_template_id'] ?? 0);
+        $gosac_connection_id = intval($_POST['gosac_connection_id'] ?? 0);
+        $gosac_vc_raw = isset($_POST['gosac_variable_components']) ? json_decode(stripslashes($_POST['gosac_variable_components']), true) : [];
+        $gosac_variable_components = is_array($gosac_vc_raw) ? $gosac_vc_raw : [];
+
+        $template_meta_arr = [];
+        if ($template_source === 'noah_oficial' || $template_source === 'noah') {
+            $template_meta_arr['noah_channel_id'] = $noah_channel_id;
+            $template_meta_arr['noah_template_id'] = $noah_template_id;
+            $template_meta_arr['noah_language'] = $noah_language;
+        }
+        if ($template_source === 'gosac_oficial') {
+            $template_meta_arr['gosac_template_id'] = $gosac_template_id;
+            $template_meta_arr['gosac_connection_id'] = $gosac_connection_id;
+            $template_meta_arr['gosac_variable_components'] = $gosac_variable_components;
+        }
+        if ($template_source === 'robbu_oficial') {
+            $template_meta_arr['robbu_channel'] = intval($_POST['robbu_channel'] ?? 3);
+        }
+        $template_meta_json = !empty($template_meta_arr)
+            ? wp_json_encode($template_meta_arr, JSON_UNESCAPED_UNICODE)
+            : null;
 
         // Validation based on source
         if (empty($nome_campanha) || empty($table_name)) {
@@ -3359,8 +3546,12 @@ class Painel_Campanhas
 
         if ($only_sf_recurring) {
             // Sem template local obrigatório — conteúdo no Salesforce/MC
+        } elseif ($template_source === 'techia_discador') {
+            // Discador TECHIA: sem post de template local nem template_code
         } elseif ($template_source === 'local' && $template_id <= 0) {
             wp_send_json_error('Template_id inválido para template local.');
+        } elseif (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'noah', 'robbu_oficial'], true) && $template_code === '') {
+            wp_send_json_error('Informe o template (código/nome) para este fornecedor.');
         }
 
         // Cria tabela se não existir
@@ -3408,6 +3599,14 @@ class Painel_Campanhas
         if (empty($wpdb->get_results("SHOW COLUMNS FROM `$table` LIKE 'carteira'"))) {
             $wpdb->query("ALTER TABLE `$table` ADD COLUMN carteira varchar(50) DEFAULT '' AFTER customer_code");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM `$table` LIKE 'variables_map'"))) {
+            $wpdb->query("ALTER TABLE `$table` ADD COLUMN variables_map longtext NULL AFTER carteira, ADD COLUMN template_meta longtext NULL AFTER variables_map");
+        }
+
+        if ($template_source === 'techia_discador') {
+            $template_id = 0;
+            $template_code = '';
+        }
 
         // Adiciona exclusão ao config; bait_ids vêm no JSON do front (incl. edição em Filtros Salvos)
         $config_array = json_decode($providers_config_json, true);
@@ -3424,6 +3623,21 @@ class Painel_Campanhas
         $recurring_id = intval($_POST['id'] ?? 0);
         $current_user_id = get_current_user_id();
 
+        $existing_row = null;
+        if ($recurring_id > 0) {
+            $existing_row = $wpdb->get_row($wpdb->prepare(
+                "SELECT variables_map, template_meta FROM {$table} WHERE id = %d AND criado_por = %d",
+                $recurring_id,
+                $current_user_id
+            ), ARRAY_A);
+        }
+        if ($recurring_id > 0 && $existing_row && !isset($_POST['variables_map'])) {
+            $variables_map_stored = !empty($existing_row['variables_map']) ? $existing_row['variables_map'] : null;
+        }
+        if ($recurring_id > 0 && $existing_row && empty($template_meta_arr) && !empty($existing_row['template_meta'])) {
+            $template_meta_json = $existing_row['template_meta'];
+        }
+
         $row_data = [
             'nome_campanha' => $nome_campanha,
             'tabela_origem' => $table_name,
@@ -3435,12 +3649,14 @@ class Painel_Campanhas
             'broker_code' => $broker_code,
             'customer_code' => $customer_code,
             'carteira' => $carteira,
+            'variables_map' => $variables_map_stored,
+            'template_meta' => $template_meta_json,
             'record_limit' => $record_limit,
             'throttling_type' => $throttling_type,
             'throttling_config' => $throttling_config_json,
             'include_baits' => $include_baits,
         ];
-        $row_formats = ['%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%d'];
+        $row_formats = ['%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%d'];
 
         if ($recurring_id > 0) {
             $owner_ok = $wpdb->get_var($wpdb->prepare(
@@ -3584,6 +3800,7 @@ class Painel_Campanhas
         $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
         $midia_campanha = esc_url_raw($_POST['midia_campanha'] ?? '');
         $carteira = sanitize_text_field($_POST['carteira'] ?? '');
+        $nome_campanha_camp = sanitize_text_field(wp_unslash($_POST['nome_campanha'] ?? ''));
 
         // id_carteira da carteira selecionada (herança para todos os registros da fila)
         $campaign_id_carteira = '';
@@ -3600,7 +3817,8 @@ class Painel_Campanhas
             'providers_config' => $providers_config,
             'filters_count' => count($filters ?? []),
             'midia_campanha' => $midia_campanha,
-            'exclude_recent_phones' => $exclude_recent_phones
+            'exclude_recent_phones' => $exclude_recent_phones,
+            'nome_campanha' => $nome_campanha_camp,
         ]));
 
         if (empty($table_name) || empty($providers_config)) {
@@ -3935,13 +4153,25 @@ class Painel_Campanhas
                     $gosac_template_id = intval($template_info['template_id'] ?? 0);
                     $gosac_connection_id = intval($template_info['connection_id'] ?? 0);
                     $variable_components = $template_info['variable_components'] ?? [];
+                    $contact_vars = $this->resolve_gosac_contact_variables_for_row($record, $variables_map, $variable_components);
+                    $gosac_body_parameters = [];
+                    foreach ($contact_vars as $cv) {
+                        $gosac_body_parameters[] = ['type' => 'text', 'text' => (string) ($cv['value'] ?? '')];
+                    }
+                    $gosac_components = [];
+                    if (!empty($gosac_body_parameters)) {
+                        $gosac_components[] = ['type' => 'body', 'parameters' => $gosac_body_parameters];
+                    }
                     $mensagem_para_armazenar = json_encode([
                         'template_source' => 'gosac_oficial',
                         'template_code' => $template_code,
+                        'nome_campanha' => $nome_campanha_camp,
                         'id' => $gosac_template_id,
                         'connectionId' => $gosac_connection_id,
                         'variables_map' => $variables_map,
                         'variableComponents' => $variable_components,
+                        'contact_variables' => $contact_vars,
+                        'components' => $gosac_components,
                         'original_message' => $mensagem_final,
                     ]);
                 } elseif ($only_salesforce) {
@@ -3966,6 +4196,7 @@ class Painel_Campanhas
                     'midia_campanha' => $midia_campanha,
                     'fornecedor' => $provider,
                     'agendamento_id' => $agendamento_id,
+                    'nome_campanha' => $nome_campanha_camp !== '' ? $nome_campanha_camp : null,
                     'status' => 'pendente_aprovacao',
                     'current_user_id' => $current_user_id,
                     'valido' => 1,
@@ -5397,6 +5628,9 @@ class Painel_Campanhas
         if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'carteira_id'"))) {
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN carteira_id bigint(20) DEFAULT NULL");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'nome_campanha'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN nome_campanha varchar(255) NULL DEFAULT NULL AFTER agendamento_id");
+        }
 
         // Prepara valores para INSERT múltiplo
         $values = [];
@@ -5406,9 +5640,13 @@ class Painel_Campanhas
             $idcob_contrato = isset($data['idcob_contrato']) ? $data['idcob_contrato'] : 0;
             $midia_campanha = isset($data['midia_campanha']) ? $data['midia_campanha'] : '';
             $carteira_id = isset($data['carteira_id']) && $data['carteira_id'] !== null && $data['carteira_id'] !== '' ? intval($data['carteira_id']) : 0;
+            $nome_campanha_ins = '';
+            if (isset($data['nome_campanha']) && $data['nome_campanha'] !== null && $data['nome_campanha'] !== '') {
+                $nome_campanha_ins = (string) $data['nome_campanha'];
+            }
 
             $values[] = $wpdb->prepare(
-                "(%s, %s, %d, %s, %d, %d, %s, %s, %s, %s, %s, %s, %d, %d, %s)",
+                "(%s, %s, %d, %s, %d, %d, %s, %s, %s, %s, %s, %s, %s, %d, %d, %s)",
                 $data['telefone'],
                 $data['nome'],
                 $data['idgis_ambiente'],
@@ -5420,6 +5658,7 @@ class Painel_Campanhas
                 $midia_campanha,
                 $data['fornecedor'],
                 $data['agendamento_id'],
+                $nome_campanha_ins,
                 $data['status'],
                 $data['current_user_id'],
                 $data['valido'],
@@ -5428,7 +5667,7 @@ class Painel_Campanhas
         }
 
         $sql = "INSERT INTO {$table} 
-                (telefone, nome, idgis_ambiente, id_carteira, carteira_id, idcob_contrato, cpf_cnpj, mensagem, midia_campanha, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
+                (telefone, nome, idgis_ambiente, id_carteira, carteira_id, idcob_contrato, cpf_cnpj, mensagem, midia_campanha, fornecedor, agendamento_id, nome_campanha, status, current_user_id, valido, data_cadastro) 
                 VALUES " . implode(', ', $values);
 
         error_log('🔵 [bulk_insert] Inserindo ' . count($data_array) . ' registros na tabela ' . $table);
@@ -5744,7 +5983,7 @@ class Painel_Campanhas
      * 🚀 SELECT DIRETO: Busca registros filtrados sem overhead do Campaign Manager
      * @param bool $exclude_recent_phones Se true, faz LEFT JOIN para excluir telefones com envios recentes
      */
-    private function get_filtered_records_optimized($table_name, $filters, $limit = 0, $exclude_recent_phones = false, $exclude_recent_hours = 48)
+    private function get_filtered_records_optimized($table_name, $filters, $limit = 0, $exclude_recent_phones = false, $exclude_recent_hours = 48, array $extra_select_columns = [])
     {
         global $wpdb;
 
@@ -5754,39 +5993,20 @@ class Painel_Campanhas
 
         $envios_table = $wpdb->prefix . 'envios_pendentes';
 
-        // Constrói WHERE direto
-        $where_clauses = [];
-        if (!empty($filters) && is_array($filters)) {
-            foreach ($filters as $column => $filter_data) {
-                if (!is_array($filter_data) || empty($filter_data['operator']) || !isset($filter_data['value']) || $filter_data['value'] === '') {
-                    continue;
-                }
-
-                $sanitized_column = esc_sql(str_replace('`', '', $column));
-                $operator = strtoupper($filter_data['operator']);
-                $value = $filter_data['value'];
-
-                if ($operator === 'IN' && is_array($value) && !empty($value)) {
-                    $placeholders = implode(', ', array_fill(0, count($value), '%s'));
-                    $where_clauses[] = $wpdb->prepare(
-                        "t.`{$sanitized_column}` IN ({$placeholders})",
-                        $value
-                    );
-                } elseif (in_array($operator, ['=', '!=', '>', '<', '>=', '<='])) {
-                    $where_clauses[] = $wpdb->prepare(
-                        "t.`{$sanitized_column}` {$operator} %s",
-                        $value
-                    );
-                }
-            }
-        }
-
-        $where_sql = !empty($where_clauses) ? ' WHERE ' . implode(' AND ', $where_clauses) : ' WHERE 1=1';
+        // Mesmo parser de filtros que Nova Campanha / PC_Campaign_Filters (array de {column, operator, value})
+        $filter_where = PC_Campaign_Filters::build_where_clause($filters);
+        $filter_where = preg_replace('/`([A-Za-z0-9_]+)`/', 't.`$1`', $filter_where);
 
         $limit_sql = $limit > 0 ? $wpdb->prepare(" LIMIT %d", $limit) : '';
 
         // Dinamicamente monta o SELECT baseado nas colunas existentes para evitar erros de UNKNOWN COLUMN
-        $columns = array_map('strtoupper', (array) $wpdb->get_col("SHOW COLUMNS FROM `{$table_name}`"));
+        $raw_cols = (array) $wpdb->get_col("SHOW COLUMNS FROM `{$table_name}`");
+        $columns = array_map('strtoupper', $raw_cols);
+        $upper_to_actual = [];
+        foreach ($raw_cols as $cn) {
+            $act = str_replace('`', '', $cn);
+            $upper_to_actual[strtoupper($act)] = $act;
+        }
 
         $select_fields = [];
 
@@ -5837,7 +6057,21 @@ class Painel_Campanhas
             $select_fields[] = 'NULL as cpf_cnpj';
         }
 
+        foreach ($extra_select_columns as $col_req) {
+            if (!is_string($col_req) || $col_req === '') {
+                continue;
+            }
+            $U = strtoupper(str_replace('`', '', $col_req));
+            if (!isset($upper_to_actual[$U])) {
+                continue;
+            }
+            $act = $upper_to_actual[$U];
+            $safe = esc_sql($act);
+            $select_fields[] = "t.`{$safe}` AS `{$safe}`";
+        }
+
         $select_clause = implode(', ', $select_fields);
+        $where_sql = $filter_where;
 
         // 🚀 OTIMIZAÇÃO: LEFT JOIN para excluir telefones recentes diretamente na query
         if ($exclude_recent_phones) {
@@ -5928,6 +6162,23 @@ class Painel_Campanhas
 
             $exclude_recent_hours = isset($providers_config['exclude_recent_hours']) ? intval($providers_config['exclude_recent_hours']) : 48;
 
+            $template_source_row = $campaign['template_source'] ?? 'local';
+            $variables_map = [];
+            if (!empty($campaign['variables_map'])) {
+                $vd = json_decode($campaign['variables_map'], true);
+                $variables_map = is_array($vd) ? $vd : [];
+            }
+            $template_meta = [];
+            if (!empty($campaign['template_meta'])) {
+                $tm = json_decode($campaign['template_meta'], true);
+                $template_meta = is_array($tm) ? $tm : [];
+            }
+            $extra_select_cols = $this->recurring_resolve_extra_select_columns(
+                $campaign['tabela_origem'] ?? '',
+                $variables_map,
+                $template_source_row
+            );
+
             // 2. 🚀 OTIMIZADO: Busca registros com SELECT direto + LEFT JOIN para excluir telefones recentes
             error_log('🔵 Buscando registros filtrados (SELECT direto com exclusão de telefones recentes)...');
             $step_start = microtime(true);
@@ -5936,7 +6187,8 @@ class Painel_Campanhas
                 $filters,
                 $campaign['record_limit'],
                 $exclude_recent_phones, // Passa flag para fazer LEFT JOIN
-                $exclude_recent_hours
+                $exclude_recent_hours,
+                $extra_select_cols
             );
             error_log('🔵 Registros encontrados: ' . count($records) . ' em ' . round(microtime(true) - $step_start, 2) . 's');
 
@@ -6001,20 +6253,50 @@ class Painel_Campanhas
             // 4. 🚀 OTIMIZAÇÃO: Exclusão de telefones recentes já feita no LEFT JOIN da query
             // Não precisa mais buscar telefones separadamente - já vem filtrado!
 
-            // 5. Busca template
-            $template_source_row = $campaign['template_source'] ?? 'local';
+            // 5. Busca template (local WP, externo só com código, TECHIA sem post, SF só nota)
             $only_sf_exec = $this->is_salesforce_only_providers($providers_config);
             if ($only_sf_exec) {
                 $mensagem_template = 'Salesforce Marketing Cloud: conteúdo definido na automação.';
-            } else {
-                $template_post = get_post($campaign['template_id']);
-                if (!$template_post) {
+            } elseif ($template_source_row === 'techia_discador') {
+                $mensagem_template = '';
+            } elseif (intval($campaign['template_id'] ?? 0) > 0) {
+                $template_post = get_post(intval($campaign['template_id']));
+                if (!$template_post || $template_post->post_type !== 'message_template') {
                     return [
                         'success' => false,
                         'message' => 'Template de mensagem não encontrado'
                     ];
                 }
                 $mensagem_template = $template_post->post_content;
+            } elseif (!empty($campaign['template_code'])) {
+                $mensagem_template = 'Template externo: ' . sanitize_text_field($campaign['template_code']);
+            } else {
+                return [
+                    'success' => false,
+                    'message' => 'Configuração de template inválida para execução do filtro salvo.'
+                ];
+            }
+
+            $template_code_top = $campaign['template_code'] ?? '';
+            $template_info_recurring = [
+                'template_code' => $template_code_top,
+                'source' => $template_source_row,
+            ];
+            if ($template_source_row === 'noah_oficial' || $template_source_row === 'noah') {
+                $template_info_recurring['channel_id'] = intval($template_meta['noah_channel_id'] ?? 0);
+                $template_info_recurring['template_id'] = intval($template_meta['noah_template_id'] ?? 0);
+                $template_info_recurring['template_name'] = $template_code_top;
+                $template_info_recurring['language'] = $template_meta['noah_language'] ?? 'pt_BR';
+            }
+            if ($template_source_row === 'gosac_oficial') {
+                $template_info_recurring['template_id'] = intval($template_meta['gosac_template_id'] ?? 0);
+                $template_info_recurring['connection_id'] = intval($template_meta['gosac_connection_id'] ?? 0);
+                $template_info_recurring['variable_components'] = isset($template_meta['gosac_variable_components']) && is_array($template_meta['gosac_variable_components'])
+                    ? $template_meta['gosac_variable_components'] : [];
+            }
+            if ($template_source_row === 'robbu_oficial') {
+                $template_info_recurring['channel'] = intval($template_meta['robbu_channel'] ?? 3);
+                $template_info_recurring['template_name'] = $template_code_top;
             }
 
             // 6. Distribui registros entre provedores
@@ -6044,7 +6326,15 @@ class Painel_Campanhas
             foreach ($distribution as $provider => $provider_records) {
                 error_log("🔵 Processando provedor {$provider}: " . count($provider_records) . " registros");
                 $prefix = strtoupper(substr($provider, 0, 1));
-                if ($provider === 'CDA_RCS') {
+                if ($provider === 'OTIMA_WPP') {
+                    $prefix = 'W';
+                } elseif ($provider === 'GOSAC_OFICIAL') {
+                    $prefix = 'F';
+                } elseif ($provider === 'NOAH_OFICIAL') {
+                    $prefix = 'H';
+                } elseif ($provider === 'ROBBU_OFICIAL') {
+                    $prefix = 'B';
+                } elseif ($provider === 'CDA_RCS') {
                     $prefix = 'R';
                 } elseif ($this->is_techia_provider($provider)) {
                     $prefix = 'T';
@@ -6081,18 +6371,135 @@ class Painel_Campanhas
                     $id_carteira = $this->get_id_carteira_from_table_idgis($campaign['tabela_origem'], $idgis_mapeado) ?: $recurring_campaign_id_carteira;
 
                     // Prepara mensagem
-                    $mensagem_final = $this->replace_placeholders($mensagem_template, $record);
+                    $mensagem_final = ($template_source === 'techia_discador')
+                        ? ''
+                        : $this->replace_placeholders($mensagem_template, $record);
 
-                    // Para templates da Ótima, armazena template_code no campo mensagem
                     $mensagem_para_armazenar = $mensagem_final;
                     if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code)) {
-                        // broker_code = da campanha; customer_code = id_carteira do contato
                         $mensagem_para_armazenar = json_encode([
                             'template_code' => $template_code,
                             'template_source' => $template_source,
                             'broker_code' => $broker_code,
                             'customer_code' => (string) $id_carteira,
-                            'original_message' => $mensagem_final
+                            'original_message' => $mensagem_final,
+                            'variables_map' => !empty($variables_map) ? $variables_map : null,
+                        ]);
+                    } elseif (($template_source === 'noah_oficial' || $template_source === 'noah') && !empty($template_code)) {
+                        $channel_id = intval($template_info_recurring['channel_id'] ?? 0);
+                        $noah_template_id = intval($template_info_recurring['template_id'] ?? 0);
+                        $noah_template_name = $template_info_recurring['template_name'] ?? $template_code;
+                        $noah_language = $template_info_recurring['language'] ?? 'pt_BR';
+                        $noah_components = [];
+                        if (!empty($variables_map) && is_array($variables_map)) {
+                            $body_params = [];
+                            $var_keys = array_keys($variables_map);
+                            $all_numeric_keys = count($var_keys) > 0;
+                            foreach ($var_keys as $vk) {
+                                if (!is_string($vk) && !is_int($vk)) {
+                                    $all_numeric_keys = false;
+                                    break;
+                                }
+                                $sk = (string) $vk;
+                                if (!preg_match('/^\d+$/', $sk)) {
+                                    $all_numeric_keys = false;
+                                    break;
+                                }
+                            }
+                            if ($all_numeric_keys) {
+                                usort($var_keys, function ($a, $b) {
+                                    return intval($a) <=> intval($b);
+                                });
+                            }
+                            foreach ($var_keys as $var_name) {
+                                $field = $variables_map[$var_name];
+                                $val = '';
+                                if (is_array($field) && isset($field['type'], $field['value'])) {
+                                    if ($field['type'] === 'field') {
+                                        $col = $field['value'];
+                                        $val = $record[$col] ?? $record[strtoupper((string) $col)] ?? '';
+                                    } else {
+                                        $val = (string) ($field['value'] ?? '');
+                                    }
+                                } elseif (is_string($field) && $field !== '') {
+                                    $val = $record[$field] ?? $record[strtoupper($field)] ?? '';
+                                }
+                                $body_params[] = ['type' => 'text', 'text' => (string) $val];
+                            }
+                            if (!empty($body_params)) {
+                                $noah_components[] = ['type' => 'body', 'parameters' => $body_params];
+                            }
+                        }
+                        $mensagem_para_armazenar = json_encode([
+                            'channelId' => $channel_id,
+                            'templateId' => $noah_template_id,
+                            'templateName' => $noah_template_name,
+                            'language' => $noah_language,
+                            'components' => $noah_components,
+                        ]);
+                    } elseif ($template_source === 'robbu_oficial' && !empty($template_code)) {
+                        $robbu_params = [];
+                        if (!empty($variables_map) && is_array($variables_map)) {
+                            foreach ($variables_map as $param_name => $field) {
+                                $val = '';
+                                if (is_array($field) && isset($field['type'], $field['value'])) {
+                                    if ($field['type'] === 'field') {
+                                        $col = $field['value'];
+                                        $val = $record[$col] ?? $record[strtoupper((string) $col)] ?? '';
+                                    } else {
+                                        $val = (string) ($field['value'] ?? '');
+                                    }
+                                } elseif (is_string($field) && $field !== '') {
+                                    $val = $record[$field] ?? $record[strtoupper($field)] ?? '';
+                                }
+                                $robbu_params[] = [
+                                    'parameterName' => (string) $param_name,
+                                    'parameterValue' => (string) $val,
+                                ];
+                            }
+                        }
+                        $mensagem_para_armazenar = json_encode([
+                            'template_source' => 'robbu_oficial',
+                            'templateName' => $template_code,
+                            'channel' => intval($template_info_recurring['channel'] ?? 3),
+                            'templateParameters' => $robbu_params,
+                        ]);
+                    } elseif ($template_source === 'gosac_oficial' && !empty($template_code)) {
+                        $gosac_template_id = intval($template_info_recurring['template_id'] ?? 0);
+                        $gosac_connection_id = intval($template_info_recurring['connection_id'] ?? 0);
+                        $variable_components = $template_info_recurring['variable_components'] ?? [];
+                        $nome_rec = sanitize_text_field($campaign['nome_campanha'] ?? '');
+                        $contact_vars = $this->resolve_gosac_contact_variables_for_row($record, $variables_map, $variable_components);
+                        $gosac_body_parameters = [];
+                        foreach ($contact_vars as $cv) {
+                            $gosac_body_parameters[] = ['type' => 'text', 'text' => (string) ($cv['value'] ?? '')];
+                        }
+                        $gosac_components = [];
+                        if (!empty($gosac_body_parameters)) {
+                            $gosac_components[] = ['type' => 'body', 'parameters' => $gosac_body_parameters];
+                        }
+                        $mensagem_para_armazenar = json_encode([
+                            'template_source' => 'gosac_oficial',
+                            'template_code' => $template_code,
+                            'nome_campanha' => $nome_rec,
+                            'id' => $gosac_template_id,
+                            'connectionId' => $gosac_connection_id,
+                            'variables_map' => $variables_map,
+                            'variableComponents' => $variable_components,
+                            'contact_variables' => $contact_vars,
+                            'components' => $gosac_components,
+                            'original_message' => $mensagem_final,
+                        ]);
+                    } elseif ($template_source === 'techia_discador') {
+                        $techia_vars = (!empty($variables_map))
+                            ? $this->resolve_techia_variables_for_row($record, $variables_map)
+                            : $this->build_default_techia_variables_from_base_record($record);
+                        $mensagem_para_armazenar = json_encode([
+                            'template_source' => 'techia_discador',
+                            'template_code' => '',
+                            'variables_map' => !empty($variables_map) ? $variables_map : null,
+                            'variables' => $techia_vars,
+                            'original_message' => $mensagem_final,
                         ]);
                     } elseif ($only_sf_exec) {
                         $mensagem_para_armazenar = json_encode([
@@ -6115,6 +6522,7 @@ class Painel_Campanhas
                         'mensagem' => $mensagem_para_armazenar,
                         'fornecedor' => $provider,
                         'agendamento_id' => $agendamento_id,
+                        'nome_campanha' => !empty($campaign['nome_campanha']) ? sanitize_text_field($campaign['nome_campanha']) : null,
                         'status' => 'pendente_aprovacao',
                         'current_user_id' => $current_user_id,
                         'valido' => 1,
@@ -6278,15 +6686,22 @@ class Painel_Campanhas
         if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'idcob_contrato'"))) {
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN idcob_contrato bigint(20) DEFAULT NULL");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'nome_campanha'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN nome_campanha varchar(255) NULL DEFAULT NULL AFTER agendamento_id");
+        }
 
         $values = [];
 
         foreach ($data_array as $data) {
             $id_carteira = isset($data['id_carteira']) ? $data['id_carteira'] : '';
             $idcob_contrato = isset($data['idcob_contrato']) ? $data['idcob_contrato'] : 0;
+            $nome_campanha_ins = '';
+            if (isset($data['nome_campanha']) && $data['nome_campanha'] !== null && $data['nome_campanha'] !== '') {
+                $nome_campanha_ins = (string) $data['nome_campanha'];
+            }
 
             $values[] = $wpdb->prepare(
-                "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %d, %d, %s)",
+                "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %s, %s, %d, %d, %s)",
                 $data['telefone'],
                 $data['nome'],
                 $data['idgis_ambiente'],
@@ -6296,6 +6711,7 @@ class Painel_Campanhas
                 $data['mensagem'],
                 $data['fornecedor'],
                 $data['agendamento_id'],
+                $nome_campanha_ins,
                 $data['status'],
                 $data['current_user_id'],
                 $data['valido'],
@@ -6304,7 +6720,7 @@ class Painel_Campanhas
         }
 
         $sql = "INSERT INTO {$table} 
-                (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, status, current_user_id, valido, data_cadastro) 
+                (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, nome_campanha, status, current_user_id, valido, data_cadastro) 
                 VALUES " . implode(', ', $values);
 
         $result = $wpdb->query($sql);

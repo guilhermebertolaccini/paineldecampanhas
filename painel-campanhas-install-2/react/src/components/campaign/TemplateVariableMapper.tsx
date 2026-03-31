@@ -291,6 +291,40 @@ export function buildInitialVariableMappingFromNoahOfficial(template: unknown): 
 }
 
 /**
+ * GOSAC Oficial: ordem das chaves = `variableComponents[].variable` (ex.: `{{Var1}}`), como o PHP/Nest usam no HSM.
+ * Se a API não mandar `variableComponents`, cai no texto do template (`{{…}}` / `var1`).
+ */
+export function listGosacOfficialVariableKeysFromTemplate(template: unknown): string[] {
+    if (!template || typeof template !== "object") return [];
+    const t = template as Record<string, any>;
+    if (t.source !== "gosac_oficial") return [];
+
+    const vc = t.variableComponents;
+    if (Array.isArray(vc) && vc.length > 0) {
+        const keys: string[] = [];
+        for (const row of vc) {
+            if (!row || typeof row !== "object") continue;
+            const v = String((row as { variable?: string }).variable ?? "").trim();
+            if (v) keys.push(v);
+        }
+        if (keys.length > 0) return keys;
+    }
+
+    const text = collectPlaceholdersSourceText(template);
+    return extractVariables(text);
+}
+
+export function buildInitialVariableMappingFromGosacOfficial(template: unknown): Record<string, VarMapping> | null {
+    const keys = listGosacOfficialVariableKeysFromTemplate(template);
+    if (keys.length === 0) return null;
+    const init: Record<string, VarMapping> = {};
+    for (const k of keys) {
+        init[k] = { type: "field", value: "nome" };
+    }
+    return init;
+}
+
+/**
  * Extracts variable names from a template string with {{varN}}, {n}, -var-, etc.
  * Returns sorted unique list (números na ordem natural: 1, 2, 10).
  */

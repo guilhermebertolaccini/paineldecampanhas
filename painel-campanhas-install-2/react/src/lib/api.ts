@@ -238,6 +238,9 @@ export const scheduleCampaign = (data: Record<string, any>) => {
   if (data.variables_map && Object.keys(data.variables_map).length > 0) {
     payload.variables_map = JSON.stringify(data.variables_map);
   }
+  if (data.nome_campanha != null && String(data.nome_campanha).trim() !== '') {
+    payload.nome_campanha = String(data.nome_campanha).trim();
+  }
   if (data.template_source === 'noah_oficial') {
     payload.noah_channel_id = data.noah_channel_id ?? '';
     payload.noah_template_id = data.noah_template_id ?? '';
@@ -482,13 +485,23 @@ export const saveRecurring = (data: Record<string, any>) => {
   if (data.customer_code) {
     payload.customer_code = data.customer_code;
   }
-  if (data.template_source === 'noah_oficial') {
+  if (data.template_source === 'noah_oficial' || data.template_source === 'noah') {
     payload.noah_channel_id = data.noah_channel_id ?? '';
     payload.noah_template_id = data.noah_template_id ?? '';
     payload.noah_language = data.noah_language ?? 'pt_BR';
   }
+  if (data.template_source === 'gosac_oficial') {
+    if (data.gosac_template_id != null) payload.gosac_template_id = data.gosac_template_id;
+    if (data.gosac_connection_id != null) payload.gosac_connection_id = data.gosac_connection_id;
+    const gvc = data.gosac_variable_components;
+    payload.gosac_variable_components =
+      typeof gvc === 'string' ? gvc : JSON.stringify(Array.isArray(gvc) ? gvc : []);
+  }
   if (data.template_source === 'robbu_oficial') {
     payload.robbu_channel = data.robbu_channel ?? 3;
+  }
+  if (data.variables_map != null && typeof data.variables_map === 'object') {
+    payload.variables_map = JSON.stringify(data.variables_map);
   }
 
   return wpAjax('cm_save_recurring', payload, 'cmNonce');
