@@ -9,11 +9,35 @@ import {
     RetryStrategy,
 } from '../base/provider.interface';
 
-/** Uma variável HSM por contato (contrato atual do provider). */
-type GosacContactVariable = {
+/**
+ * Variável HSM por contato — contrato Swagger GOSAC Oficial (`contacts[].variables[]`).
+ */
+export type GosacOfficialContactVariable = {
     componentId: number;
     variable: string;
     value: string;
+};
+
+/**
+ * Contato no POST `/campaigns/official` (Swagger).
+ */
+export type GosacOfficialContactPayload = {
+    number: string;
+    name: string;
+    cpf: string;
+    variables: GosacOfficialContactVariable[];
+};
+
+/**
+ * Payload raiz POST `/campaigns/official` (Swagger GOSAC Oficial).
+ */
+export type GosacOfficialCampaignPayload = {
+    idAmbient: string;
+    idRuler: string;
+    name: string;
+    connectionId: number;
+    templateId: number;
+    contacts: GosacOfficialContactPayload[];
 };
 
 /** Entrada em `variables_map` vinda do React: string (campo) ou `{ type, value }`. */
@@ -54,8 +78,41 @@ export class GosacOficialProvider extends BaseProvider {
     }
 
     /**
-     * Valor de campo da linha: 1º `dado.variables` (case-insensitive), 2º propriedades escalares em `dado` (case-insensitive).
-     * O WordPress passa `variables` na REST para alinhar com mapeamentos vindos do CSV/base.
+     * `templateId` / `connectionId` a partir do JSON da mensagem (WordPress grava `id` + `connectionId`).
+     */
+    private extractGosacIdsFromBatch(data: CampaignData[]): {
+        templateId: number | null;
+        connectionId: number | null;
+        firstParsed: Record<string, unknown> | null;
+    } {
+        let templateId: number | null = null;
+        let connectionId: number | null = null;
+        let firstParsed: Record<string, unknown> | null = null;
+
+        for (const item of data) {
+            const parsed = this.parseGosacMensagemJson(item.mensagem);
+            if (!parsed) continue;
+            if (!firstParsed) firstParsed = parsed;
+
+            const tidRaw = parsed.templateId ?? parsed.template_id ?? parsed.id;
+            const cidRaw = parsed.connectionId ?? parsed.connection_id;
+
+            if (tidRaw != null && templateId === null) {
+                const n = parseInt(String(tidRaw), 10);
+                if (!Number.isNaN(n) && n > 0) templateId = n;
+            }
+            if (cidRaw != null && connectionId === null) {
+                const n = parseInt(String(cidRaw), 10);
+                if (!Number.isNaN(n) && n > 0) connectionId = n;
+            }
+            if (templateId && templateId > 0 && connectionId && connectionId > 0) break;
+        }
+
+        return { templateId, connectionId, firstParsed };
+    }
+
+    /**
+     * Campo da linha: 1º `dado.variables` (case-insensitive), 2º propriedades escalares em `dado` (case-insensitive).
      */
     private pickRowFieldValue(dado: CampaignData, fieldName: string): string {
         const f = (fieldName || '').trim();
@@ -89,13 +146,55 @@ export class GosacOficialProvider extends BaseProvider {
         return '';
     }
 
-    /** GOSAC rejeita `value` vazio no array `variables` (HTTP 422). */
+    /**
+     * Nome da campanha na raiz (`name`) — Swagger. Sem nome de template/carteira.
+     * Ordem: `nome_campanha` REST → `variables.nome_campanha` (CI) → `Campanha {timestamp}`.
+     */
+    private resolveGosacRootCampaignName(first: CampaignData | undefined): string {
+        if (!first) {
+            return `Campanha ${Date.now()}`;
+        }
+        const fromCol = (first.nome_campanha ?? '').trim();
+        if (fromCol) {
+            return fromCol.slice(0, 255);
+        }
+        const fromVars = this.pickRowFieldValue(first, 'nome_campanha');
+        if (fromVars) {
+            return fromVars.slice(0, 255);
+        }
+        return `Campanha ${Date.now()}`;
+    }
+
+    /** Exibeção do contato: prioriza `variables.nome`, senão `dado.nome`, senão `-` (Swagger exige string). */
+    private gosacContactName(dado: CampaignData): string {
+        const fromVars = this.pickRowFieldValue(dado, 'nome');
+        if (fromVars) return fromVars.slice(0, 255);
+        const root = (dado.nome ?? '').trim();
+        if (root) return root.slice(0, 255);
+        return '-';
+    }
+
+    /** CPF 11 dígitos; sem dado válido usa `-` para não enviar string vazia. */
+    private gosacContactCpf(dado: CampaignData): string {
+        const fromVars =
+            this.pickRowFieldValue(dado, 'cpf_cnpj') || this.pickRowFieldValue(dado, 'cpf');
+        let digits = fromVars ? fromVars.replace(/\D/g, '').slice(0, 11) : '';
+        if (digits.length < 11 && dado.cpf_cnpj) {
+            digits = String(dado.cpf_cnpj).replace(/\D/g, '').slice(0, 11);
+        }
+        if (digits.length === 11) return digits;
+        return '-';
+    }
+
+    /**
+     * Regra anti-422: `variables[].value` nunca pode ser `""`.
+     */
     private gosacApiVariableValue(raw: string): string {
         const t = (raw ?? '').trim();
         return t === '' ? ' ' : t;
     }
 
-    private sanitizeGosacContactVariables(vars: GosacContactVariable[]): GosacContactVariable[] {
+    private sanitizeGosacContactVariables(vars: GosacOfficialContactVariable[]): GosacOfficialContactVariable[] {
         return vars.map((x) => ({
             ...x,
             value: this.gosacApiVariableValue(x.value),
@@ -121,9 +220,9 @@ export class GosacOficialProvider extends BaseProvider {
         return '';
     }
 
-    private normalizeContactVariablesFromPhp(raw: unknown): GosacContactVariable[] {
+    private normalizeContactVariablesFromPhp(raw: unknown): GosacOfficialContactVariable[] {
         if (!Array.isArray(raw)) return [];
-        const out: GosacContactVariable[] = [];
+        const out: GosacOfficialContactVariable[] = [];
         for (const row of raw) {
             if (!row || typeof row !== 'object') continue;
             const r = row as Record<string, unknown>;
@@ -136,13 +235,10 @@ export class GosacOficialProvider extends BaseProvider {
         return out;
     }
 
-    /**
-     * Alinha `components` estilo NOAH (body + parameters text) com `variableComponents` da API GOSAC.
-     */
     private variablesFromBodyComponentsAndVc(
         components: unknown,
         variableComponents: { componentId: number; variable: string }[],
-    ): GosacContactVariable[] {
+    ): GosacOfficialContactVariable[] {
         if (!Array.isArray(components) || variableComponents.length === 0) return [];
         for (const c of components) {
             if (!c || typeof c !== 'object') continue;
@@ -161,7 +257,7 @@ export class GosacOficialProvider extends BaseProvider {
                 }
             }
             if (texts.length === 0) continue;
-            const out: GosacContactVariable[] = [];
+            const out: GosacOfficialContactVariable[] = [];
             for (let i = 0; i < variableComponents.length; i++) {
                 const vc = variableComponents[i];
                 out.push({
@@ -180,7 +276,7 @@ export class GosacOficialProvider extends BaseProvider {
         parsed: Record<string, unknown> | null,
         variableComponents: { componentId: number; variable: string }[],
         variablesMap: Record<string, GosacVariablesMapEntry>,
-    ): GosacContactVariable[] {
+    ): GosacOfficialContactVariable[] {
         if (parsed) {
             const fromPhp = this.normalizeContactVariablesFromPhp(parsed.contact_variables);
             if (fromPhp.length > 0) {
@@ -199,7 +295,7 @@ export class GosacOficialProvider extends BaseProvider {
             return [];
         }
 
-        const out: GosacContactVariable[] = [];
+        const out: GosacOfficialContactVariable[] = [];
         for (const vc of variableComponents) {
             const rawVar = (vc.variable || '').trim();
             let mapKey = rawVar;
@@ -212,7 +308,9 @@ export class GosacOficialProvider extends BaseProvider {
             if (entry === undefined) {
                 const keys = Object.keys(variablesMap);
                 const found = keys.find(
-                    (k) => k.toLowerCase() === rawVar.toLowerCase() || k.toLowerCase() === mapKey.toLowerCase(),
+                    (k) =>
+                        k.toLowerCase() === rawVar.toLowerCase() ||
+                        k.toLowerCase() === mapKey.toLowerCase(),
                 );
                 if (found) entry = variablesMap[found];
             }
@@ -238,32 +336,6 @@ export class GosacOficialProvider extends BaseProvider {
         return out;
     }
 
-    /**
-     * Nome exibido na GOSAC. Ordem fixa (não usar nome de template/carteira do JSON da mensagem).
-     * 1) `nome_campanha` da REST; 2) `variables.nome_campanha`; 3) rótulo genérico com timestamp.
-     */
-    private resolveCampaignDisplayName(data: CampaignData[]): string {
-        const first = data[0];
-        if (!first) {
-            return `Campanha Oficial ${Date.now()}`;
-        }
-        const fromRow = (first.nome_campanha ?? '').trim();
-        if (fromRow) {
-            return fromRow.slice(0, 255);
-        }
-        const vars = first.variables;
-        if (vars && typeof vars === 'object' && !Array.isArray(vars)) {
-            const mk = Object.keys(vars).find((k) => k.toLowerCase() === 'nome_campanha');
-            if (mk != null) {
-                const v = String(vars[mk] ?? '').trim();
-                if (v) {
-                    return v.slice(0, 255);
-                }
-            }
-        }
-        return `Campanha Oficial ${Date.now()}`;
-    }
-
     async send(
         data: CampaignData[],
         credentials: ProviderCredentials,
@@ -282,46 +354,35 @@ export class GosacOficialProvider extends BaseProvider {
             };
         }
 
-        // Extrai template e connectionId do JSON da mensagem (API exige ambos como números)
-        let templateId: number | null = null;
-        let connectionId: number | null = null;
-
-        // Tenta extrair de qualquer mensagem do batch (todas devem ter o mesmo template)
-        for (const item of data) {
-            const msg = (item as any).mensagem;
-            if (msg && typeof msg === 'string' && msg.trim().startsWith('{')) {
-                try {
-                    const parsed = JSON.parse(msg);
-                    if (parsed.id != null) templateId = parseInt(String(parsed.id), 10);
-                    if (parsed.connectionId != null) connectionId = parseInt(String(parsed.connectionId), 10);
-                    if (templateId && templateId > 0 && connectionId && connectionId > 0) break;
-                } catch (e) {
-                    this.logger.warn(`⚠️ [Gosac Oficial] Falha ao parsear JSON da mensagem: ${e.message}`);
-                }
-            }
-        }
+        const { templateId, connectionId, firstParsed } = this.extractGosacIdsFromBatch(data);
 
         if (!templateId || templateId <= 0 || !connectionId || connectionId <= 0) {
-            const sample = data[0] ? JSON.stringify((data[0] as any).mensagem || '').slice(0, 200) : 'vazio';
-            this.logger.warn(`⚠️ [Gosac Oficial] Template/connectionId ausentes. Amostra mensagem: ${sample}`);
+            const sample = data[0]
+                ? JSON.stringify(data[0].mensagem || '').slice(0, 200)
+                : 'vazio';
+            this.logger.warn(
+                `⚠️ [Gosac Oficial] Template/connectionId ausentes. Amostra mensagem: ${sample}`,
+            );
             return {
                 success: false,
-                error: 'connectionId e templateId são obrigatórios. Verifique se o template GOSAC foi selecionado corretamente na Nova Campanha e se a carteira tem id_ruler configurado.',
+                error:
+                    'connectionId e templateId são obrigatórios. Verifique o template GOSAC e a ilha (connectionId) na mensagem agendada.',
             };
         }
 
-        // idAmbient e idRuler vêm da carteira (PHP busca por id_carteira e retorna nas credenciais)
-        const idAmbient = (credentials as any).id_carteira || (data[0] as any)?.id_carteira;
-        const idRuler = (credentials as any).idRuler;
+        const idAmbient = String(
+            (credentials as Record<string, unknown>).id_carteira ?? data[0].id_carteira ?? '',
+        ).trim();
+        const idRuler = String((credentials as Record<string, unknown>).idRuler ?? '').trim();
 
         if (!idAmbient || !idRuler) {
             return {
                 success: false,
-                error: 'idAmbient e idRuler são obrigatórios. Configure id_carteira e id_ruler na carteira em Configurações.',
+                error:
+                    'idAmbient e idRuler são obrigatórios. Configure id_carteira e id_ruler na carteira em Configurações.',
             };
         }
 
-        const firstParsed = this.parseGosacMensagemJson(data[0].mensagem);
         let variablesMap: Record<string, GosacVariablesMapEntry> = {};
         let variableComponents: { componentId: number; variable: string }[] = [];
         if (firstParsed) {
@@ -343,14 +404,11 @@ export class GosacOficialProvider extends BaseProvider {
             }
         }
 
-        const campaignDisplayName = this.resolveCampaignDisplayName(data);
-        this.logger.log(
-            `[GOSAC] Nome da campanha resolvido para o payload: ${campaignDisplayName}`,
-        );
+        const campaignName = this.resolveGosacRootCampaignName(data[0]);
+        this.logger.log(`[GOSAC] Nome da campanha resolvido para o payload: ${campaignName}`);
 
-        // Formata contatos conforme doc: number, name, cpf, variables (HSM)
-        const contacts = data
-            .filter((dado) => dado.nome && dado.telefone)
+        const contacts: GosacOfficialContactPayload[] = data
+            .filter((dado) => dado.telefone && String(dado.telefone).trim() !== '')
             .map((dado) => {
                 const rowParsed = this.parseGosacMensagemJson(dado.mensagem) ?? firstParsed;
                 let variables = this.buildVariablesForContact(
@@ -361,40 +419,25 @@ export class GosacOficialProvider extends BaseProvider {
                 );
                 variables = this.sanitizeGosacContactVariables(variables);
 
-                const base: {
-                    number: string;
-                    name: string;
-                    cpf?: string;
-                    variables?: GosacContactVariable[];
-                } = {
+                return {
                     number: this.normalizePhoneNumber(dado.telefone),
-                    name: dado.nome || '',
+                    name: this.gosacContactName(dado),
+                    cpf: this.gosacContactCpf(dado),
+                    variables,
                 };
-                if (dado.cpf_cnpj) {
-                    base.cpf = String(dado.cpf_cnpj).replace(/\D/g, '').slice(0, 11);
-                }
-                if (variables.length > 0) {
-                    base.variables = variables;
-                }
-                return base;
             });
 
         if (contacts.length === 0) {
             return {
                 success: false,
-                error: 'Nenhum contato válido para enviar',
+                error: 'Nenhum contato válido para enviar (telefone obrigatório)',
             };
         }
 
-        const now = new Date();
-        const nameSuffix = now.toISOString().replace(/[:.]/g, '-');
-        const payloadName = `${campaignDisplayName} — ${nameSuffix}`;
-
-        // Payload conforme doc POST /campaigns/official - connectionId e templateId obrigatórios
-        const payload: Record<string, unknown> = {
-            idAmbient: String(idAmbient),
-            idRuler: String(idRuler),
-            name: payloadName.slice(0, 500),
+        const payload: GosacOfficialCampaignPayload = {
+            idAmbient,
+            idRuler,
+            name: campaignName.slice(0, 500),
             connectionId,
             templateId,
             contacts,
@@ -403,7 +446,9 @@ export class GosacOficialProvider extends BaseProvider {
         const baseUrl = (credentials.url as string).replace(/\/$/, '');
         const postUrl = `${baseUrl}/campaigns/official`;
         const authToken = (credentials.token as string)?.trim();
-        const authHeader = authToken?.toLowerCase().startsWith('bearer ') ? authToken : `Bearer ${authToken}`;
+        const authHeader = authToken?.toLowerCase().startsWith('bearer ')
+            ? authToken
+            : `Bearer ${authToken}`;
 
         try {
             const createResponse = await this.executeWithRetry(
@@ -424,7 +469,10 @@ export class GosacOficialProvider extends BaseProvider {
                 { provider: 'GOSAC_OFICIAL' },
             );
 
-            const campaignId = createResponse.data?.campaignId || createResponse.data?.id || createResponse.data?.data?.id;
+            const campaignId =
+                createResponse.data?.campaignId ||
+                createResponse.data?.id ||
+                createResponse.data?.data?.id;
 
             if (!campaignId) {
                 return {
@@ -455,7 +503,9 @@ export class GosacOficialProvider extends BaseProvider {
         const baseUrl = (credentials.url as string).replace(/\/$/, '');
         const url = `${baseUrl}/${campaignId}/status/started`;
         const authToken = (credentials.token as string)?.trim();
-        const authHeader = authToken?.toLowerCase().startsWith('bearer ') ? authToken : `Bearer ${authToken}`;
+        const authHeader = authToken?.toLowerCase().startsWith('bearer ')
+            ? authToken
+            : `Bearer ${authToken}`;
 
         try {
             const response = await this.executeWithRetry(
