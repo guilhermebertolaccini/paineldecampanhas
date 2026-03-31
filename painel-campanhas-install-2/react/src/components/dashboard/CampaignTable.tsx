@@ -45,7 +45,11 @@ export interface Campaign {
   provider: string;
   /** Valor exato da coluna fornecedor no MySQL (para cancelamento). */
   fornecedor?: string;
+  /** Nome legível da carteira (preferir sempre na UI) */
   nomeCarteira?: string;
+  carteira_nome?: string;
+  wallet_name?: string;
+  /** Código cliente id_carteira — não exibir como rótulo principal */
   idCarteira?: string;
   quantity: number;
   createdAt: string;
@@ -234,6 +238,13 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
           <TableBody>
             {campaigns.map((campaign, index) => {
               const feedback = motivoFeedback(campaign);
+              const carteiraLabel = [
+                campaign.nomeCarteira,
+                campaign.carteira_nome,
+                campaign.wallet_name,
+              ]
+                .find((s) => typeof s === "string" && s.trim() !== "")
+                ?.trim();
               return (
                 <TableRow
                   key={campaign.id}
@@ -242,14 +253,12 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
                 >
                   <TableCell className="font-medium">{campaign.name}</TableCell>
                   <TableCell className="text-muted-foreground text-sm max-w-[220px]">
-                    {campaign.nomeCarteira ? (
-                      <span className="line-clamp-2 font-medium text-foreground" title={campaign.nomeCarteira}>
-                        {campaign.nomeCarteira}
+                    {carteiraLabel ? (
+                      <span className="line-clamp-2 font-medium text-foreground" title={carteiraLabel}>
+                        {carteiraLabel}
                       </span>
-                    ) : campaign.idCarteira ? (
-                      <span className="font-mono text-xs">{campaign.idCarteira}</span>
                     ) : (
-                      "—"
+                      <span className="text-muted-foreground">—</span>
                     )}
                   </TableCell>
                   <TableCell>

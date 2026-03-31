@@ -28,6 +28,13 @@ interface PendingCampaign {
   scheduled_by: string;
   id_carteira?: string;
   nome_carteira?: string;
+  carteira_nome?: string;
+  wallet_name?: string;
+}
+
+function carteiraDisplayName(c: Pick<PendingCampaign, "nome_carteira" | "carteira_nome" | "wallet_name">): string {
+  const s = c.nome_carteira?.trim() || c.carteira_nome?.trim() || c.wallet_name?.trim();
+  return s || "—";
 }
 
 export default function AprovarCampanhas() {
@@ -205,11 +212,8 @@ export default function AprovarCampanhas() {
                   <div className="rounded-lg bg-muted/50 p-3">
                     <p className="text-xs text-muted-foreground mb-1">Carteira</p>
                     <p className="font-semibold text-sm leading-snug">
-                      {campaign.nome_carteira?.trim() || "—"}
+                      {carteiraDisplayName(campaign)}
                     </p>
-                    {campaign.id_carteira ? (
-                      <p className="text-[10px] text-muted-foreground font-mono mt-1">ID: {campaign.id_carteira}</p>
-                    ) : null}
                   </div>
                   <div className="rounded-lg bg-muted/50 p-3">
                     <p className="text-xs text-muted-foreground mb-1">Fornecedor</p>
@@ -280,11 +284,8 @@ export default function AprovarCampanhas() {
                 <div>
                   <p className="text-xs text-muted-foreground mb-1">Carteira</p>
                   <p className="font-medium">
-                    {selectedCampaign.nome_carteira?.trim() || "—"}
+                    {carteiraDisplayName(selectedCampaign)}
                   </p>
-                  {selectedCampaign.id_carteira ? (
-                    <p className="text-[10px] text-muted-foreground font-mono">ID: {selectedCampaign.id_carteira}</p>
-                  ) : null}
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground mb-1">Fornecedor</p>

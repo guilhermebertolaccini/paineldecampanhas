@@ -106,6 +106,10 @@ class Painel_Campanhas
         if (empty($has_nome_campanha)) {
             $wpdb->query("ALTER TABLE `{$table}` ADD COLUMN nome_campanha varchar(255) NULL DEFAULT NULL AFTER agendamento_id");
         }
+        $has_carteira_id = $wpdb->get_results("SHOW COLUMNS FROM `{$table}` LIKE 'carteira_id'");
+        if (empty($has_carteira_id)) {
+            $wpdb->query("ALTER TABLE `{$table}` ADD COLUMN carteira_id bigint(20) DEFAULT NULL");
+        }
     }
 
     /**
@@ -6780,6 +6784,7 @@ class Painel_Campanhas
         }
 
         check_ajax_referer('pc_nonce', 'nonce');
+        $this->maybe_add_envios_cancel_columns();
 
         global $wpdb;
         $table = $wpdb->prefix . 'envios_pendentes';
@@ -6813,11 +6818,14 @@ class Painel_Campanhas
                 MAX(t1.current_user_id) AS current_user_id,
                 COALESCE(MAX(u.display_name), 'Usuário Desconhecido') AS scheduled_by,
                 MAX(t1.id_carteira) AS id_carteira,
+                MAX(t1.carteira_id) AS carteira_id_row,
                 MAX(cv.nome) AS nome_carteira
             FROM `{$table}` AS t1
             LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
-            LEFT JOIN `{$carteiras_table}` AS cv
-                ON TRIM(cv.id_carteira) = TRIM(t1.id_carteira) AND cv.ativo = 1
+            LEFT JOIN `{$carteiras_table}` AS cv ON cv.ativo = 1 AND (
+                (t1.carteira_id IS NOT NULL AND CAST(t1.carteira_id AS UNSIGNED) > 0 AND cv.id = t1.carteira_id)
+                OR (NULLIF(TRIM(t1.id_carteira), '') IS NOT NULL AND TRIM(cv.id_carteira) = TRIM(t1.id_carteira))
+            )
             WHERE {$where_sql}
             GROUP BY t1.agendamento_id, t1.fornecedor
             ORDER BY MIN(t1.data_cadastro) DESC
@@ -6827,12 +6835,27 @@ class Painel_Campanhas
 
         $results = $wpdb->get_results($query, ARRAY_A);
 
+        $results = array_map(function ($row) {
+            if (!is_array($row)) {
+                return $row;
+            }
+            $nome = $this->resolve_carteira_display_name_from_camp_row([
+                'nome_carteira' => $row['nome_carteira'] ?? '',
+                'carteira_id_row' => $row['carteira_id_row'] ?? 0,
+                'id_carteira' => $row['id_carteira'] ?? '',
+            ]);
+            $row['nome_carteira'] = $nome;
+            $row['carteira_nome'] = $nome;
+            $row['wallet_name'] = $nome;
+            return $row;
+        }, $results ?: []);
+
         error_log('🔵 [Aprovar Campanhas] Resultados encontrados: ' . count($results));
         if (!empty($results)) {
             error_log('🔵 [Aprovar Campanhas] Primeiro resultado: ' . print_r($results[0], true));
         }
 
-        wp_send_json_success($results ?: []);
+        wp_send_json_success($results);
     }
 
     private function build_dispatch_url($microservice_url)
@@ -9860,6 +9883,50 @@ class Painel_Campanhas
     }
 
     /**
+     * Nome da carteira pelo código cliente (id_carteira em pc_carteiras_v2).
+     * Se várias carteiras compartilham o mesmo código, retorna a de menor id (primeira criada).
+     */
+    private function get_carteira_nome_by_id_carteira_code($id_carteira_code)
+    {
+        $code = trim((string) $id_carteira_code);
+        if ($code === '') {
+            return '';
+        }
+        global $wpdb;
+        $table = $wpdb->prefix . 'pc_carteiras_v2';
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT nome FROM $table WHERE TRIM(id_carteira) = %s AND ativo = 1 ORDER BY id ASC LIMIT 1",
+            $code
+        ), ARRAY_A);
+        return ($row && !empty($row['nome'])) ? (string) $row['nome'] : '';
+    }
+
+    /**
+     * Nome legível para listagens: JOIN / MAX(nome), depois PK interna, depois código cliente.
+     *
+     * @param array $camp Deve conter opcionalmente nome_carteira, carteira_id_row, id_carteira
+     */
+    private function resolve_carteira_display_name_from_camp_row(array $camp): string
+    {
+        $nome = trim((string) ($camp['nome_carteira'] ?? ''));
+        if ($nome !== '') {
+            return $nome;
+        }
+        $cid_row = isset($camp['carteira_id_row']) ? (int) $camp['carteira_id_row'] : 0;
+        if ($cid_row > 0) {
+            $nome = $this->get_carteira_nome_by_id($cid_row);
+            if ($nome !== '') {
+                return $nome;
+            }
+        }
+        $code = trim((string) ($camp['id_carteira'] ?? ''));
+        if ($code !== '') {
+            return $this->get_carteira_nome_by_id_carteira_code($code);
+        }
+        return '';
+    }
+
+    /**
      * Converte carteira_id (id interno de pc_carteiras_v2) para id_carteira (código cliente).
      * cm_baits.id_carteira armazena o id interno, não o código.
      */
@@ -10477,10 +10544,11 @@ class Painel_Campanhas
             $nome_amigavel = trim((string) ($camp['nome_campanha'] ?? ''));
             $nome_exibicao = $nome_amigavel !== '' ? $nome_amigavel : $ag_id;
 
-            $nome_carteira = trim((string) ($camp['nome_carteira'] ?? ''));
-            if ($nome_carteira === '' && !empty($camp['carteira_id_row'])) {
-                $nome_carteira = $this->get_carteira_nome_by_id((int) $camp['carteira_id_row']);
-            }
+            $nome_carteira = $this->resolve_carteira_display_name_from_camp_row([
+                'nome_carteira' => $camp['nome_carteira'] ?? '',
+                'carteira_id_row' => $camp['carteira_id_row'] ?? 0,
+                'id_carteira' => $camp['id_carteira'] ?? '',
+            ]);
 
             return [
                 'id' => $camp['agendamento_id'] . '-' . $camp['provider'],
@@ -10495,8 +10563,12 @@ class Painel_Campanhas
                 'user' => $camp['scheduled_by'],
                 'motivoCancelamento' => $camp['motivo_cancelamento'] ?? '',
                 'canceladoPor' => $cancel_name,
+                /** Código cliente (provedor); não usar como rótulo principal na UI */
                 'idCarteira' => isset($camp['id_carteira']) ? (string) $camp['id_carteira'] : '',
                 'nomeCarteira' => $nome_carteira,
+                /** Alias explícito para integrações / front */
+                'carteira_nome' => $nome_carteira,
+                'wallet_name' => $nome_carteira,
                 'total_messages' => $total,
                 'processed_messages' => $processed,
                 'error_messages' => $err,
