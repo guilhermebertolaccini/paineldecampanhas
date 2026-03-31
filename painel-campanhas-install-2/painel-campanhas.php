@@ -18,6 +18,7 @@ if (!defined('ABSPATH')) {
 }
 
 require_once __DIR__ . '/includes/class-pc-evolution-wa-validator.php';
+require_once __DIR__ . '/includes/class-pc-validador-historico.php';
 
 class Painel_Campanhas
 {
@@ -224,6 +225,13 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_wa_validator_upload', ['PC_Evolution_WA_Validator', 'ajax_upload']);
         add_action('wp_ajax_pc_wa_validator_step', ['PC_Evolution_WA_Validator', 'ajax_step']);
         add_action('admin_post_pc_wa_validator_download', ['PC_Evolution_WA_Validator', 'handle_download']);
+        add_action('admin_post_pc_wa_validator_download_hist_original', static function () {
+            PC_Validador_Historico::handle_download_historico('orig');
+        });
+        add_action('admin_post_pc_wa_validator_download_hist_validado', static function () {
+            PC_Validador_Historico::handle_download_historico('val');
+        });
+        add_action(PC_Validador_Historico::CRON_HOOK, ['PC_Validador_Historico', 'cron_limpar_antigos']);
         add_action('wp_ajax_pc_create_credential', [$this, 'handle_create_credential']);
         add_action('wp_ajax_pc_get_credential', [$this, 'handle_get_credential']);
         add_action('wp_ajax_pc_list_credentials', [$this, 'handle_list_credentials']);
@@ -423,6 +431,14 @@ class Painel_Campanhas
                 ],
             ],
         ]);
+
+        register_rest_route('validador/v1', '/historico', [
+            'methods' => 'GET',
+            'callback' => ['PC_Validador_Historico', 'rest_historico'],
+            'permission_callback' => function () {
+                return is_user_logged_in() && current_user_can('edit_posts');
+            },
+        ]);
     }
 
     public function check_api_key_rest($request)
@@ -589,6 +605,8 @@ class Painel_Campanhas
     {
         $this->add_rewrite_rules();
         $this->create_tables();
+        PC_Validador_Historico::ensure_table();
+        PC_Validador_Historico::maybe_schedule_cron();
         flush_rewrite_rules();
     }
 
@@ -834,6 +852,7 @@ class Painel_Campanhas
     {
         flush_rewrite_rules();
         wp_clear_scheduled_hook('pc_salesforce_import_cron');
+        wp_clear_scheduled_hook(PC_Validador_Historico::CRON_HOOK);
     }
 
     /**
@@ -974,7 +993,8 @@ class Painel_Campanhas
 
     public function init()
     {
-        // Inicializa componentes
+        PC_Validador_Historico::ensure_table();
+        PC_Validador_Historico::maybe_schedule_cron();
     }
 
     public function add_rewrite_rules()

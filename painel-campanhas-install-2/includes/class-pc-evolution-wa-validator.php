@@ -294,9 +294,10 @@ final class PC_Evolution_WA_Validator
     /**
      * @param string $tmp_upload php upload tmp path
      * @param int $user_id
+     * @param string $original_client_name nome exibido / histórico
      * @return string|WP_Error job id
      */
-    public static function create_job_from_upload($tmp_upload, $user_id)
+    public static function create_job_from_upload($tmp_upload, $user_id, $original_client_name = '')
     {
         if (!is_uploaded_file($tmp_upload)) {
             return new WP_Error('upload', 'Arquivo de upload inválido.');
@@ -373,6 +374,10 @@ final class PC_Evolution_WA_Validator
             'last_success_instance' => null,
             'last_error' => '',
         ];
+        $client_name = $original_client_name !== '' ? $original_client_name : 'upload.csv';
+        if (class_exists('PC_Validador_Historico')) {
+            PC_Validador_Historico::store_original_upload($tmp_upload, $client_name, $job_id, $state);
+        }
         file_put_contents($dir . '/state.json', wp_json_encode($state));
 
         return $job_id;
@@ -388,7 +393,9 @@ final class PC_Evolution_WA_Validator
         if (!empty($upload['error'])) {
             return '';
         }
-        return $upload['basedir'] . '/pc-wa-validator/' . preg_replace('/[^a-zA-Z0-9\-]/', '', $job_id);
+        $safe = preg_replace('/[^a-zA-Z0-9\-]/', '', $job_id);
+
+        return trailingslashit($upload['basedir']) . 'pc_validador/jobs/' . $safe;
     }
 
     /**
@@ -618,6 +625,10 @@ final class PC_Evolution_WA_Validator
         $remaining = is_array($g_rem) ? count($g_rem) : 0;
         if ($remaining === 0) {
             $state['phase'] = 'done';
+            $job_folder = basename($dir);
+            if (class_exists('PC_Validador_Historico')) {
+                PC_Validador_Historico::record_completed_job($job_folder, $state, $result_csv);
+            }
             self::maybe_log_run_metrics($state_path, $state, $result_csv);
             file_put_contents($state_path, wp_json_encode($state));
         }
@@ -707,7 +718,8 @@ final class PC_Evolution_WA_Validator
             wp_send_json_error('Apenas arquivos .csv são permitidos.');
         }
 
-        $job = self::create_job_from_upload($_FILES['file']['tmp_name'], get_current_user_id());
+        $orig_name = isset($_FILES['file']['name']) ? (string) $_FILES['file']['name'] : '';
+        $job = self::create_job_from_upload($_FILES['file']['tmp_name'], get_current_user_id(), $orig_name);
         if (is_wp_error($job)) {
             wp_send_json_error($job->get_error_message());
         }

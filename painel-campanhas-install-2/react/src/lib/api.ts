@@ -891,6 +891,55 @@ export async function fetchValidadorMetricas(dataInicio: string, dataFim: string
   return Schema.parse(body);
 }
 
+/** Histórico de validações (REST, usuário logado com edit_posts) */
+export async function fetchValidadorHistorico() {
+  const { z } = await import('zod');
+  const pc = (window as any).pcAjax;
+  const base = pc?.validadorHistoricoRest as string | undefined;
+  if (!base) {
+    throw new Error('validadorHistoricoRest não disponível (recarregue a página).');
+  }
+  const url = new URL(base, window.location.origin);
+
+  const res = await fetch(url.toString(), {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/json',
+      'X-WP-Nonce': (pc?.restNonce as string) || '',
+    },
+  });
+
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg =
+      typeof body?.message === 'string'
+        ? body.message
+        : typeof body?.code === 'string'
+          ? body.code
+          : `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+
+  const Schema = z.object({
+    itens: z.array(
+      z.object({
+        id: z.coerce.number(),
+        nome_arquivo: z.string(),
+        total_linhas: z.coerce.number(),
+        linhas_validas: z.coerce.number(),
+        linhas_invalidas: z.coerce.number(),
+        data_criacao: z.string(),
+        job_id: z.string().optional(),
+        download_original_nonce: z.string(),
+        download_validado_nonce: z.string(),
+      })
+    ),
+  });
+
+  return Schema.parse(body);
+}
+
 export const getOtimaCustomers = (provider: 'rcs' | 'wpp' = 'rcs') => {
   return wpAjax('pc_get_otima_customers', { provider });
 };

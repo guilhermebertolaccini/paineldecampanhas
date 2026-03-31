@@ -6,8 +6,8 @@ import { Progress } from "@/components/ui/progress";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { waValidatorUpload, waValidatorStep, fetchValidadorMetricas } from "@/lib/api";
-import { Upload, FileSpreadsheet, Loader2, Download, AlertCircle, BarChart3, ChevronDown } from "lucide-react";
+import { waValidatorUpload, waValidatorStep, fetchValidadorMetricas, fetchValidadorHistorico } from "@/lib/api";
+import { Upload, FileSpreadsheet, Loader2, Download, AlertCircle, BarChart3, ChevronDown, History, FileDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -34,6 +34,25 @@ type MetricRow = {
   taxa_qualidade_pct: number;
 };
 
+type HistoricoItem = {
+  id: number;
+  nome_arquivo: string;
+  total_linhas: number;
+  linhas_validas: number;
+  linhas_invalidas: number;
+  data_criacao: string;
+  download_original_nonce: string;
+  download_validado_nonce: string;
+};
+
+function formatHistoricoDataUtc(isoMysql: string): string {
+  if (!isoMysql) return "—";
+  const normalized = isoMysql.includes("T") ? isoMysql : isoMysql.replace(" ", "T") + "Z";
+  const d = new Date(normalized);
+  if (Number.isNaN(d.getTime())) return isoMysql;
+  return d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+}
+
 export default function Validador() {
   const { toast } = useToast();
   const busyRef = useRef(false);
@@ -55,6 +74,29 @@ export default function Validador() {
   const [metricsRows, setMetricsRows] = useState<MetricRow[]>([]);
   const [metricsTz, setMetricsTz] = useState<string>("");
   const [metricsError, setMetricsError] = useState<string | null>(null);
+
+  const [historicoItems, setHistoricoItems] = useState<HistoricoItem[]>([]);
+  const [historicoLoading, setHistoricoLoading] = useState(false);
+  const [historicoError, setHistoricoError] = useState<string | null>(null);
+
+  const loadHistorico = useCallback(async () => {
+    setHistoricoLoading(true);
+    setHistoricoError(null);
+    try {
+      const data = await fetchValidadorHistorico();
+      setHistoricoItems(data.itens);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setHistoricoError(msg);
+      setHistoricoItems([]);
+    } finally {
+      setHistoricoLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadHistorico();
+  }, [loadHistorico]);
 
   const loadMetrics = useCallback(async () => {
     if (!isAdmin) return;
@@ -128,6 +170,7 @@ export default function Validador() {
         setProgress(100);
         setStatusText("Concluído. Baixe o CSV validado abaixo.");
         toast({ title: "Validação concluída" });
+        void loadHistorico();
         if (isAdmin) {
           void loadMetrics();
         }
@@ -145,7 +188,7 @@ export default function Validador() {
         busyRef.current = false;
       }
     },
-    [toast, isAdmin, loadMetrics]
+    [toast, isAdmin, loadMetrics, loadHistorico]
   );
 
   const onFile = (f: File | null | undefined) => {
@@ -266,6 +309,97 @@ export default function Validador() {
             <span>
               Configure a Evolution API em <strong>API Manager</strong> antes de usar. O token não é exibido no navegador após salvo.
             </span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <History className="h-5 w-5 text-primary" />
+            Histórico de validações (últimos 15 dias)
+          </CardTitle>
+          <CardDescription>
+            Arquivos ficam disponíveis para download pelo período de retenção; depois são removidos automaticamente.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex justify-end">
+            <Button type="button" variant="outline" size="sm" onClick={() => void loadHistorico()} disabled={historicoLoading}>
+              {historicoLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Atualizar lista
+            </Button>
+          </div>
+          {historicoError && <p className="text-sm text-destructive">{historicoError}</p>}
+          <div className="rounded-md border overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Arquivo</TableHead>
+                  <TableHead>Data</TableHead>
+                  <TableHead className="min-w-[200px]">Métricas</TableHead>
+                  <TableHead className="text-right w-[200px]">Downloads</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {historicoLoading && historicoItems.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                      <Loader2 className="h-5 w-5 animate-spin inline-block mr-2 align-middle" />
+                      Carregando histórico…
+                    </TableCell>
+                  </TableRow>
+                ) : historicoItems.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                      Nenhuma validação nos últimos 15 dias.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  historicoItems.map((row) => {
+                    const origHref = `${getAdminPostUrl()}?action=pc_wa_validator_download_hist_original&historico_id=${row.id}&_wpnonce=${encodeURIComponent(row.download_original_nonce)}`;
+                    const valHref = `${getAdminPostUrl()}?action=pc_wa_validator_download_hist_validado&historico_id=${row.id}&_wpnonce=${encodeURIComponent(row.download_validado_nonce)}`;
+                    return (
+                      <TableRow key={row.id}>
+                        <TableCell className="font-medium max-w-[240px] truncate" title={row.nome_arquivo}>
+                          {row.nome_arquivo || "—"}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
+                          {formatHistoricoDataUtc(row.data_criacao)}
+                        </TableCell>
+                        <TableCell className="text-sm">
+                          <span className="tabular-nums">{row.total_linhas.toLocaleString("pt-BR")}</span> linhas —{" "}
+                          <span className="text-emerald-600 dark:text-emerald-400 font-medium tabular-nums">
+                            {row.linhas_validas.toLocaleString("pt-BR")}
+                          </span>{" "}
+                          WPP /{" "}
+                          <span className="text-muted-foreground tabular-nums">
+                            {row.linhas_invalidas.toLocaleString("pt-BR")}
+                          </span>{" "}
+                          sem WPP
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex flex-col sm:flex-row gap-2 justify-end">
+                            <Button asChild variant="outline" size="sm" className="gap-1 h-8">
+                              <a href={origHref} rel="nofollow">
+                                <FileDown className="h-3.5 w-3.5" />
+                                Original
+                              </a>
+                            </Button>
+                            <Button asChild variant="default" size="sm" className="gap-1 h-8">
+                              <a href={valHref} rel="nofollow">
+                                <Download className="h-3.5 w-3.5" />
+                                Validado
+                              </a>
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
           </div>
         </CardContent>
       </Card>
