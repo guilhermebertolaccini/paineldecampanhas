@@ -528,6 +528,17 @@ class Painel_Campanhas
                 $carteira_nome = $this->get_carteira_nome_by_id($row['carteira_id']);
             }
 
+            // Objeto `variables`: espelha colunas da linha para o Nest (GOSAC HSM resolve por nome de campo case-insensitive).
+            $nome_campanha_row = (string) ($row['nome_campanha'] ?? '');
+            $variables_row = [
+                'nome' => (string) ($row['nome'] ?? ''),
+                'telefone' => (string) ($row['telefone'] ?? ''),
+                'cpf_cnpj' => (string) ($row['cpf_cnpj'] ?? ''),
+                'idcob_contrato' => (string) ($row['idcob_contrato'] ?? ''),
+                'idgis_ambiente' => (string) ($row['idgis_ambiente'] ?? ''),
+                'nome_campanha' => $nome_campanha_row,
+            ];
+
             $formatted_data[] = [
                 'id' => isset($row['id']) ? (string) $row['id'] : '',
                 'agendamento_id' => isset($row['agendamento_id']) ? (string) $row['agendamento_id'] : '',
@@ -541,7 +552,8 @@ class Painel_Campanhas
                 'mensagem' => (string) $row['mensagem'],
                 'data_cadastro' => (string) ($row['data_cadastro'] ?: date('Y-m-d H:i:s')),
                 'midia_campanha' => (string) ($row['midia_campanha'] ?? ''),
-                'nome_campanha' => (string) ($row['nome_campanha'] ?? ''),
+                'nome_campanha' => $nome_campanha_row,
+                'variables' => $variables_row,
             ];
         }
 

@@ -54,17 +54,52 @@ export class GosacOficialProvider extends BaseProvider {
     }
 
     /**
-     * Campo da base em `CampaignData` (o WP não envia colunas arbitrárias; só chaves conhecidas + index signature implícita em runtime).
+     * Valor de campo da linha: 1º `dado.variables` (case-insensitive), 2º propriedades escalares em `dado` (case-insensitive).
+     * O WordPress passa `variables` na REST para alinhar com mapeamentos vindos do CSV/base.
      */
     private pickRowFieldValue(dado: CampaignData, fieldName: string): string {
         const f = (fieldName || '').trim();
         if (!f) return '';
+        const fl = f.toLowerCase();
+
+        const vars = dado.variables;
+        if (vars && typeof vars === 'object' && !Array.isArray(vars)) {
+            const mk = Object.keys(vars).find((k) => k.toLowerCase() === fl);
+            if (mk != null) {
+                const v = vars[mk];
+                if (v != null && String(v).trim() !== '') {
+                    return String(v).trim();
+                }
+            }
+        }
+
         const rec = dado as unknown as Record<string, unknown>;
-        const direct = rec[f];
-        if (direct != null && direct !== '') return String(direct);
-        const upper = rec[f.toUpperCase()];
-        if (upper != null && upper !== '') return String(upper);
+        const mk2 = Object.keys(rec).find(
+            (k) =>
+                k.toLowerCase() === fl &&
+                k !== 'variables' &&
+                k !== 'mensagem',
+        );
+        if (mk2 != null) {
+            const v = rec[mk2];
+            if (v != null && typeof v !== 'object' && String(v).trim() !== '') {
+                return String(v).trim();
+            }
+        }
         return '';
+    }
+
+    /** GOSAC rejeita `value` vazio no array `variables` (HTTP 422). */
+    private gosacApiVariableValue(raw: string): string {
+        const t = (raw ?? '').trim();
+        return t === '' ? ' ' : t;
+    }
+
+    private sanitizeGosacContactVariables(vars: GosacContactVariable[]): GosacContactVariable[] {
+        return vars.map((x) => ({
+            ...x,
+            value: this.gosacApiVariableValue(x.value),
+        }));
     }
 
     private resolveVariablesMapEntryToValue(
@@ -94,7 +129,7 @@ export class GosacOficialProvider extends BaseProvider {
             const r = row as Record<string, unknown>;
             const componentId = Number(r.componentId ?? r.component_id ?? 0) || 0;
             const variable = r.variable != null ? String(r.variable) : '';
-            const value = r.value != null ? String(r.value) : '';
+            const value = this.gosacApiVariableValue(r.value != null ? String(r.value) : '');
             if (variable === '' && componentId === 0) continue;
             out.push({ componentId, variable, value });
         }
@@ -132,7 +167,7 @@ export class GosacOficialProvider extends BaseProvider {
                 out.push({
                     componentId: vc.componentId,
                     variable: vc.variable,
-                    value: texts[i] ?? '',
+                    value: this.gosacApiVariableValue(texts[i] ?? ''),
                 });
             }
             return out;
@@ -181,7 +216,9 @@ export class GosacOficialProvider extends BaseProvider {
                 );
                 if (found) entry = variablesMap[found];
             }
-            const value = this.resolveVariablesMapEntryToValue(dado, entry);
+            const value = this.gosacApiVariableValue(
+                this.resolveVariablesMapEntryToValue(dado, entry),
+            );
             out.push({
                 componentId: vc.componentId,
                 variable: rawVar || mapKey,
@@ -191,7 +228,9 @@ export class GosacOficialProvider extends BaseProvider {
 
         if (out.length === 0 && Object.keys(variablesMap).length > 0) {
             for (const [varName, entry] of Object.entries(variablesMap)) {
-                const value = this.resolveVariablesMapEntryToValue(dado, entry);
+                const value = this.gosacApiVariableValue(
+                    this.resolveVariablesMapEntryToValue(dado, entry),
+                );
                 out.push({ componentId: 0, variable: varName, value });
             }
         }
@@ -199,14 +238,30 @@ export class GosacOficialProvider extends BaseProvider {
         return out;
     }
 
-    private resolveCampaignDisplayName(data: CampaignData[], firstParsed: Record<string, unknown> | null): string {
-        const fromRow = (data[0]?.nome_campanha ?? '').trim();
-        if (fromRow) return fromRow.slice(0, 255);
-        const fromJson =
-            firstParsed && firstParsed.nome_campanha != null ? String(firstParsed.nome_campanha).trim() : '';
-        if (fromJson) return fromJson.slice(0, 255);
-        const now = new Date();
-        return `campanha_oficial_${now.getTime()}`;
+    /**
+     * Nome exibido na GOSAC. Ordem fixa (não usar nome de template/carteira do JSON da mensagem).
+     * 1) `nome_campanha` da REST; 2) `variables.nome_campanha`; 3) rótulo genérico com timestamp.
+     */
+    private resolveCampaignDisplayName(data: CampaignData[]): string {
+        const first = data[0];
+        if (!first) {
+            return `Campanha Oficial ${Date.now()}`;
+        }
+        const fromRow = (first.nome_campanha ?? '').trim();
+        if (fromRow) {
+            return fromRow.slice(0, 255);
+        }
+        const vars = first.variables;
+        if (vars && typeof vars === 'object' && !Array.isArray(vars)) {
+            const mk = Object.keys(vars).find((k) => k.toLowerCase() === 'nome_campanha');
+            if (mk != null) {
+                const v = String(vars[mk] ?? '').trim();
+                if (v) {
+                    return v.slice(0, 255);
+                }
+            }
+        }
+        return `Campanha Oficial ${Date.now()}`;
     }
 
     async send(
@@ -288,19 +343,23 @@ export class GosacOficialProvider extends BaseProvider {
             }
         }
 
-        const campaignDisplayName = this.resolveCampaignDisplayName(data, firstParsed);
+        const campaignDisplayName = this.resolveCampaignDisplayName(data);
+        this.logger.log(
+            `[GOSAC] Nome da campanha resolvido para o payload: ${campaignDisplayName}`,
+        );
 
         // Formata contatos conforme doc: number, name, cpf, variables (HSM)
         const contacts = data
             .filter((dado) => dado.nome && dado.telefone)
             .map((dado) => {
                 const rowParsed = this.parseGosacMensagemJson(dado.mensagem) ?? firstParsed;
-                const variables = this.buildVariablesForContact(
+                let variables = this.buildVariablesForContact(
                     dado,
                     rowParsed,
                     variableComponents,
                     variablesMap,
                 );
+                variables = this.sanitizeGosacContactVariables(variables);
 
                 const base: {
                     number: string;
@@ -329,10 +388,7 @@ export class GosacOficialProvider extends BaseProvider {
 
         const now = new Date();
         const nameSuffix = now.toISOString().replace(/[:.]/g, '-');
-        const payloadName =
-            campaignDisplayName && !campaignDisplayName.startsWith('campanha_oficial_')
-                ? `${campaignDisplayName} — ${nameSuffix}`
-                : `${campaignDisplayName}_${nameSuffix}`;
+        const payloadName = `${campaignDisplayName} — ${nameSuffix}`;
 
         // Payload conforme doc POST /campaigns/official - connectionId e templateId obrigatórios
         const payload: Record<string, unknown> = {
