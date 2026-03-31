@@ -10918,11 +10918,25 @@ class Painel_Campanhas
                 if ($num_id === null && is_string($raw_id) && preg_match('/\d+/', $raw_id, $m)) {
                     $num_id = (int) $m[0];
                 }
+                $body_text = isset($tpl['body']) && is_string($tpl['body']) ? $tpl['body'] : '';
+                $content_text = isset($tpl['content']) && is_string($tpl['content']) ? $tpl['content'] : '';
+                $text_for_ui = $content_text !== '' ? $content_text : $body_text;
+
+                $vc_raw = $tpl['variableComponents'] ?? $tpl['variable_components'] ?? [];
+                if (is_string($vc_raw)) {
+                    $vc_dec = json_decode($vc_raw, true);
+                    $vc_raw = is_array($vc_dec) ? $vc_dec : [];
+                }
+                if (!is_array($vc_raw)) {
+                    $vc_raw = [];
+                }
+
                 $all_templates[] = [
                     'id' => $tpl['id'] ?? $tpl['name'] ?? '',
                     'templateId' => $num_id,
                     'name' => $tpl['name'] ?? $tpl['id'] ?? '',
-                    'content' => $tpl['content'] ?? '',
+                    'body' => $body_text,
+                    'content' => $text_for_ui,
                     'status' => $tpl['status'] ?? '',
                     'category' => $tpl['category'] ?? '',
                     'language' => $tpl['language'] ?? 'pt_BR',
@@ -10932,7 +10946,7 @@ class Painel_Campanhas
                     'templateName' => $tpl['name'] ?? $tpl['id'] ?? '',
                     'idRuler' => $tpl['idRuler'] ?? $id_ruler,
                     'connectionId' => $conn_id,
-                    'variableComponents' => $tpl['variableComponents'] ?? $tpl['variable_components'] ?? [],
+                    'variableComponents' => $vc_raw,
                     'carteira_nome' => $pair['nome'] ?? '',
                 ];
             }
@@ -10941,31 +10955,63 @@ class Painel_Campanhas
         wp_send_json_success($all_templates);
     }
 
+    /**
+     * Normaliza a resposta da API GOSAC Oficial (listagem de templates).
+     * Formatos suportados:
+     * - { "data": [ { "templates": [ {...} ] } ] }  (oficial)
+     * - { "data": { "templates": [ {...} ] } }
+     * - { "data": [ {...template...} ] } (lista direta)
+     * - { "templates": [...] } na raiz
+     */
     private function extract_gosac_templates($templates_data)
     {
         $out = [];
         if (!is_array($templates_data)) {
             return $out;
         }
-        $envs = isset($templates_data['data']) ? $templates_data['data'] : $templates_data;
-        if (!is_array($envs)) {
+
+        $root = isset($templates_data['data']) ? $templates_data['data'] : $templates_data;
+        if (!is_array($root)) {
             return $out;
         }
-        foreach ($envs as $env) {
-            if (!is_array($env) || isset($env['error'])) {
-                continue;
-            }
-            $tpls = isset($env['templates']) && is_array($env['templates']) ? $env['templates'] : [];
-            if (empty($tpls) && isset($env['id']) && isset($env['name'])) {
-                $tpls = [$env];
-            }
-            foreach ($tpls as $t) {
-                if (is_array($t) && (isset($t['id']) || isset($t['name']))) {
-                    $t['idRuler'] = $env['idRuler'] ?? '';
-                    $out[] = $t;
+
+        $candidates = [];
+
+        // Objeto único: data = { "templates": [ ... ] }
+        if (isset($root['templates']) && is_array($root['templates'])) {
+            $candidates[] = $root;
+        } else {
+            // Lista de blocos ou lista direta de templates
+            foreach ($root as $env) {
+                if (is_array($env) && !isset($env['error'])) {
+                    $candidates[] = $env;
                 }
             }
         }
+
+        foreach ($candidates as $env) {
+            if (!is_array($env) || isset($env['error'])) {
+                continue;
+            }
+            $tpls = [];
+            if (isset($env['templates']) && is_array($env['templates'])) {
+                $tpls = $env['templates'];
+            } elseif ((isset($env['id']) || isset($env['name'])) && !isset($env['templates'])) {
+                // Um único template no lugar de um wrapper
+                $tpls = [$env];
+            }
+            $id_ruler_env = $env['idRuler'] ?? ($env['id_ruler'] ?? '');
+            foreach ($tpls as $t) {
+                if (!is_array($t) || (!isset($t['id']) && !isset($t['name']))) {
+                    continue;
+                }
+                if (!isset($t['idRuler']) || $t['idRuler'] === '' || $t['idRuler'] === null) {
+                    $t['idRuler'] = $id_ruler_env;
+                }
+                $out[] = $t;
+            }
+        }
+
         return $out;
     }
 
@@ -11375,16 +11421,38 @@ class Painel_Campanhas
                         $templates_data = json_decode($body, true);
                         $temps = $this->extract_gosac_templates($templates_data);
                         foreach ($temps as $template) {
+                            $body_text = isset($template['body']) && is_string($template['body']) ? $template['body'] : '';
+                            $content_text = isset($template['content']) && is_string($template['content']) ? $template['content'] : '';
+                            $text_for_ui = $content_text !== '' ? $content_text : $body_text;
+                            $vc_raw = $template['variableComponents'] ?? $template['variable_components'] ?? [];
+                            if (is_string($vc_raw)) {
+                                $vc_dec = json_decode($vc_raw, true);
+                                $vc_raw = is_array($vc_dec) ? $vc_dec : [];
+                            }
+                            if (!is_array($vc_raw)) {
+                                $vc_raw = [];
+                            }
+                            $conn_id = $template['connectionId'] ?? null;
+                            $raw_id = $template['templateId'] ?? $template['id'] ?? $template['name'] ?? '';
+                            $num_id = (is_numeric($raw_id) && (int) $raw_id > 0) ? (int) $raw_id : null;
+                            if ($num_id === null && is_string($raw_id) && preg_match('/\d+/', $raw_id, $m)) {
+                                $num_id = (int) $m[0];
+                            }
                             $all_templates[] = [
                                 'id' => $template['id'] ?? $template['name'] ?? '',
+                                'templateId' => $num_id,
                                 'name' => $template['name'] ?? $template['id'] ?? '',
-                                'content' => $template['content'] ?? '',
+                                'body' => $body_text,
+                                'content' => $text_for_ui,
                                 'category' => $template['category'] ?? '',
                                 'language' => $template['language'] ?? 'pt_BR',
                                 'status' => $template['status'] ?? '',
+                                'components' => $template['components'] ?? [],
                                 'provider' => 'Gosac Oficial',
                                 'id_ambient' => $id_ambient,
-                                'idRuler' => $template['idRuler'] ?? ''
+                                'idRuler' => $template['idRuler'] ?? '',
+                                'connectionId' => $conn_id,
+                                'variableComponents' => $vc_raw,
                             ];
                         }
                     } else {

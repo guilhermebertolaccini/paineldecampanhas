@@ -493,7 +493,8 @@ export default function NovaCampanha() {
           walletId: t.id_ambient || 'default',
           walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
           imageUrl: null,
-          content: t.content || '',
+          content: t.content || t.body || '',
+          body: typeof t.body === "string" ? t.body : "",
           language: t.language || 'pt_BR',
           category: t.category,
           components: t.components,
@@ -501,7 +502,9 @@ export default function NovaCampanha() {
           templateId: numId > 0 ? numId : t.id,
           templateName: t.name || t.id,
           connectionId: t.connectionId ?? null,
-          variableComponents: t.variableComponents ?? [],
+          variableComponents: Array.isArray(t.variableComponents)
+            ? t.variableComponents
+            : (Array.isArray(t.variable_components) ? t.variable_components : []),
         };
       });
 

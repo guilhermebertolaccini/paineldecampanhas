@@ -13,6 +13,8 @@ import {
   listOtimaWppVariableKeysFromTemplate,
   buildInitialVariableMappingFromNoahOfficial,
   listNoahOfficialVariableKeysFromTemplate,
+  listGosacOfficialVariableKeysFromTemplate,
+  buildInitialVariableMappingFromGosacOfficial,
   extractNoahNumericPlaceholderKeys,
   isNoahOfficialTemplateSource,
   buildNoahOfficialTemplatePreviewMessage,
@@ -324,9 +326,12 @@ export default function CampanhaArquivo() {
         templateId: numId > 0 ? numId : t.id,
         templateName: t.name || t.id,
         connectionId: t.connectionId ?? null,
-        variableComponents: t.variableComponents ?? [],
+        variableComponents: Array.isArray(t.variableComponents)
+          ? t.variableComponents
+          : (Array.isArray(t.variable_components) ? t.variable_components : []),
         language: t.language || 'pt_BR',
-        content: t.content || '',
+        content: t.content || t.body || '',
+        body: typeof t.body === "string" ? t.body : "",
         components: t.components,
       };
     });
@@ -458,12 +463,25 @@ export default function CampanhaArquivo() {
 
   const gosacMapperVariableKeys = useMemo(() => {
     const sel = selectedTemplateForMapper;
-    if (!sel || sel.source !== 'gosac_oficial') return [];
-    const comps = sel.variableComponents;
-    if (!Array.isArray(comps) || comps.length === 0) return Object.keys(templateVariables);
-    const keys = comps.map((c: any) => String(c.variable ?? '')).filter(Boolean);
-    if (keys.length === 0) return Object.keys(templateVariables);
-    return [...new Set([...keys, ...Object.keys(templateVariables)])];
+    if (!sel || sel.source !== "gosac_oficial") return [];
+    const fromTpl = listGosacOfficialVariableKeysFromTemplate(sel);
+    const fromState = Object.keys(templateVariables);
+    if (fromTpl.length === 0) return fromState;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const k of fromTpl) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    for (const k of fromState) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    return out;
   }, [selectedTemplateForMapper, templateVariables]);
 
   const otimaWppMapperVariableKeys = useMemo(() => {
@@ -1218,6 +1236,7 @@ export default function CampanhaArquivo() {
                                     const colDefault = csvHeaders[0] || "nome";
                                     const otimaWppMap = buildInitialVariableMappingFromOtimaWpp(selectedTpl);
                                     const noahOfficialMap = buildInitialVariableMappingFromNoahOfficial(selectedTpl);
+                                    const gosacOfficialMap = buildInitialVariableMappingFromGosacOfficial(selectedTpl);
                                     const rawContent = collectPlaceholdersSourceText(selectedTpl ?? null) || "";
                                     if (otimaWppMap) {
                                       setTemplateVariables(otimaWppMap);
@@ -1225,6 +1244,16 @@ export default function CampanhaArquivo() {
                                       const col0 = csvHeaders[0] || "nome";
                                       const patched: Record<string, VarMapping> = {};
                                       for (const [k, m] of Object.entries(noahOfficialMap)) {
+                                        patched[k] =
+                                          m.type === "field" && m.value === "nome"
+                                            ? { ...m, value: col0 }
+                                            : m;
+                                      }
+                                      setTemplateVariables(patched);
+                                    } else if (gosacOfficialMap) {
+                                      const col0 = csvHeaders[0] || "nome";
+                                      const patched: Record<string, VarMapping> = {};
+                                      for (const [k, m] of Object.entries(gosacOfficialMap)) {
                                         patched[k] =
                                           m.type === "field" && m.value === "nome"
                                             ? { ...m, value: col0 }

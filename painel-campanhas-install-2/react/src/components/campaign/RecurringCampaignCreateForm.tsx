@@ -244,8 +244,11 @@ export function RecurringCampaignCreateForm() {
         walletId: t.id_ambient,
         templateId: numId > 0 ? numId : t.id,
         connectionId: t.connectionId ?? null,
-        variableComponents: t.variableComponents ?? [],
-        content: t.content || "",
+        variableComponents: Array.isArray(t.variableComponents)
+          ? t.variableComponents
+          : (Array.isArray(t.variable_components) ? t.variable_components : []),
+        content: (t.content as string) || (t.body as string) || "",
+        body: typeof t.body === "string" ? t.body : "",
       };
     });
     const robbu = (Array.isArray(robbuTemplatesData) ? robbuTemplatesData : []).map((t: Record<string, unknown>) => ({

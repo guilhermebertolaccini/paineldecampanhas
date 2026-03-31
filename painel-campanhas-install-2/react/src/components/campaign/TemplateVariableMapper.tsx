@@ -209,6 +209,7 @@ export function collectPlaceholdersSourceText(template: unknown): string {
     };
 
     const parts: string[] = [];
+    if (typeof t.body === "string") parts.push(t.body);
     if (typeof t.content === "string") parts.push(t.content);
     if (typeof raw.content === "string") parts.push(raw.content);
     if (typeof raw.body === "string") parts.push(raw.body);
@@ -378,16 +379,35 @@ export function buildInitialVariableMappingFromNoahOfficial(template: unknown): 
     return init;
 }
 
+/** Placeholders estilo HSM GOSAC no corpo (ex.: `{{1}}`, `{{nome}}`) — preserva o token completo e a ordem. */
+function extractOrderedGosacDoubleBraceTokens(text: string): string[] {
+    if (!text) return [];
+    const keys: string[] = [];
+    const re = /\{\{[^}]+\}\}/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+        keys.push(m[0]);
+    }
+    return keys;
+}
+
 /**
- * GOSAC Oficial: ordem das chaves = `variableComponents[].variable` (ex.: `{{Var1}}`), como o PHP/Nest usam no HSM.
- * Se a API não mandar `variableComponents`, cai no texto do template (`{{…}}` / `var1`).
+ * GOSAC Oficial: ordem = `variableComponents[].variable` (ex.: `{{1}}`), alinhado ao Nest/HSM.
+ * Se `variableComponents` vier como string JSON, faz parse. Corpo em `body` ou `content` alimenta o fallback.
  */
 export function listGosacOfficialVariableKeysFromTemplate(template: unknown): string[] {
     if (!template || typeof template !== "object") return [];
     const t = template as Record<string, any>;
     if (t.source !== "gosac_oficial") return [];
 
-    const vc = t.variableComponents;
+    let vc: unknown = t.variableComponents ?? t.variable_components;
+    if (typeof vc === "string") {
+        try {
+            vc = JSON.parse(vc) as unknown;
+        } catch {
+            vc = [];
+        }
+    }
     if (Array.isArray(vc) && vc.length > 0) {
         const keys: string[] = [];
         for (const row of vc) {
@@ -399,6 +419,9 @@ export function listGosacOfficialVariableKeysFromTemplate(template: unknown): st
     }
 
     const text = collectPlaceholdersSourceText(template);
+    const braceTokens = extractOrderedGosacDoubleBraceTokens(text);
+    if (braceTokens.length > 0) return braceTokens;
+
     return extractVariables(text);
 }
 
