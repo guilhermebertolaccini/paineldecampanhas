@@ -3202,7 +3202,7 @@ class Painel_Campanhas
                     }
 
                     // carteira_id: id interno da carteira selecionada (para GOSAC: lookup correto quando há múltiplas com mesmo id_carteira)
-                    $carteira_id_insert = !empty($carteira) && ($id_carteira === $campaign_id_carteira) ? intval($carteira) : 0;
+                    $carteira_id_insert = !empty($carteira) && $this->id_carteira_matches_campaign_selection($id_carteira, $campaign_id_carteira) ? intval($carteira) : 0;
 
                     // Para templates da Ótima, GOSAC ou NOAH, armazena JSON no campo mensagem
                     $mensagem_para_armazenar = $mensagem_final;
@@ -4092,10 +4092,14 @@ class Painel_Campanhas
                     $idgis_ambiente = PC_IDGIS_Mapper::get_mapped_idgis($table_name, $provider, $idgis_original);
                 }
 
-                // Usa id_carteira do registro (iscas já trazem esse campo), tabela+idgis, ou herda da carteira selecionada
-                $id_carteira = !empty($record['id_carteira'])
-                    ? $record['id_carteira']
-                    : ($this->get_id_carteira_from_table_idgis($table_name, $idgis_ambiente) ?: $campaign_id_carteira);
+                // id_carteira: CSV por linha > carteira escolhida no painel > vínculo base (LIMIT 1 pode ser ambíguo se várias carteiras na mesma base)
+                if (!empty($record['id_carteira'])) {
+                    $id_carteira = $record['id_carteira'];
+                } elseif (!empty($carteira) && $campaign_id_carteira !== '' && $campaign_id_carteira !== null) {
+                    $id_carteira = $campaign_id_carteira;
+                } else {
+                    $id_carteira = $this->get_id_carteira_from_table_idgis($table_name, $idgis_ambiente) ?: $campaign_id_carteira;
+                }
 
                 // Para templates da Ótima, armazena template_code no campo mensagem
                 $mensagem_para_armazenar = $mensagem_final;
@@ -4213,7 +4217,7 @@ class Painel_Campanhas
                 }
 
                 // carteira_id: id interno da carteira selecionada (para GOSAC: lookup correto de id_ruler quando há múltiplas carteiras com mesmo id_carteira)
-                $carteira_id_insert = !empty($carteira) && ($id_carteira === $campaign_id_carteira) ? intval($carteira) : null;
+                $carteira_id_insert = !empty($carteira) && $this->id_carteira_matches_campaign_selection($id_carteira, $campaign_id_carteira) ? intval($carteira) : null;
 
                 // nome_campanha: exclusivamente o nome digitado no painel (POST); nunca template_code, carteira ou mensagem.
                 $all_insert_data[] = [
@@ -6399,8 +6403,12 @@ class Painel_Campanhas
                         );
                     }
 
-                    // Busca id_carteira: tabela+idgis ou herda da carteira da campanha recorrente
-                    $id_carteira = $this->get_id_carteira_from_table_idgis($campaign['tabela_origem'], $idgis_mapeado) ?: $recurring_campaign_id_carteira;
+                    // id_carteira: carteira salva na campanha recorrente > vínculo base (LIMIT 1 pode ser ambíguo)
+                    if (!empty($campaign_carteira) && $recurring_campaign_id_carteira !== '') {
+                        $id_carteira = $recurring_campaign_id_carteira;
+                    } else {
+                        $id_carteira = $this->get_id_carteira_from_table_idgis($campaign['tabela_origem'], $idgis_mapeado) ?: $recurring_campaign_id_carteira;
+                    }
 
                     // Prepara mensagem
                     $mensagem_final = ($template_source === 'techia_discador')
@@ -9867,6 +9875,18 @@ class Painel_Campanhas
             intval($carteira_id)
         ), ARRAY_A);
         return ($row && !empty($row['id_carteira'])) ? (string) $row['id_carteira'] : '';
+    }
+
+    /**
+     * Compara o código cliente id_carteira do registro com o da carteira escolhida na campanha.
+     * Normaliza para string (trim) para não falhar com int do CSV vs string do banco em ===.
+     */
+    private function id_carteira_matches_campaign_selection($record_id_carteira, $campaign_id_carteira): bool
+    {
+        if ($campaign_id_carteira === '' || $campaign_id_carteira === null) {
+            return false;
+        }
+        return trim((string) $record_id_carteira) === trim((string) $campaign_id_carteira);
     }
 
     /**
