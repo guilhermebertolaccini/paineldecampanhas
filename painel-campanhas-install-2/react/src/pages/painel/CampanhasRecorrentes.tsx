@@ -37,6 +37,7 @@ import {
   getRecurringEstimates,
   saveRecurring,
   getIscas,
+  getCarteiras,
 } from "@/lib/api";
 import {
   Dialog,
@@ -382,6 +383,11 @@ export default function CampanhasRecorrentes() {
     enabled: editOpen,
   });
 
+  const { data: carteiras = [] } = useQuery({
+    queryKey: ["carteiras"],
+    queryFn: getCarteiras,
+  });
+
   const openEditDialog = (c: RecurringCampaign) => {
     setEditSource(c);
     setEditNome(c.nome_campanha || "");
@@ -440,9 +446,15 @@ export default function CampanhasRecorrentes() {
       const excludePhones = Number(cfg.exclude_recent_phones ?? 1);
       const excludeHours = Number(cfg.exclude_recent_hours ?? 48);
 
+      const nomeCarteiraEdit =
+        (carteiras as { id?: string; nome?: string }[])
+          .find((c) => String(c.id) === String(editSource.carteira))
+          ?.nome?.trim() || "";
+
       return saveRecurring({
         id: parseInt(String(editSource.id), 10),
         nome_campanha: editNome.trim(),
+        nome_carteira: nomeCarteiraEdit,
         table_name: editSource.tabela_origem,
         carteira: editSource.carteira || "",
         providers_config: cfg,

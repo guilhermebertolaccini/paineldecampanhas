@@ -403,8 +403,14 @@ export function RecurringCampaignCreateForm() {
               }
             : {};
 
+      const nomeCarteiraSelecionada =
+        (carteiras as { id?: string; nome?: string }[])
+          .find((c) => String(c.id) === String(carteira))
+          ?.nome?.trim() || "";
+
       return saveRecurring({
         nome_campanha: name.trim(),
+        nome_carteira: nomeCarteiraSelecionada,
         table_name: base,
         carteira,
         template_id: techiaOnly || salesforceOnly ? 0 : templateSource === "local" ? parseInt(template, 10) : 0,

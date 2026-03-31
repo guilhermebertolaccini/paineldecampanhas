@@ -28,12 +28,10 @@ interface PendingCampaign {
   scheduled_by: string;
   id_carteira?: string;
   nome_carteira?: string;
-  carteira_nome?: string;
-  wallet_name?: string;
 }
 
-function carteiraDisplayName(c: Pick<PendingCampaign, "nome_carteira" | "carteira_nome" | "wallet_name">): string {
-  const s = c.nome_carteira?.trim() || c.carteira_nome?.trim() || c.wallet_name?.trim();
+function carteiraDisplayName(c: Pick<PendingCampaign, "nome_carteira">): string {
+  const s = (c.nome_carteira ?? "").trim();
   return s || "—";
 }
 

@@ -936,6 +936,7 @@ export default function NovaCampanha() {
         nome_campanha: formData.name,
         table_name: formData.base,
         carteira: formData.carteira || '',
+        nome_carteira: (carteiras as { id?: string; nome?: string }[]).find((c) => String(c.id) === String(formData.carteira))?.nome?.trim() || '',
         template_id: techiaRecurringOnly
           ? 0
           : formData.templateSource === "local"
@@ -972,6 +973,7 @@ export default function NovaCampanha() {
       const campaignData = {
         table_name: formData.base,
         carteira: formData.carteira || '',
+        nome_carteira: selectedCarteiraObj?.nome?.trim() || '',
         nome_campanha: formData.name.trim(),
         filters: formattedFilters,
         providers_config: providersConfig,

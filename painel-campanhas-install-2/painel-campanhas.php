@@ -110,6 +110,10 @@ class Painel_Campanhas
         if (empty($has_carteira_id)) {
             $wpdb->query("ALTER TABLE `{$table}` ADD COLUMN carteira_id bigint(20) DEFAULT NULL");
         }
+        $has_nome_carteira = $wpdb->get_results("SHOW COLUMNS FROM `{$table}` LIKE 'nome_carteira'");
+        if (empty($has_nome_carteira)) {
+            $wpdb->query("ALTER TABLE `{$table}` ADD COLUMN nome_carteira varchar(255) NULL DEFAULT NULL");
+        }
     }
 
     /**
@@ -482,6 +486,9 @@ class Painel_Campanhas
         if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'nome_campanha'"))) {
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN nome_campanha varchar(255) NULL DEFAULT NULL AFTER agendamento_id");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'nome_carteira'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN nome_carteira varchar(255) NULL DEFAULT NULL");
+        }
 
         $query = $wpdb->prepare("
             SELECT 
@@ -497,7 +504,8 @@ class Painel_Campanhas
                 data_cadastro as data_cadastro,
                 mensagem,
                 COALESCE(midia_campanha, '') as midia_campanha,
-                COALESCE(nome_campanha, '') as nome_campanha
+                COALESCE(nome_campanha, '') as nome_campanha,
+                COALESCE(nome_carteira, '') as nome_carteira
             FROM {$table}
             WHERE agendamento_id = %s
             AND status IN ('pendente_aprovacao', 'pendente')
@@ -526,9 +534,9 @@ class Painel_Campanhas
                 $id_carteira = $this->get_id_carteira_from_idgis($row['idgis_ambiente']);
             }
 
-            // carteira_nome: para GOSAC - lookup por nome quando há múltiplas carteiras com mesmo id_carteira
-            $carteira_nome = '';
-            if (!empty($row['carteira_id'])) {
+            // carteira_nome: desnormalizado em envios_pendentes.nome_carteira; fallback por PK
+            $carteira_nome = trim((string) ($row['nome_carteira'] ?? ''));
+            if ($carteira_nome === '' && !empty($row['carteira_id'])) {
                 $carteira_nome = $this->get_carteira_nome_by_id($row['carteira_id']);
             }
 
@@ -3035,6 +3043,10 @@ class Painel_Campanhas
             $variables_map = json_decode($variables_map_json, true);
             $carteira = sanitize_text_field($_POST['carteira'] ?? '');
             $nome_campanha_post = sanitize_text_field(wp_unslash($_POST['nome_campanha'] ?? ''));
+            $nome_carteira_persist = sanitize_text_field(wp_unslash($_POST['nome_carteira'] ?? ''));
+            if ($nome_carteira_persist === '' && !empty($carteira)) {
+                $nome_carteira_persist = $this->get_carteira_nome_by_id((int) $carteira);
+            }
 
             // id_carteira da carteira selecionada (herança para todos os registros da fila)
             $campaign_id_carteira = '';
@@ -3294,13 +3306,14 @@ class Painel_Campanhas
                         'fornecedor' => $provider,
                         'agendamento_id' => $agendamento_id,
                         'nome_campanha' => $nome_campanha_row,
+                        'nome_carteira' => $nome_carteira_persist,
                         'status' => 'pendente_aprovacao',
                         'current_user_id' => $current_user_id,
                         'valido' => 1,
                         'data_cadastro' => current_time('mysql')
                     ];
 
-                    $wpdb->insert($envios_table, $insert_data, ['%s', '%s', '%d', '%s', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s']);
+                    $wpdb->insert($envios_table, $insert_data, ['%s', '%s', '%d', '%s', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s']);
                     $total_inserted++;
                 }
             }
@@ -3808,6 +3821,7 @@ class Painel_Campanhas
         global $wpdb;
 
         try {
+        $this->maybe_add_envios_cancel_columns();
         $table_name = $this->get_safe_table_name();
         if (empty($table_name)) { wp_send_json_error('Tabela inválida.'); return; }
         $filters_json = stripslashes($_POST['filters'] ?? '[]');
@@ -3830,6 +3844,10 @@ class Painel_Campanhas
         $midia_campanha = esc_url_raw($_POST['midia_campanha'] ?? '');
         $carteira = sanitize_text_field($_POST['carteira'] ?? '');
         $nome_campanha_camp = sanitize_text_field(wp_unslash($_POST['nome_campanha'] ?? ''));
+        $nome_carteira_persist = sanitize_text_field(wp_unslash($_POST['nome_carteira'] ?? ''));
+        if ($nome_carteira_persist === '' && !empty($carteira)) {
+            $nome_carteira_persist = $this->get_carteira_nome_by_id((int) $carteira);
+        }
 
         // id_carteira da carteira selecionada (herança para todos os registros da fila)
         $campaign_id_carteira = '';
@@ -4237,6 +4255,7 @@ class Painel_Campanhas
                     'fornecedor' => $provider,
                     'agendamento_id' => $agendamento_id,
                     'nome_campanha' => $nome_campanha_camp !== '' ? $nome_campanha_camp : null,
+                    'nome_carteira' => $nome_carteira_persist,
                     'status' => 'pendente_aprovacao',
                     'current_user_id' => $current_user_id,
                     'valido' => 1,
@@ -5671,6 +5690,9 @@ class Painel_Campanhas
         if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'nome_campanha'"))) {
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN nome_campanha varchar(255) NULL DEFAULT NULL AFTER agendamento_id");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'nome_carteira'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN nome_carteira varchar(255) NULL DEFAULT NULL");
+        }
 
         // Prepara valores para INSERT múltiplo
         $values = [];
@@ -5684,9 +5706,13 @@ class Painel_Campanhas
             if (isset($data['nome_campanha']) && $data['nome_campanha'] !== null && $data['nome_campanha'] !== '') {
                 $nome_campanha_ins = (string) $data['nome_campanha'];
             }
+            $nome_carteira_ins = '';
+            if (isset($data['nome_carteira']) && $data['nome_carteira'] !== null && $data['nome_carteira'] !== '') {
+                $nome_carteira_ins = (string) $data['nome_carteira'];
+            }
 
             $values[] = $wpdb->prepare(
-                "(%s, %s, %d, %s, %d, %d, %s, %s, %s, %s, %s, %s, %s, %d, %d, %s)",
+                "(%s, %s, %d, %s, %d, %d, %s, %s, %s, %s, %s, %s, %s, %s, %d, %d, %s)",
                 $data['telefone'],
                 $data['nome'],
                 $data['idgis_ambiente'],
@@ -5699,6 +5725,7 @@ class Painel_Campanhas
                 $data['fornecedor'],
                 $data['agendamento_id'],
                 $nome_campanha_ins,
+                $nome_carteira_ins,
                 $data['status'],
                 $data['current_user_id'],
                 $data['valido'],
@@ -5707,7 +5734,7 @@ class Painel_Campanhas
         }
 
         $sql = "INSERT INTO {$table} 
-                (telefone, nome, idgis_ambiente, id_carteira, carteira_id, idcob_contrato, cpf_cnpj, mensagem, midia_campanha, fornecedor, agendamento_id, nome_campanha, status, current_user_id, valido, data_cadastro) 
+                (telefone, nome, idgis_ambiente, id_carteira, carteira_id, idcob_contrato, cpf_cnpj, mensagem, midia_campanha, fornecedor, agendamento_id, nome_campanha, nome_carteira, status, current_user_id, valido, data_cadastro) 
                 VALUES " . implode(', ', $values);
 
         error_log('🔵 [bulk_insert] Inserindo ' . count($data_array) . ' registros na tabela ' . $table);
@@ -6362,6 +6389,10 @@ class Painel_Campanhas
             $recurring_campaign_id_carteira = !empty($campaign_carteira)
                 ? $this->resolve_id_carteira_from_carteira_id($campaign_carteira)
                 : '';
+            $nome_carteira_recurring = '';
+            if (!empty($campaign_carteira)) {
+                $nome_carteira_recurring = $this->get_carteira_nome_by_id((int) $campaign_carteira);
+            }
 
             foreach ($distribution as $provider => $provider_records) {
                 error_log("🔵 Processando provedor {$provider}: " . count($provider_records) . " registros");
@@ -6567,6 +6598,7 @@ class Painel_Campanhas
                         'fornecedor' => $provider,
                         'agendamento_id' => $agendamento_id,
                         'nome_campanha' => !empty($campaign['nome_campanha']) ? sanitize_text_field($campaign['nome_campanha']) : null,
+                        'nome_carteira' => $nome_carteira_recurring,
                         'status' => 'pendente_aprovacao',
                         'current_user_id' => $current_user_id,
                         'valido' => 1,
@@ -6733,6 +6765,9 @@ class Painel_Campanhas
         if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'nome_campanha'"))) {
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN nome_campanha varchar(255) NULL DEFAULT NULL AFTER agendamento_id");
         }
+        if (empty($wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'nome_carteira'"))) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN nome_carteira varchar(255) NULL DEFAULT NULL");
+        }
 
         $values = [];
 
@@ -6743,9 +6778,13 @@ class Painel_Campanhas
             if (isset($data['nome_campanha']) && $data['nome_campanha'] !== null && $data['nome_campanha'] !== '') {
                 $nome_campanha_ins = (string) $data['nome_campanha'];
             }
+            $nome_carteira_ins = '';
+            if (isset($data['nome_carteira']) && $data['nome_carteira'] !== null && $data['nome_carteira'] !== '') {
+                $nome_carteira_ins = (string) $data['nome_carteira'];
+            }
 
             $values[] = $wpdb->prepare(
-                "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %s, %s, %d, %d, %s)",
+                "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %s, %s, %s, %d, %d, %s)",
                 $data['telefone'],
                 $data['nome'],
                 $data['idgis_ambiente'],
@@ -6756,6 +6795,7 @@ class Painel_Campanhas
                 $data['fornecedor'],
                 $data['agendamento_id'],
                 $nome_campanha_ins,
+                $nome_carteira_ins,
                 $data['status'],
                 $data['current_user_id'],
                 $data['valido'],
@@ -6764,7 +6804,7 @@ class Painel_Campanhas
         }
 
         $sql = "INSERT INTO {$table} 
-                (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, nome_campanha, status, current_user_id, valido, data_cadastro) 
+                (telefone, nome, idgis_ambiente, id_carteira, idcob_contrato, cpf_cnpj, mensagem, fornecedor, agendamento_id, nome_campanha, nome_carteira, status, current_user_id, valido, data_cadastro) 
                 VALUES " . implode(', ', $values);
 
         $result = $wpdb->query($sql);
@@ -6789,7 +6829,6 @@ class Painel_Campanhas
         global $wpdb;
         $table = $wpdb->prefix . 'envios_pendentes';
         $users_table = $wpdb->prefix . 'users';
-        $carteiras_table = $wpdb->prefix . 'pc_carteiras_v2';
 
         $filter_agendamento = sanitize_text_field($_POST['filter_agendamento'] ?? '');
         $filter_fornecedor = sanitize_text_field($_POST['filter_fornecedor'] ?? '');
@@ -6818,14 +6857,9 @@ class Painel_Campanhas
                 MAX(t1.current_user_id) AS current_user_id,
                 COALESCE(MAX(u.display_name), 'Usuário Desconhecido') AS scheduled_by,
                 MAX(t1.id_carteira) AS id_carteira,
-                MAX(t1.carteira_id) AS carteira_id_row,
-                MAX(cv.nome) AS nome_carteira
+                MAX(t1.nome_carteira) AS nome_carteira
             FROM `{$table}` AS t1
             LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
-            LEFT JOIN `{$carteiras_table}` AS cv ON cv.ativo = 1 AND (
-                (t1.carteira_id IS NOT NULL AND CAST(t1.carteira_id AS UNSIGNED) > 0 AND cv.id = t1.carteira_id)
-                OR (NULLIF(TRIM(t1.id_carteira), '') IS NOT NULL AND TRIM(cv.id_carteira) = TRIM(t1.id_carteira))
-            )
             WHERE {$where_sql}
             GROUP BY t1.agendamento_id, t1.fornecedor
             ORDER BY MIN(t1.data_cadastro) DESC
@@ -6835,22 +6869,20 @@ class Painel_Campanhas
 
         $results = $wpdb->get_results($query, ARRAY_A);
 
-        $results = array_map(function ($row) {
-            if (!is_array($row)) {
-                return $row;
+        if (is_array($results)) {
+            foreach ($results as &$row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $nome = trim((string) ($row['nome_carteira'] ?? ''));
+                $row['nome_carteira'] = $nome;
+                $row['carteira_nome'] = $nome;
+                $row['wallet_name'] = $nome;
             }
-            $nome = $this->resolve_carteira_display_name_from_camp_row([
-                'nome_carteira' => $row['nome_carteira'] ?? '',
-                'carteira_id_row' => $row['carteira_id_row'] ?? 0,
-                'id_carteira' => $row['id_carteira'] ?? '',
-            ]);
-            $row['nome_carteira'] = $nome;
-            $row['carteira_nome'] = $nome;
-            $row['wallet_name'] = $nome;
-            return $row;
-        }, $results ?: []);
+            unset($row);
+        }
 
-        error_log('🔵 [Aprovar Campanhas] Resultados encontrados: ' . count($results));
+        error_log('🔵 [Aprovar Campanhas] Resultados encontrados: ' . count($results ?: []));
         if (!empty($results)) {
             error_log('🔵 [Aprovar Campanhas] Primeiro resultado: ' . print_r($results[0], true));
         }
@@ -9883,50 +9915,6 @@ class Painel_Campanhas
     }
 
     /**
-     * Nome da carteira pelo código cliente (id_carteira em pc_carteiras_v2).
-     * Se várias carteiras compartilham o mesmo código, retorna a de menor id (primeira criada).
-     */
-    private function get_carteira_nome_by_id_carteira_code($id_carteira_code)
-    {
-        $code = trim((string) $id_carteira_code);
-        if ($code === '') {
-            return '';
-        }
-        global $wpdb;
-        $table = $wpdb->prefix . 'pc_carteiras_v2';
-        $row = $wpdb->get_row($wpdb->prepare(
-            "SELECT nome FROM $table WHERE TRIM(id_carteira) = %s AND ativo = 1 ORDER BY id ASC LIMIT 1",
-            $code
-        ), ARRAY_A);
-        return ($row && !empty($row['nome'])) ? (string) $row['nome'] : '';
-    }
-
-    /**
-     * Nome legível para listagens: JOIN / MAX(nome), depois PK interna, depois código cliente.
-     *
-     * @param array $camp Deve conter opcionalmente nome_carteira, carteira_id_row, id_carteira
-     */
-    private function resolve_carteira_display_name_from_camp_row(array $camp): string
-    {
-        $nome = trim((string) ($camp['nome_carteira'] ?? ''));
-        if ($nome !== '') {
-            return $nome;
-        }
-        $cid_row = isset($camp['carteira_id_row']) ? (int) $camp['carteira_id_row'] : 0;
-        if ($cid_row > 0) {
-            $nome = $this->get_carteira_nome_by_id($cid_row);
-            if ($nome !== '') {
-                return $nome;
-            }
-        }
-        $code = trim((string) ($camp['id_carteira'] ?? ''));
-        if ($code !== '') {
-            return $this->get_carteira_nome_by_id_carteira_code($code);
-        }
-        return '';
-    }
-
-    /**
      * Converte carteira_id (id interno de pc_carteiras_v2) para id_carteira (código cliente).
      * cm_baits.id_carteira armazena o id interno, não o código.
      */
@@ -10423,7 +10411,6 @@ class Painel_Campanhas
         global $wpdb;
         $envios_table = $wpdb->prefix . 'envios_pendentes';
         $users_table = $wpdb->users;
-        $carteiras_table = $wpdb->prefix . 'pc_carteiras_v2';
 
         // Filtros
         $status_filter = sanitize_text_field($_POST['status'] ?? $_GET['status'] ?? '');
@@ -10452,15 +10439,10 @@ class Painel_Campanhas
                 MAX(t1.motivo_cancelamento) AS motivo_cancelamento,
                 MAX(t1.cancelado_por) AS cancelado_por_id,
                 MAX(t1.id_carteira) AS id_carteira,
-                MAX(t1.carteira_id) AS carteira_id_row,
-                MAX(cv.nome) AS nome_carteira,
+                MAX(t1.nome_carteira) AS nome_carteira_denorm,
                 MAX(t1.nome_campanha) AS nome_campanha
             FROM `{$envios_table}` AS t1
             LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
-            LEFT JOIN `{$carteiras_table}` AS cv ON cv.ativo = 1 AND (
-                (t1.carteira_id IS NOT NULL AND CAST(t1.carteira_id AS UNSIGNED) > 0 AND cv.id = t1.carteira_id)
-                OR (NULLIF(TRIM(t1.id_carteira), '') IS NOT NULL AND TRIM(cv.id_carteira) = TRIM(t1.id_carteira))
-            )
             WHERE t1.current_user_id = %d
         ";
 
@@ -10544,11 +10526,7 @@ class Painel_Campanhas
             $nome_amigavel = trim((string) ($camp['nome_campanha'] ?? ''));
             $nome_exibicao = $nome_amigavel !== '' ? $nome_amigavel : $ag_id;
 
-            $nome_carteira = $this->resolve_carteira_display_name_from_camp_row([
-                'nome_carteira' => $camp['nome_carteira'] ?? '',
-                'carteira_id_row' => $camp['carteira_id_row'] ?? 0,
-                'id_carteira' => $camp['id_carteira'] ?? '',
-            ]);
+            $nome_carteira = trim((string) ($camp['nome_carteira_denorm'] ?? ''));
 
             return [
                 'id' => $camp['agendamento_id'] . '-' . $camp['provider'],

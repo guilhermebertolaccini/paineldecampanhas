@@ -45,10 +45,8 @@ export interface Campaign {
   provider: string;
   /** Valor exato da coluna fornecedor no MySQL (para cancelamento). */
   fornecedor?: string;
-  /** Nome legível da carteira (preferir sempre na UI) */
+  /** Nome denormalizado vindo de `envios_pendentes.nome_carteira` (API: nomeCarteira) */
   nomeCarteira?: string;
-  carteira_nome?: string;
-  wallet_name?: string;
   /** Código cliente id_carteira — não exibir como rótulo principal */
   idCarteira?: string;
   quantity: number;
@@ -238,13 +236,7 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
           <TableBody>
             {campaigns.map((campaign, index) => {
               const feedback = motivoFeedback(campaign);
-              const carteiraLabel = [
-                campaign.nomeCarteira,
-                campaign.carteira_nome,
-                campaign.wallet_name,
-              ]
-                .find((s) => typeof s === "string" && s.trim() !== "")
-                ?.trim();
+              const carteiraLabel = (campaign.nomeCarteira ?? "").trim();
               return (
                 <TableRow
                   key={campaign.id}

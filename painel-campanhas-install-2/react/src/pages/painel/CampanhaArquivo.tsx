@@ -811,6 +811,7 @@ export default function CampanhaArquivo() {
 
     const payload: Record<string, any> = {
       nome_campanha: campaignName.trim(),
+      nome_carteira: selectedCarteiraObj?.nome?.trim() || '',
       temp_id: tempId,
       table_name: tableName,
       carteira: carteira || '',

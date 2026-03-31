@@ -200,6 +200,7 @@ export const scheduleCampaign = (data: Record<string, any>) => {
   const payload: Record<string, any> = {
     table_name: data.base || data.table_name,
     carteira: data.carteira || '',
+    nome_carteira: data.nome_carteira != null && String(data.nome_carteira).trim() !== '' ? String(data.nome_carteira).trim() : '',
     filters: data.filters || [],
     providers_config: data.providers_config || {},
     template_id: data.template_id || data.template,
@@ -461,6 +462,7 @@ export const saveRecurring = (data: Record<string, any>) => {
     nome_campanha: data.nome_campanha,
     table_name: data.table_name,
     carteira: data.carteira || '',
+    nome_carteira: data.nome_carteira != null && String(data.nome_carteira).trim() !== '' ? String(data.nome_carteira).trim() : '',
     template_id: data.template_id,
     providers_config: typeof data.providers_config === 'string'
       ? data.providers_config
@@ -571,6 +573,7 @@ export const createCpfCampaign = (data: Record<string, any>) => {
     temp_id: data.temp_id,
     table_name: data.table_name,
     carteira: data.carteira || '',
+    nome_carteira: data.nome_carteira != null && String(data.nome_carteira).trim() !== '' ? String(data.nome_carteira).trim() : '',
     template_id: data.template_id,
     template_code: data.template_code,
     template_source: templateSource,
