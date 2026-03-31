@@ -46,7 +46,7 @@ export type NoahSendTemplatePayload = {
  * - POST {baseUrl}/send-template — HSM / template aprovado
  * - POST {baseUrl} — texto livre (sem /send-template)
  *
- * Auth: documentação NOAH — `Authorization: Bearer {token}` (sem prefixo INTEGRATION).
+ * Auth: endpoint externo exige `Authorization: INTEGRATION {token}` (validado em Postman; Bearer retorna 403).
  */
 @Injectable()
 export class NoahOficialProvider extends BaseProvider {
@@ -271,22 +271,20 @@ export class NoahOficialProvider extends BaseProvider {
   }
 
   /**
-   * NOAH exige `Authorization: Bearer {token}`. Remove prefixos legados (`INTEGRATION`, `Bearer`)
-   * que possam vir duplicados ou sujos do banco/credenciais.
+   * NOAH `/send-template`: `Authorization: INTEGRATION {token}`. Remove prefixos duplicados (`Bearer` / `INTEGRATION`)
+   * antes de reaplicar o prefixo correto (comportamento alinhado ao Postman).
    */
   private buildNoahAuthorizationHeader(token: string): string {
     if (!token) return '';
     let raw = String(token).trim();
     if (!raw) return '';
     for (let depth = 0; depth < 6; depth++) {
-      const stripped = raw
-        .replace(/^(Bearer|INTEGRATION)\s+/i, '')
-        .trim();
+      const stripped = raw.replace(/^(Bearer|INTEGRATION)\s+/i, '').trim();
       if (stripped === raw) break;
       raw = stripped;
     }
     if (!raw) return '';
-    return `Bearer ${raw}`;
+    return `INTEGRATION ${raw}`;
   }
 
   private detectTemplateMessage(mensagem: string): boolean {
