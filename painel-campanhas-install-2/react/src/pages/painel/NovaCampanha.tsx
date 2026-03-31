@@ -53,6 +53,7 @@ import {
   getTemplatesByWallet,
   getGosacOficialTemplates,
   getGosacOficialConnections,
+  getNoahOficialChannels,
   getRobbuOficialTemplates,
   getOtimaTemplates,
   getOtimaBrokers,
@@ -227,6 +228,17 @@ export default function NovaCampanha() {
     queryKey: ['gosac-oficial-connections', formData.carteira],
     queryFn: () => getGosacOficialConnections({ carteira: formData.carteira }),
     enabled: !!formData.carteira && (formData.templateSource === 'gosac_oficial' || formData.providers.includes('GOSAC_OFICIAL')),
+    staleTime: 2 * 60 * 1000,
+  });
+
+  const { data: noahChannelsData = [], isLoading: noahChannelsLoading } = useQuery({
+    queryKey: ['noah-oficial-channels', formData.carteira],
+    queryFn: () => getNoahOficialChannels({ carteira_id: formData.carteira }),
+    enabled:
+      !!formData.carteira &&
+      (formData.templateSource === 'noah_oficial' ||
+        formData.templateSource === 'noah' ||
+        formData.providers.includes('NOAH_OFICIAL')),
     staleTime: 2 * 60 * 1000,
   });
 
@@ -852,6 +864,21 @@ export default function NovaCampanha() {
       }
     }
 
+    if (!salesforceOnly && (formData.templateSource === 'noah_oficial' || formData.templateSource === 'noah')) {
+      const ch = parseInt(
+        String(formData.noahChannelId || selectedTemplateObj?.channelId || ''),
+        10,
+      );
+      if (!ch || ch <= 0) {
+        toast({
+          title: "Remetente NOAH obrigatório",
+          description: "Selecione a linha de disparo (channelId) na lista de canais NOAH Oficial.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     if (formData.providers.length === 0) {
       toast({
         title: "Fornecedor obrigatório",
@@ -906,7 +933,10 @@ export default function NovaCampanha() {
         template_source: techiaRecurringOnly ? "techia_discador" : formData.templateSource || "local",
         broker_code: formData.brokerCode || null,
         customer_code: formData.customerCode || null,
-        noah_channel_id: formData.noahChannelId || null,
+        noah_channel_id: (() => {
+          const n = parseInt(String(formData.noahChannelId || selectedTemplateObj?.channelId || ''), 10);
+          return !Number.isNaN(n) && n > 0 ? n : null;
+        })(),
         noah_template_id: formData.noahTemplateId || null,
         noah_language: formData.noahLanguage || 'pt_BR',
         gosac_template_id: formData.gosacTemplateId ?? null,
@@ -938,7 +968,10 @@ export default function NovaCampanha() {
         template_source: formData.templateSource || 'local',
         broker_code: formData.brokerCode || null,
         customer_code: formData.customerCode || null,
-        noah_channel_id: formData.noahChannelId || null,
+        noah_channel_id: (() => {
+          const n = parseInt(String(formData.noahChannelId || selectedTemplateObj?.channelId || ''), 10);
+          return !Number.isNaN(n) && n > 0 ? n : null;
+        })(),
         noah_template_id: formData.noahTemplateId || null,
         noah_language: formData.noahLanguage || 'pt_BR',
         gosac_template_id: (() => {
@@ -1600,6 +1633,64 @@ export default function NovaCampanha() {
                   </Select>
                   <p className="text-xs text-muted-foreground">
                     Selecione a ilha (conexão) pela qual o disparo será enviado. A carteira deve ter id_carteira e id_ruler configurados.
+                  </p>
+                </div>
+              )}
+
+              {(formData.templateSource === 'noah_oficial' ||
+                formData.templateSource === 'noah' ||
+                formData.providers.includes('NOAH_OFICIAL')) && (
+                <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
+                  <Label>Remetente / linha NOAH (channelId) <span className="text-red-500">*</span></Label>
+                  <Select
+                    value={formData.noahChannelId ? String(formData.noahChannelId) : ''}
+                    onValueChange={(v) =>
+                      setFormData({ ...formData, noahChannelId: v ? String(parseInt(v, 10)) : '' })
+                    }
+                    disabled={noahChannelsLoading || !formData.carteira}
+                  >
+                    <SelectTrigger>
+                      <SelectValue
+                        placeholder={
+                          !formData.carteira
+                            ? 'Selecione a carteira primeiro'
+                            : noahChannelsLoading
+                              ? 'Carregando canais...'
+                              : 'Selecione o canal de disparo'
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.isArray(noahChannelsData) &&
+                        noahChannelsData.length === 0 &&
+                        !noahChannelsLoading &&
+                        formData.carteira && (
+                          <div className="py-2 px-3 text-xs text-muted-foreground italic">
+                            Nenhum canal encontrado. Configure URL/token NOAH Oficial no API Manager para esta carteira.
+                          </div>
+                        )}
+                      {Array.isArray(noahChannelsData) &&
+                        noahChannelsData.map((ch: Record<string, unknown>) => {
+                          const cid =
+                            ch.id ?? ch.channelId ?? ch.channel_id ?? ch.IdCanal;
+                          const label =
+                            (ch.name as string) ||
+                            (ch.nome as string) ||
+                            (ch.label as string) ||
+                            `Canal ${String(cid ?? '')}`;
+                          const v = cid != null ? String(cid) : '';
+                          if (!v) return null;
+                          return (
+                            <SelectItem key={`noah-ch-${v}`} value={v}>
+                              {label}
+                            </SelectItem>
+                          );
+                        })}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Obrigatório para o payload <code className="rounded bg-muted px-0.5">channelId</code> na API NOAH{' '}
+                    <code className="rounded bg-muted px-0.5">send-template</code>.
                   </p>
                 </div>
               )}

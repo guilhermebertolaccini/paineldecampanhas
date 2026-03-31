@@ -379,6 +379,12 @@ export const getGosacOficialConnections = (params?: { carteira?: string; id_ambi
   return wpAjax('pc_get_gosac_oficial_connections', params || {});
 };
 
+/** NOAH Oficial: canais WABA (`GET .../channels`) — `carteira_id` = PK da carteira no WP. */
+export const getNoahOficialChannels = (params?: { carteira?: string; carteira_id?: string }) => {
+  const carteira_id = params?.carteira_id ?? params?.carteira ?? '';
+  return wpAjax('pc_get_noah_oficial_channels', { carteira_id: String(carteira_id) });
+};
+
 export const getRobbuWebhookStats = () => {
   return wpAjax('pc_get_robbu_webhook_stats', {});
 };

@@ -7,6 +7,8 @@ export interface CampaignData {
   idcob_contrato: string;
   cpf_cnpj: string;
   mensagem: string;
+  /** NOAH Oficial / Ótima: channelId ou broker salvo na fila (REST). */
+  broker_code?: string;
   /** Preenchido pelo WordPress em fluxos como TECHIA (JSON com `variables` por linha). */
   variables?: Record<string, string>;
   data_cadastro?: string;

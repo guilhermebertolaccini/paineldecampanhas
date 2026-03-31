@@ -46,7 +46,7 @@ export type NoahSendTemplatePayload = {
  * - POST {baseUrl}/send-template — HSM / template aprovado
  * - POST {baseUrl} — texto livre (sem /send-template)
  *
- * Auth: endpoint externo exige `Authorization: INTEGRATION {token}` (validado em Postman; Bearer retorna 403).
+ * Auth: documentação oficial — `Authorization: Bearer {token}`.
  */
 @Injectable()
 export class NoahOficialProvider extends BaseProvider {
@@ -246,6 +246,22 @@ export class NoahOficialProvider extends BaseProvider {
           err.response?.data?.message ||
           err.message ||
           'Erro desconhecido ao enviar';
+        const st = err.response?.status;
+        const body = err.response?.data;
+        const errTok =
+          body && typeof body === 'object' && body.error != null
+            ? String(body.error)
+            : '';
+        if (
+          st === 403 &&
+          (errTok === 'ERR_SESSION_NOT_AUTH_TOKEN' ||
+            JSON.stringify(body ?? '').includes('ERR_SESSION_NOT_AUTH_TOKEN'))
+        ) {
+          const apiId = this.extractNoahApiIdFromBaseUrl(baseUrl);
+          this.logger.warn(
+            `[NOAH] Erro 403: URL Inválida. Verifique se o apiId (${apiId}) configurado no API Manager pertence a este Token.`,
+          );
+        }
         this.logger.warn(
           `Falha ao enviar para ${number} (${i + 1}/${data.length}): ${lastError}`,
         );
@@ -271,8 +287,7 @@ export class NoahOficialProvider extends BaseProvider {
   }
 
   /**
-   * NOAH `/send-template`: `Authorization: INTEGRATION {token}`. Remove prefixos duplicados (`Bearer` / `INTEGRATION`)
-   * antes de reaplicar o prefixo correto (comportamento alinhado ao Postman).
+   * NOAH: `Authorization: Bearer {token}`. Remove prefixos duplicados (`Bearer` / `INTEGRATION`) vindos do banco.
    */
   private buildNoahAuthorizationHeader(token: string): string {
     if (!token) return '';
@@ -284,7 +299,41 @@ export class NoahOficialProvider extends BaseProvider {
       raw = stripped;
     }
     if (!raw) return '';
-    return `INTEGRATION ${raw}`;
+    return `Bearer ${raw}`;
+  }
+
+  /** Segmento `apiId` em URLs `.../v1/api/external/{apiId}/...`. */
+  private extractNoahApiIdFromBaseUrl(baseUrl: string): string {
+    const m = /\/external\/([^/?#]+)/i.exec(baseUrl);
+    return m ? m[1] : 'desconhecido';
+  }
+
+  /**
+   * `channelId` do send-template: JSON da mensagem → `broker_code` da REST → `variables`.
+   */
+  private resolveNoahChannelId(
+    parsed: Record<string, unknown>,
+    item: CampaignData,
+  ): number {
+    const tryNum = (v: unknown): number => {
+      if (v === undefined || v === null || v === '') return 0;
+      const n = Number(v);
+      return !Number.isNaN(n) && n > 0 ? n : 0;
+    };
+
+    let n = tryNum(parsed.channelId ?? parsed.channel_id);
+    if (n > 0) return n;
+
+    n = tryNum(item.broker_code);
+    if (n > 0) return n;
+
+    const fromVars = this.pickNoahVariableField(item.variables, [
+      'noah_channel_id',
+      'channel_id',
+      'broker_code',
+    ]);
+    n = tryNum(fromVars);
+    return n > 0 ? n : 0;
   }
 
   private detectTemplateMessage(mensagem: string): boolean {
@@ -353,7 +402,7 @@ export class NoahOficialProvider extends BaseProvider {
       throw new Error('Mensagem template inválida (JSON malformado)');
     }
 
-    const channelId = parsed.channelId ?? parsed.channel_id;
+    const channelIdNum = this.resolveNoahChannelId(parsed, item);
     const templateIdRaw = parsed.templateId ?? parsed.template_id;
     const templateName =
       (parsed.templateName ?? parsed.template_name ?? parsed.template_code) as
@@ -382,9 +431,9 @@ export class NoahOficialProvider extends BaseProvider {
 
     const components = this.normalizeNoahTemplateComponents(componentsRaw);
 
-    if (!channelId || !templateName || String(templateName).trim() === '') {
+    if (!channelIdNum || !templateName || String(templateName).trim() === '') {
       throw new Error(
-        'Template NOAH requer channelId e templateName no JSON da mensagem',
+        'Template NOAH requer channelId (remetente) e templateName — verifique o JSON da mensagem e o broker_code na fila.',
       );
     }
 
@@ -392,7 +441,7 @@ export class NoahOficialProvider extends BaseProvider {
 
     const payload: NoahSendTemplatePayload = {
       number,
-      channelId: Number(channelId),
+      channelId: channelIdNum,
       templateName: String(templateName).trim(),
       language: String(language),
       components,
@@ -408,7 +457,7 @@ export class NoahOficialProvider extends BaseProvider {
     }
 
     this.logger.debug(
-      `NOAH send-template → ${url} | externalKey=${externalKey} | number=${number}`,
+      `NOAH send-template → ${url} | channelId=${channelIdNum} | externalKey=${externalKey} | number=${number}`,
     );
 
     await this.executeWithRetry(

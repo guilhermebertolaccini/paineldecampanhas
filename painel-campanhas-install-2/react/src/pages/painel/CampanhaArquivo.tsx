@@ -47,6 +47,7 @@ import {
   getTemplatesByWallet,
   getGosacOficialTemplates,
   getGosacOficialConnections,
+  getNoahOficialChannels,
   getRobbuOficialTemplates,
   getIscas,
 } from "@/lib/api";
@@ -126,6 +127,7 @@ export default function CampanhaArquivo() {
   const [selectedTemplateObj, setSelectedTemplateObj] = useState<any>(null);
   const [openTemplateDropdown, setOpenTemplateDropdown] = useState(false);
   const [gosacConnectionId, setGosacConnectionId] = useState<string>("");
+  const [noahChannelId, setNoahChannelId] = useState<string>("");
   const [campaignName, setCampaignName] = useState("");
   const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
 
@@ -202,6 +204,13 @@ export default function CampanhaArquivo() {
     queryKey: ['gosac-oficial-connections', carteira],
     queryFn: () => getGosacOficialConnections({ carteira }),
     enabled: !!carteira && provider === "GOSAC_OFICIAL",
+    staleTime: 2 * 60 * 1000,
+  });
+
+  const { data: noahChannelsData = [], isLoading: noahChannelsLoading } = useQuery({
+    queryKey: ['noah-oficial-channels-file', carteira],
+    queryFn: () => getNoahOficialChannels({ carteira_id: carteira }),
+    enabled: !!carteira && provider === "NOAH_OFICIAL",
     staleTime: 2 * 60 * 1000,
   });
 
@@ -733,6 +742,18 @@ export default function CampanhaArquivo() {
       return;
     }
 
+    if (!salesforceOnly && !isTechiaDiscador && (selectedTemplate?.source === 'noah_oficial' || selectedTemplate?.source === 'noah')) {
+      const ch = parseInt(String(noahChannelId || selectedTemplate?.channelId || ''), 10);
+      if (!ch || ch <= 0) {
+        toast({
+          title: "Remetente NOAH obrigatório",
+          description: "Selecione a linha de disparo (channelId) na lista de canais NOAH Oficial.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     if (!provider) {
       toast({
         title: "Fornecedor obrigatório",
@@ -802,7 +823,8 @@ export default function CampanhaArquivo() {
     };
 
     if (templateSource === 'noah_oficial' && selectedTemplate) {
-      payload.noah_channel_id = selectedTemplate.channelId ?? '';
+      const nch = parseInt(String(noahChannelId || selectedTemplate.channelId || ''), 10);
+      payload.noah_channel_id = !Number.isNaN(nch) && nch > 0 ? nch : '';
       payload.noah_template_id = selectedTemplate.templateId ?? '';
       payload.noah_language = selectedTemplate.language ?? 'pt_BR';
     }
@@ -995,6 +1017,55 @@ export default function CampanhaArquivo() {
               </div>
             )}
 
+            {provider === "NOAH_OFICIAL" && (
+              <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
+                <Label>Remetente / linha NOAH (channelId) <span className="text-red-500">*</span></Label>
+                <Select
+                  value={noahChannelId}
+                  onValueChange={setNoahChannelId}
+                  disabled={noahChannelsLoading || !carteira}
+                >
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        !carteira
+                          ? "Selecione a carteira primeiro"
+                          : noahChannelsLoading
+                            ? "Carregando canais..."
+                            : "Selecione o canal de disparo"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Array.isArray(noahChannelsData) &&
+                      noahChannelsData.length === 0 &&
+                      !noahChannelsLoading &&
+                      carteira && (
+                        <div className="py-2 px-3 text-xs text-muted-foreground italic">
+                          Nenhum canal encontrado. Configure NOAH Oficial no API Manager para esta carteira.
+                        </div>
+                      )}
+                    {Array.isArray(noahChannelsData) &&
+                      noahChannelsData.map((ch: Record<string, unknown>) => {
+                        const cid = ch.id ?? ch.channelId ?? ch.channel_id ?? ch.IdCanal;
+                        const label =
+                          (ch.name as string) ||
+                          (ch.nome as string) ||
+                          (ch.label as string) ||
+                          `Canal ${String(cid ?? "")}`;
+                        const v = cid != null ? String(cid) : "";
+                        if (!v) return null;
+                        return (
+                          <SelectItem key={`noah-ch-file-${v}`} value={v}>
+                            {label}
+                          </SelectItem>
+                        );
+                      })}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             {(provider === "OTIMA_WPP" || provider === "OTIMA_RCS") && (
               <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
                 <Label>Remetente / Broker Ótima <span className="text-red-500">*</span></Label>
@@ -1124,6 +1195,14 @@ export default function CampanhaArquivo() {
                                     const selectedTpl = templates.find((tpl) => tpl.id === t.id) as any;
                                     if (selectedTpl?.brokerCode) {
                                       setBrokerCode(selectedTpl.brokerCode);
+                                    }
+                                    if (
+                                      selectedTpl?.channelId != null &&
+                                      String(selectedTpl.channelId).trim() !== ''
+                                    ) {
+                                      setNoahChannelId(String(selectedTpl.channelId));
+                                    } else {
+                                      setNoahChannelId('');
                                     }
                                     setSelectedTemplateObj(selectedTpl ?? null);
                                     const colDefault = csvHeaders[0] || "nome";

@@ -528,8 +528,16 @@ class Painel_Campanhas
                 $carteira_nome = $this->get_carteira_nome_by_id($row['carteira_id']);
             }
 
-            // Objeto `variables`: espelha colunas da linha para o Nest (GOSAC HSM resolve por nome de campo case-insensitive).
+            // Objeto `variables`: espelha colunas da linha para o Nest (GOSAC/NOAH).
             $nome_campanha_row = (string) ($row['nome_campanha'] ?? '');
+            $msg_decoded = json_decode((string) ($row['mensagem'] ?? ''), true);
+            $noah_channel_rest = '';
+            if (is_array($msg_decoded) && !empty($msg_decoded['channelId'])) {
+                $cid_n = (int) $msg_decoded['channelId'];
+                if ($cid_n > 0) {
+                    $noah_channel_rest = (string) $cid_n;
+                }
+            }
             $variables_row = [
                 'nome' => (string) ($row['nome'] ?? ''),
                 'telefone' => (string) ($row['telefone'] ?? ''),
@@ -538,6 +546,10 @@ class Painel_Campanhas
                 'idgis_ambiente' => (string) ($row['idgis_ambiente'] ?? ''),
                 'nome_campanha' => $nome_campanha_row,
             ];
+            if ($noah_channel_rest !== '') {
+                $variables_row['noah_channel_id'] = $noah_channel_rest;
+                $variables_row['broker_code'] = $noah_channel_rest;
+            }
 
             $formatted_data[] = [
                 'id' => isset($row['id']) ? (string) $row['id'] : '',
@@ -553,6 +565,7 @@ class Painel_Campanhas
                 'data_cadastro' => (string) ($row['data_cadastro'] ?: date('Y-m-d H:i:s')),
                 'midia_campanha' => (string) ($row['midia_campanha'] ?? ''),
                 'nome_campanha' => $nome_campanha_row,
+                'broker_code' => $noah_channel_rest,
                 'variables' => $variables_row,
             ];
         }
@@ -3872,11 +3885,15 @@ class Painel_Campanhas
                 'variable_components' => is_array($gosac_vc_raw) ? $gosac_vc_raw : [],
             ];
         } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
+            $noah_channel_post = intval($_POST['noah_channel_id'] ?? 0);
+            if ($noah_channel_post <= 0) {
+                wp_send_json_error('NOAH Oficial: selecione o remetente (linha de disparo / channelId).');
+            }
             $message_content = 'Template NOAH Oficial: ' . $template_code;
             $template_info = [
                 'template_code' => $template_code,
                 'source' => 'noah_oficial',
-                'channel_id' => intval($_POST['noah_channel_id'] ?? 0),
+                'channel_id' => $noah_channel_post,
                 'template_id' => intval($_POST['noah_template_id'] ?? 0),
                 'template_name' => $template_code,
                 'language' => sanitize_text_field($_POST['noah_language'] ?? 'pt_BR'),
@@ -4196,6 +4213,7 @@ class Painel_Campanhas
                 // carteira_id: id interno da carteira selecionada (para GOSAC: lookup correto de id_ruler quando há múltiplas carteiras com mesmo id_carteira)
                 $carteira_id_insert = !empty($carteira) && ($id_carteira === $campaign_id_carteira) ? intval($carteira) : null;
 
+                // nome_campanha: exclusivamente o nome digitado no painel (POST); nunca template_code, carteira ou mensagem.
                 $all_insert_data[] = [
                     'telefone' => $telefone,
                     'nome' => $record['nome'] ?? '',
@@ -10345,12 +10363,15 @@ class Painel_Campanhas
                 MAX(t1.motivo_cancelamento) AS motivo_cancelamento,
                 MAX(t1.cancelado_por) AS cancelado_por_id,
                 MAX(t1.id_carteira) AS id_carteira,
+                MAX(t1.carteira_id) AS carteira_id_row,
                 MAX(cv.nome) AS nome_carteira,
                 MAX(t1.nome_campanha) AS nome_campanha
             FROM `{$envios_table}` AS t1
             LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
-            LEFT JOIN `{$carteiras_table}` AS cv
-                ON TRIM(cv.id_carteira) = TRIM(t1.id_carteira) AND cv.ativo = 1
+            LEFT JOIN `{$carteiras_table}` AS cv ON cv.ativo = 1 AND (
+                (t1.carteira_id IS NOT NULL AND CAST(t1.carteira_id AS UNSIGNED) > 0 AND cv.id = t1.carteira_id)
+                OR (NULLIF(TRIM(t1.id_carteira), '') IS NOT NULL AND TRIM(cv.id_carteira) = TRIM(t1.id_carteira))
+            )
             WHERE t1.current_user_id = %d
         ";
 
@@ -10434,6 +10455,11 @@ class Painel_Campanhas
             $nome_amigavel = trim((string) ($camp['nome_campanha'] ?? ''));
             $nome_exibicao = $nome_amigavel !== '' ? $nome_amigavel : $ag_id;
 
+            $nome_carteira = trim((string) ($camp['nome_carteira'] ?? ''));
+            if ($nome_carteira === '' && !empty($camp['carteira_id_row'])) {
+                $nome_carteira = $this->get_carteira_nome_by_id((int) $camp['carteira_id_row']);
+            }
+
             return [
                 'id' => $camp['agendamento_id'] . '-' . $camp['provider'],
                 'agendamento_id' => $ag_id,
@@ -10448,7 +10474,7 @@ class Painel_Campanhas
                 'motivoCancelamento' => $camp['motivo_cancelamento'] ?? '',
                 'canceladoPor' => $cancel_name,
                 'idCarteira' => isset($camp['id_carteira']) ? (string) $camp['id_carteira'] : '',
-                'nomeCarteira' => isset($camp['nome_carteira']) ? (string) $camp['nome_carteira'] : '',
+                'nomeCarteira' => $nome_carteira,
                 'total_messages' => $total,
                 'processed_messages' => $processed,
                 'error_messages' => $err,
@@ -11632,7 +11658,7 @@ class Painel_Campanhas
      */
     public function handle_get_noah_oficial_channels()
     {
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can('edit_posts')) {
             wp_send_json_error('Acesso negado');
             return;
         }
@@ -11665,17 +11691,24 @@ class Painel_Campanhas
         $data = $noah_oficial_creds[$id_carteira];
         $base_url = rtrim($data['url'], '/');
         $token_raw = trim($data['token'] ?? '');
-        $token = $token_raw;
-        if (!empty($token)) {
-            $token = preg_replace('/^(Bearer|INTEGRATION)\s+/i', '', $token);
-            $token = 'INTEGRATION ' . $token;
+        $token_clean = $token_raw;
+        if ($token_clean !== '') {
+            for ($d = 0; $d < 6; $d++) {
+                $next = preg_replace('/^(Bearer|INTEGRATION)\s+/i', '', $token_clean);
+                $next = trim((string) $next);
+                if ($next === $token_clean) {
+                    break;
+                }
+                $token_clean = $next;
+            }
         }
+        $auth_header = $token_clean !== '' ? 'Bearer ' . $token_clean : '';
 
         $url = $base_url . '/channels';
 
         $response = wp_remote_get($url, [
             'headers' => [
-                'Authorization' => $token,
+                'Authorization' => $auth_header,
                 'Content-Type' => 'application/json',
                 'Accept' => 'application/json',
             ],
