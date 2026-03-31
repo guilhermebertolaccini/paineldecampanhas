@@ -152,6 +152,44 @@ export class NoahOficialProvider extends BaseProvider {
    * Garante estrutura exata: `[{ "type": "body", "parameters": [{ "type": "text", "text": "..." }] }]`.
    * Normaliza `BODY` → `body` e descarta entradas inválidas.
    */
+  /**
+   * `variables_map` pode vir objeto ou string JSON (REST / filas).
+   */
+  private parseNoahVariablesMap(raw: unknown): Record<string, unknown> | null {
+    if (raw == null) return null;
+    if (typeof raw === 'string') {
+      const s = raw.trim();
+      if (!s || s === 'null') return null;
+      try {
+        const o = JSON.parse(s) as unknown;
+        return o && typeof o === 'object' && !Array.isArray(o)
+          ? (o as Record<string, unknown>)
+          : null;
+      } catch {
+        return null;
+      }
+    }
+    if (typeof raw === 'object' && !Array.isArray(raw)) {
+      return raw as Record<string, unknown>;
+    }
+    return null;
+  }
+
+  /** Linha de disparo + `variables` do WP (fallback de colunas). */
+  private mergeNoahCampaignRow(item: CampaignData): Record<string, unknown> {
+    const row = { ...(item as unknown as Record<string, unknown>) };
+    const vars = item.variables;
+    if (vars && typeof vars === 'object') {
+      for (const [k, v] of Object.entries(vars)) {
+        const cur = row[k];
+        if (cur == null || String(cur).trim() === '') {
+          row[k] = v as unknown;
+        }
+      }
+    }
+    return row;
+  }
+
   private normalizeNoahTemplateComponents(
     components: unknown,
   ): NoahHsmBodyComponent[] {
@@ -172,7 +210,8 @@ export class NoahOficialProvider extends BaseProvider {
         if (!p || typeof p !== 'object') continue;
         const pr = p as Record<string, unknown>;
         const pType = String(pr.type ?? 'text').toLowerCase();
-        const text = pr.text != null ? String(pr.text) : '';
+        const rawText = pr.text != null ? String(pr.text) : '';
+        const text = rawText.trim() === '' ? ' ' : rawText;
         if (pType === 'text') {
           parameters.push({ type: 'text', text });
         }
@@ -414,22 +453,49 @@ export class NoahOficialProvider extends BaseProvider {
       ? parsed.components
       : [];
 
-    if (
-      (!componentsRaw || componentsRaw.length === 0) &&
-      parsed.variables_map &&
-      typeof parsed.variables_map === 'object' &&
-      !Array.isArray(parsed.variables_map)
-    ) {
-      const built = this.buildNoahComponentsFromVariablesMap(
-        parsed.variables_map as Record<string, unknown>,
+    const variablesMapMerged =
+      this.parseNoahVariablesMap(parsed.variables_map) ??
+      this.parseNoahVariablesMap(
+        item.variables &&
+          typeof item.variables === 'object' &&
+          'variables_map' in item.variables
+          ? (item.variables as Record<string, unknown>).variables_map
+          : undefined,
+      );
+
+    const countBodyParams = (blocks: unknown): number => {
+      if (!Array.isArray(blocks)) return 0;
+      let n = 0;
+      for (const c of blocks) {
+        if (!c || typeof c !== 'object') continue;
+        const params = (c as Record<string, unknown>).parameters;
+        if (Array.isArray(params)) n += params.length;
+      }
+      return n;
+    };
+
+    let builtFromMap: NoahHsmBodyComponent[] | null = null;
+    if (variablesMapMerged && Object.keys(variablesMapMerged).length > 0) {
+      builtFromMap = this.buildNoahComponentsFromVariablesMap(
+        variablesMapMerged,
         item,
       );
-      if (built.length > 0) {
-        componentsRaw = built;
-      }
     }
 
-    const components = this.normalizeNoahTemplateComponents(componentsRaw);
+    if (countBodyParams(componentsRaw) === 0 && builtFromMap && builtFromMap.length > 0) {
+      componentsRaw = builtFromMap;
+    }
+
+    let components = this.normalizeNoahTemplateComponents(componentsRaw);
+
+    if (
+      components.length === 0 ||
+      components.every((c) => !c.parameters || c.parameters.length === 0)
+    ) {
+      if (builtFromMap && builtFromMap.length > 0) {
+        components = this.normalizeNoahTemplateComponents(builtFromMap);
+      }
+    }
 
     if (!channelIdNum || !templateName || String(templateName).trim() === '') {
       throw new Error(
@@ -495,7 +561,16 @@ export class NoahOficialProvider extends BaseProvider {
       : keys;
 
     const bodyParams: NoahHsmTextParameter[] = [];
-    const row = item as unknown as Record<string, unknown>;
+    const row = this.mergeNoahCampaignRow(item);
+
+    const cell = (col: string): string => {
+      if (!col) return '';
+      const v =
+        row[col] ??
+        row[col.toUpperCase()] ??
+        row[col.toLowerCase()];
+      return v != null ? String(v).trim() : '';
+    };
 
     for (const varName of ordered) {
       const mapping = variablesMap[varName];
@@ -510,14 +585,15 @@ export class NoahOficialProvider extends BaseProvider {
         const m = mapping as { type: string; value: string };
         if (m.type === 'field') {
           const col = String(m.value ?? '');
-          text = String(row[col] ?? row[col.toUpperCase()] ?? '');
+          text = cell(col);
         } else {
-          text = String(m.value ?? '');
+          text = String(m.value ?? '').trim();
         }
       } else if (typeof mapping === 'string' && mapping !== '') {
-        text = String(row[mapping] ?? row[mapping.toUpperCase()] ?? '');
+        text = cell(mapping);
       }
-      bodyParams.push({ type: 'text', text });
+      const safe = text === '' ? ' ' : text;
+      bodyParams.push({ type: 'text', text: safe });
     }
 
     if (bodyParams.length === 0) return [];

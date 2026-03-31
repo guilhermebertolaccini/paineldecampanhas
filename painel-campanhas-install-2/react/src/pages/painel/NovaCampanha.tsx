@@ -12,6 +12,8 @@ import {
   listOtimaWppVariableKeysFromTemplate,
   buildInitialVariableMappingFromNoahOfficial,
   listNoahOfficialVariableKeysFromTemplate,
+  extractNoahNumericPlaceholderKeys,
+  isNoahOfficialTemplateSource,
   buildInitialVariableMappingFromGosacOfficial,
   listGosacOfficialVariableKeysFromTemplate,
 } from "@/components/campaign/TemplateVariableMapper";
@@ -350,7 +352,11 @@ export default function NovaCampanha() {
 
   /** NOAH Oficial: chaves `1`,`2`,… ou de `{{n}}` / example.body_text; mantém ordem do template + extras no estado. */
   const noahOfficialMapperVariableKeys = useMemo(() => {
-    if (formData.templateSource !== "noah_oficial" && formData.templateSource !== "noah") return [];
+    const noahTpl =
+      formData.templateSource === "noah_oficial" ||
+      formData.templateSource === "noah" ||
+      isNoahOfficialTemplateSource(selectedTemplateObj?.source);
+    if (!noahTpl) return [];
     const fromTpl = listNoahOfficialVariableKeysFromTemplate(selectedTemplateObj);
     const fromState = Object.keys(templateVariables);
     if (fromTpl.length === 0) return fromState;
@@ -1529,7 +1535,13 @@ export default function NovaCampanha() {
                                   } else if (gosacOfficialMap) {
                                     setTemplateVariables(gosacOfficialMap);
                                   } else {
-                                    const detectedVars = extractVariables(contentToParse);
+                                    let detectedVars = extractVariables(contentToParse);
+                                    if (
+                                      detectedVars.length === 0 &&
+                                      isNoahOfficialTemplateSource(selectedTemplate?.source)
+                                    ) {
+                                      detectedVars = extractNoahNumericPlaceholderKeys(contentToParse);
+                                    }
                                     const initMap: Record<string, VarMapping> = {};
                                     detectedVars.forEach((vVar: string) => {
                                       initMap[vVar] = { type: 'field', value: 'nome' };
@@ -1742,12 +1754,15 @@ export default function NovaCampanha() {
                 formData.templateSource === "otima_wpp" ||
                 formData.templateSource === "noah_oficial" ||
                 formData.templateSource === "noah" ||
+                isNoahOfficialTemplateSource(selectedTemplateObj?.source) ||
                 formData.templateSource === "gosac_oficial") && (
                 <TemplateVariableMapper
                   variables={
                     formData.templateSource === "otima_wpp" && otimaWppMapperVariableKeys.length > 0
                       ? otimaWppMapperVariableKeys
-                      : (formData.templateSource === "noah_oficial" || formData.templateSource === "noah") &&
+                      : (formData.templateSource === "noah_oficial" ||
+                            formData.templateSource === "noah" ||
+                            isNoahOfficialTemplateSource(selectedTemplateObj?.source)) &&
                           noahOfficialMapperVariableKeys.length > 0
                         ? noahOfficialMapperVariableKeys
                         : formData.templateSource === "gosac_oficial" && gosacOfficialMapperVariableKeys.length > 0

@@ -4148,7 +4148,7 @@ class Painel_Campanhas
                             } elseif (is_string($field) && $field !== '') {
                                 $val = $record[$field] ?? $record[strtoupper($field)] ?? '';
                             }
-                            $body_params[] = ['type' => 'text', 'text' => (string) $val];
+                            $body_params[] = ['type' => 'text', 'text' => ((string) $val !== '' ? (string) $val : ' ')];
                         }
                         if (!empty($body_params)) {
                             $noah_components[] = ['type' => 'body', 'parameters' => $body_params];
@@ -4159,7 +4159,9 @@ class Painel_Campanhas
                         'templateId' => $noah_template_id,
                         'templateName' => $noah_template_name,
                         'language' => $noah_language,
+                        'template_source' => 'noah_oficial',
                         'components' => $noah_components,
+                        'variables_map' => !empty($variables_map) ? $variables_map : null,
                     ]);
                 } elseif ($template_source === 'robbu_oficial' && !empty($template_code)) {
                     $robbu_params = [];

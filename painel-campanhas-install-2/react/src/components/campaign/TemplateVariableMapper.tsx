@@ -231,8 +231,29 @@ export function collectPlaceholdersSourceText(template: unknown): string {
     if (nested && typeof nested === "object" && Array.isArray(nested.components)) {
         parts.push(walkComponents(nested.components));
     }
+    // NOAH / Cloud API: corpo às vezes vem em `body.text` sem array `components`
+    if (raw.body && typeof raw.body === "object" && typeof raw.body.text === "string") {
+        parts.push(raw.body.text);
+    }
+    if (t.body && typeof t.body === "object" && typeof t.body.text === "string") {
+        parts.push(t.body.text);
+    }
 
     return parts.filter(Boolean).join("\n");
+}
+
+/** Placeholders `{{1}}`, `{{ 2 }}` (apenas índices numéricos), ordenados 1..N. */
+export function extractNoahNumericPlaceholderKeys(text: string): string[] {
+    if (!text) return [];
+    const re = /\{\{\s*(\d+)\s*\}\}/g;
+    const seen = new Set<number>();
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+        const d = parseInt(m[1], 10);
+        if (!Number.isNaN(d) && d > 0) seen.add(d);
+    }
+    if (seen.size === 0) return [];
+    return [...seen].sort((a, b) => a - b).map(String);
 }
 
 /** Conta parâmetros do BODY ({{n}} ou example.body_text) — Cloud API / NOAH. */
@@ -245,8 +266,13 @@ function inferNoahParameterCountFromComponents(components: unknown): number {
         const comp = c as Record<string, any>;
         const typ = String(comp.type ?? comp.Type ?? "").toLowerCase();
         if (typ !== "body") continue;
-        const txt = typeof comp.text === "string" ? comp.text : "";
-        const re = /\{\{(\d+)\}\}/g;
+        const txt =
+            typeof comp.text === "string"
+                ? comp.text
+                : comp.body && typeof comp.body === "object" && typeof comp.body.text === "string"
+                  ? comp.body.text
+                  : "";
+        const re = /\{\{\s*(\d+)\s*\}\}/g;
         let m: RegExpExecArray | null;
         while ((m = re.exec(txt)) !== null) {
             const d = parseInt(m[1], 10);
@@ -256,26 +282,44 @@ function inferNoahParameterCountFromComponents(components: unknown): number {
         if (ex && typeof ex === "object" && Array.isArray(ex.body_text) && ex.body_text.length > 0) {
             const first = ex.body_text[0];
             if (Array.isArray(first)) fromExample = Math.max(fromExample, first.length);
+            else if (typeof first === "string") fromExample = Math.max(fromExample, 1);
         }
     }
     return Math.max(fromPlaceholders, fromExample);
 }
 
+export function isNoahOfficialTemplateSource(source: unknown): boolean {
+    const s = String(source ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "_");
+    if (s === "noah_oficial" || s === "noah") return true;
+    if (s === "noah_official") return true;
+    // Ex.: `noah_oficial_whatsapp` ou respostas legadas do WP
+    if (s.startsWith("noah_oficial") || s.includes("_noah_oficial")) return true;
+    return false;
+}
+
 /**
  * NOAH Oficial: variáveis em `{{1}}`, `{{2}}` no texto do template ou contagem via `components[].example.body_text`.
- * Aceita `source` `noah_oficial` (fluxo atual) ou `noah` se a API passar assim.
+ * Aceita `source` em qualquer caixa (`noah_oficial`, `NOAH_OFICIAL`, …).
  */
 export function listNoahOfficialVariableKeysFromTemplate(template: unknown): string[] {
     if (!template || typeof template !== "object") return [];
     const t = template as Record<string, any>;
-    const src = String(t.source ?? "");
-    if (src !== "noah_oficial" && src !== "noah") return [];
+    if (!isNoahOfficialTemplateSource(t.source)) return [];
 
     const text = collectPlaceholdersSourceText(template);
+    const fromNumeric = extractNoahNumericPlaceholderKeys(text);
+    if (fromNumeric.length > 0) return fromNumeric;
+
     const fromText = extractVariables(text);
     if (fromText.length > 0) return fromText;
 
-    const n = inferNoahParameterCountFromComponents(t.components);
+    const raw = (t.raw_data && typeof t.raw_data === "object" ? t.raw_data : t) as Record<string, any>;
+    const nComp = inferNoahParameterCountFromComponents(t.components);
+    const nRaw = inferNoahParameterCountFromComponents(raw.components);
+    const n = Math.max(nComp, nRaw);
     if (n <= 0) return [];
     return Array.from({ length: n }, (_, i) => String(i + 1));
 }

@@ -13,6 +13,8 @@ import {
   listOtimaWppVariableKeysFromTemplate,
   buildInitialVariableMappingFromNoahOfficial,
   listNoahOfficialVariableKeysFromTemplate,
+  extractNoahNumericPlaceholderKeys,
+  isNoahOfficialTemplateSource,
 } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -427,7 +429,7 @@ export default function CampanhaArquivo() {
 
   const noahOfficialMapperVariableKeys = useMemo(() => {
     const sel = selectedTemplateForMapper;
-    if (!sel || (sel.source !== 'noah_oficial' && sel.source !== 'noah')) return [];
+    if (!sel || !isNoahOfficialTemplateSource(sel.source)) return [];
     const fromTpl = listNoahOfficialVariableKeysFromTemplate(sel);
     const fromState = Object.keys(templateVariables);
     if (fromTpl.length === 0) return fromState;
@@ -493,18 +495,14 @@ export default function CampanhaArquivo() {
     const sel = selectedTemplateForMapper;
     if (!sel) return [];
     if (sel.source === 'otima_wpp' && otimaWppMapperVariableKeys.length > 0) return otimaWppMapperVariableKeys;
-    if (
-      (sel.source === 'noah_oficial' || sel.source === 'noah') &&
-      noahOfficialMapperVariableKeys.length > 0
-    ) {
+    if (isNoahOfficialTemplateSource(sel.source) && noahOfficialMapperVariableKeys.length > 0) {
       return noahOfficialMapperVariableKeys;
     }
     if (sel.source === 'gosac_oficial' && gosacMapperVariableKeys.length > 0) return gosacMapperVariableKeys;
     if (
       sel.source === 'otima_rcs' ||
       sel.source === 'otima_wpp' ||
-      sel.source === 'noah_oficial' ||
-      sel.source === 'noah'
+      isNoahOfficialTemplateSource(sel.source)
     ) {
       return Object.keys(templateVariables);
     }
@@ -742,7 +740,12 @@ export default function CampanhaArquivo() {
       return;
     }
 
-    if (!salesforceOnly && !isTechiaDiscador && (selectedTemplate?.source === 'noah_oficial' || selectedTemplate?.source === 'noah')) {
+    if (
+      !salesforceOnly &&
+      !isTechiaDiscador &&
+      selectedTemplate &&
+      isNoahOfficialTemplateSource(selectedTemplate.source)
+    ) {
       const ch = parseInt(String(noahChannelId || selectedTemplate?.channelId || ''), 10);
       if (!ch || ch <= 0) {
         toast({
@@ -1222,7 +1225,13 @@ export default function CampanhaArquivo() {
                                       }
                                       setTemplateVariables(patched);
                                     } else {
-                                      const detectedVars = extractVariables(rawContent);
+                                      let detectedVars = extractVariables(rawContent);
+                                      if (
+                                        detectedVars.length === 0 &&
+                                        isNoahOfficialTemplateSource(selectedTpl?.source)
+                                      ) {
+                                        detectedVars = extractNoahNumericPlaceholderKeys(rawContent);
+                                      }
                                       const initMap: Record<string, VarMapping> = {};
                                       detectedVars.forEach((vVar) => {
                                         initMap[vVar] = { type: "field", value: colDefault };
