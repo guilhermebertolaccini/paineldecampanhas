@@ -14,6 +14,7 @@ import {
   listNoahOfficialVariableKeysFromTemplate,
   extractNoahNumericPlaceholderKeys,
   isNoahOfficialTemplateSource,
+  buildNoahOfficialTemplatePreviewMessage,
   buildInitialVariableMappingFromGosacOfficial,
   listGosacOfficialVariableKeysFromTemplate,
 } from "@/components/campaign/TemplateVariableMapper";
@@ -466,6 +467,11 @@ export default function NovaCampanha() {
         content: t.content || '',
         language: t.language || 'pt_BR',
         category: t.category,
+        format: t.format ?? null,
+        textHeader: t.textHeader ?? t.text_header ?? '',
+        textBody: t.textBody ?? t.text_body ?? '',
+        textFooter: t.textFooter ?? t.text_footer ?? '',
+        buttons: t.buttons ?? null,
         components: t.components,
         channelId: t.channelId,
         templateId: t.templateId,
@@ -1556,10 +1562,15 @@ export default function NovaCampanha() {
                                     refetchTemplate();
                                   } else {
                                     console.log('ℹ️ [Template Select] Template externo, usando conteúdo pré-carregado');
+                                    const noahPreview = isNoahOfficialTemplateSource(selectedTemplate?.source)
+                                      ? buildNoahOfficialTemplatePreviewMessage(selectedTemplate)
+                                      : '';
                                     const messageFallback =
+                                      noahPreview ||
                                       (typeof selectedTemplate?.content === 'string'
                                         ? selectedTemplate.content
-                                        : '') || contentToParse;
+                                        : '') ||
+                                      contentToParse;
                                     setFormData(prev => ({
                                       ...prev,
                                       message: messageFallback,

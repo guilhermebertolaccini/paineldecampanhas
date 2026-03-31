@@ -11349,20 +11349,13 @@ class Painel_Campanhas
 
                         if (is_array($items)) {
                             foreach ($items as $tpl) {
-                                $all_templates[] = [
-                                    'id' => $tpl['id'] ?? $tpl['templateId'] ?? '',
-                                    'name' => $tpl['name'] ?? $tpl['templateName'] ?? '',
-                                    'content' => '',
-                                    'category' => $tpl['category'] ?? '',
-                                    'language' => $tpl['language'] ?? 'pt_BR',
-                                    'status' => $tpl['status'] ?? '',
-                                    'provider' => 'Noah Oficial',
-                                    'id_ambient' => $id_ambient,
-                                    'templateName' => $tpl['name'] ?? $tpl['templateName'] ?? '',
-                                    'templateId' => $tpl['templateId'] ?? $tpl['id'] ?? '',
-                                    'channelId' => $tpl['channelId'] ?? '',
-                                    'components' => $tpl['components'] ?? [],
-                                ];
+                                if (!is_array($tpl)) {
+                                    continue;
+                                }
+                                $row = $this->map_noah_message_template_api_to_panel($tpl);
+                                $row['provider'] = 'Noah Oficial';
+                                $row['id_ambient'] = $id_ambient;
+                                $all_templates[] = $row;
                             }
                         }
                     } else {
@@ -11577,6 +11570,41 @@ class Painel_Campanhas
     }
 
     /**
+     * Normaliza um item da API NOAH message-templates (textHeader/textBody/textFooter) para o painel React.
+     *
+     * @param array<string,mixed> $tpl
+     * @return array<string,mixed>
+     */
+    private function map_noah_message_template_api_to_panel(array $tpl)
+    {
+        $th = isset($tpl['textHeader']) ? (string) $tpl['textHeader'] : '';
+        $tb = isset($tpl['textBody']) ? (string) $tpl['textBody'] : '';
+        $tf = isset($tpl['textFooter']) ? (string) $tpl['textFooter'] : '';
+        $preview_parts = array_filter([$th, $tb, $tf], static function ($s) {
+            return $s !== '';
+        });
+        $content = implode("\n\n", $preview_parts);
+
+        return [
+            'id' => $tpl['id'] ?? $tpl['templateId'] ?? '',
+            'templateId' => $tpl['templateId'] ?? $tpl['id'] ?? '',
+            'templateName' => $tpl['name'] ?? $tpl['templateName'] ?? '',
+            'name' => $tpl['name'] ?? $tpl['templateName'] ?? '',
+            'language' => $tpl['language'] ?? 'pt_BR',
+            'status' => $tpl['status'] ?? '',
+            'category' => $tpl['category'] ?? '',
+            'format' => $tpl['format'] ?? null,
+            'channelId' => $tpl['channelId'] ?? '',
+            'textHeader' => $tpl['textHeader'] ?? null,
+            'textBody' => $tpl['textBody'] ?? null,
+            'textFooter' => $tpl['textFooter'] ?? null,
+            'buttons' => $tpl['buttons'] ?? null,
+            'components' => isset($tpl['components']) && is_array($tpl['components']) ? $tpl['components'] : [],
+            'content' => $content,
+        ];
+    }
+
+    /**
      * NOAH Oficial: Lista templates aprovados (GET /v1/api/external/:apiId/message-templates)
      */
     public function handle_get_noah_oficial_templates()
@@ -11635,18 +11663,13 @@ class Painel_Campanhas
                 $items = isset($templates_data['data']) ? $templates_data['data'] : (isset($templates_data['templates']) ? $templates_data['templates'] : $templates_data);
                 if (is_array($items)) {
                     foreach ($items as $tpl) {
-                        $all_templates[] = [
-                            'id' => $tpl['id'] ?? $tpl['templateId'] ?? '',
-                            'templateId' => $tpl['templateId'] ?? $tpl['id'] ?? '',
-                            'templateName' => $tpl['name'] ?? $tpl['templateName'] ?? '',
-                            'name' => $tpl['name'] ?? $tpl['templateName'] ?? '',
-                            'language' => $tpl['language'] ?? 'pt_BR',
-                            'status' => $tpl['status'] ?? '',
-                            'channelId' => $tpl['channelId'] ?? '',
-                            'components' => $tpl['components'] ?? [],
-                            'env_id' => $env_id,
-                            'provider' => 'Noah Oficial',
-                        ];
+                        if (!is_array($tpl)) {
+                            continue;
+                        }
+                        $row = $this->map_noah_message_template_api_to_panel($tpl);
+                        $row['env_id'] = $env_id;
+                        $row['provider'] = 'Noah Oficial';
+                        $all_templates[] = $row;
                     }
                 }
             }

@@ -15,6 +15,7 @@ import {
   listNoahOfficialVariableKeysFromTemplate,
   extractNoahNumericPlaceholderKeys,
   isNoahOfficialTemplateSource,
+  buildNoahOfficialTemplatePreviewMessage,
 } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -294,6 +295,11 @@ export default function CampanhaArquivo() {
             templateId: t.templateId,
             templateName: t.templateName || t.name,
             language: t.language || 'pt_BR',
+            format: t.format ?? null,
+            textHeader: t.textHeader ?? t.text_header ?? '',
+            textBody: t.textBody ?? t.text_body ?? '',
+            textFooter: t.textFooter ?? t.text_footer ?? '',
+            buttons: t.buttons ?? null,
             content: t.content || '',
             components: t.components,
           };
@@ -1364,6 +1370,19 @@ export default function CampanhaArquivo() {
                 />
               </div>
             )}
+
+            {selectedTemplateObj &&
+              provider === "NOAH_OFICIAL" &&
+              isNoahOfficialTemplateSource(selectedTemplateObj.source) && (
+                <div className="space-y-2">
+                  <Label>Pré-visualização do template (NOAH)</Label>
+                  <div className="rounded-md border bg-muted/30 p-4 min-h-[80px] text-sm whitespace-pre-wrap text-foreground">
+                    {buildNoahOfficialTemplatePreviewMessage(selectedTemplateObj) || (
+                      <span className="text-muted-foreground italic">Sem texto de corpo/cabeçalho na resposta da API.</span>
+                    )}
+                  </div>
+                </div>
+              )}
 
             {tempId && (
               <div className="rounded-lg bg-muted/50 p-4">

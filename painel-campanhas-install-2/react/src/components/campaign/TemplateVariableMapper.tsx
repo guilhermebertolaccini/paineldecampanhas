@@ -216,6 +216,27 @@ export function collectPlaceholdersSourceText(template: unknown): string {
     if (typeof raw.text === "string") parts.push(raw.text);
     if (typeof raw.description === "string") parts.push(raw.description);
 
+    // NOAH Oficial (GET message-templates): texto em textHeader / textBody / textFooter (camelCase ou snake_case)
+    const pickNoahText = (obj: Record<string, any>, camel: string, snake: string): void => {
+        const v = obj[camel] ?? obj[snake];
+        if (typeof v === "string" && v.trim() !== "") parts.push(v);
+    };
+    const noahTextSources: Record<string, any>[] = raw === t ? [t] : [t, raw];
+    for (const obj of noahTextSources) {
+        pickNoahText(obj, "textHeader", "text_header");
+        pickNoahText(obj, "textBody", "text_body");
+        pickNoahText(obj, "textFooter", "text_footer");
+    }
+
+    const noahButtons = t.buttons ?? raw.buttons;
+    if (noahButtons && typeof noahButtons === "object" && Array.isArray((noahButtons as { buttons?: unknown }).buttons)) {
+        for (const b of (noahButtons as { buttons: Array<{ text?: string }> }).buttons) {
+            if (b && typeof b === "object" && typeof b.text === "string" && b.text.trim() !== "") {
+                parts.push(b.text);
+            }
+        }
+    }
+
     const rc = raw.rich_card ?? raw.richCard;
     if (rc && typeof rc === "object") {
         if (typeof rc.title === "string") parts.push(rc.title);
@@ -240,6 +261,29 @@ export function collectPlaceholdersSourceText(template: unknown): string {
     }
 
     return parts.filter(Boolean).join("\n");
+}
+
+/**
+ * Texto para pré-visualização no painel (header + body + footer), formato retornado pela API NOAH.
+ */
+export function buildNoahOfficialTemplatePreviewMessage(template: unknown): string {
+    if (!template || typeof template !== "object") return "";
+    const t = template as Record<string, any>;
+    const raw = (t.raw_data && typeof t.raw_data === "object" ? t.raw_data : t) as Record<string, any>;
+    const seg = (obj: Record<string, any>, camel: string, snake: string): string => {
+        const v = obj[camel] ?? obj[snake];
+        return typeof v === "string" ? v.trim() : "";
+    };
+    const h = seg(t, "textHeader", "text_header") || seg(raw, "textHeader", "text_header");
+    const b = seg(t, "textBody", "text_body") || seg(raw, "textBody", "text_body");
+    const f = seg(t, "textFooter", "text_footer") || seg(raw, "textFooter", "text_footer");
+    const blocks: string[] = [];
+    if (h) blocks.push(h);
+    if (b) blocks.push(b);
+    if (f) blocks.push(f);
+    if (blocks.length > 0) return blocks.join("\n\n");
+    if (typeof t.content === "string" && t.content.trim() !== "") return t.content.trim();
+    return collectPlaceholdersSourceText(template);
 }
 
 /** Placeholders `{{1}}`, `{{ 2 }}` (apenas índices numéricos), ordenados 1..N. */
