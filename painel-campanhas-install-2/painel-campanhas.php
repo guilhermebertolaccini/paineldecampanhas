@@ -19,7 +19,14 @@ if (!defined('ABSPATH')) {
 
 require_once __DIR__ . '/includes/class-pc-evolution-wa-validator.php';
 require_once __DIR__ . '/includes/class-pc-validador-historico.php';
-require_once __DIR__ . '/includes/class-pc-sqlserver-connector.php';
+
+// MSSQL: carrega só se o arquivo existir (deploy incompleto não derruba o plugin inteiro).
+$pc_sqlserver_connector = __DIR__ . '/includes/class-pc-sqlserver-connector.php';
+if (is_readable($pc_sqlserver_connector)) {
+    require_once $pc_sqlserver_connector;
+} elseif (function_exists('error_log')) {
+    error_log('Painel Campanhas: inclua includes/class-pc-sqlserver-connector.php — arquivo ausente: ' . $pc_sqlserver_connector);
+}
 
 class Painel_Campanhas
 {
@@ -10355,7 +10362,7 @@ class Painel_Campanhas
                         'origem' => 'mssql',
                     ];
                 }
-            } catch (Throwable $e) {
+            } catch (Exception $e) {
                 error_log('[Painel Campanhas] handle_get_available_bases MSSQL: ' . $e->getMessage());
             }
         }

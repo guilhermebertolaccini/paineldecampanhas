@@ -41,7 +41,7 @@ class PC_SqlServer_Connector
     /**
      * Libera pools estáticos após alterar credenciais nas opções (mesmo worker PHP).
      */
-    public static function reset_static_connections(): void
+    public static function reset_static_connections()
     {
         self::$pdo_primary = null;
         self::$pdo_views = null;
