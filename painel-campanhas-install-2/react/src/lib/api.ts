@@ -618,8 +618,16 @@ export const createCpfCampaign = (data: Record<string, any>) => {
     payload.gosac_variable_components = data.gosac_variable_components ?? '[]';
   }
 
-  if (data.variables_map) {
+  if (data.variables_map && typeof data.variables_map === 'object') {
     payload.variables_map = JSON.stringify(data.variables_map);
+  } else if (
+    templateSource === 'noah_oficial' ||
+    templateSource === 'gosac_oficial' ||
+    templateSource === 'robbu_oficial' ||
+    templateSource === 'otima_wpp' ||
+    templateSource === 'otima_rcs'
+  ) {
+    payload.variables_map = JSON.stringify({});
   }
 
   // O handler PHP exige o 'providers_config'

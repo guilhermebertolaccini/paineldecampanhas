@@ -2843,6 +2843,34 @@ class Painel_Campanhas
     }
 
     /**
+     * Resolve variables_map (NOAH Oficial) por linha do CSV/base — chaves ex.: header_1, body_2 ou 1.
+     * Usado no JSON da coluna mensagem para o Nest mesclar com variables_map estático.
+     */
+    private function resolve_noah_variables_row_for_csv(array $record, array $variables_map): array
+    {
+        $out = [];
+        foreach ($variables_map as $var_key => $field) {
+            $k = is_string($var_key) ? $var_key : (string) $var_key;
+            if ($k === '') {
+                continue;
+            }
+            $val = '';
+            if (is_array($field) && isset($field['type'], $field['value'])) {
+                if ($field['type'] === 'field') {
+                    $val = (string) $this->get_cpf_record_field_ci($record, (string) $field['value']);
+                } else {
+                    $val = (string) ($field['value'] ?? '');
+                }
+            } elseif (is_string($field) && $field !== '') {
+                $val = (string) $this->get_cpf_record_field_ci($record, $field);
+            }
+            $out[$k] = $val;
+        }
+
+        return $out;
+    }
+
+    /**
      * Variáveis TECHIA a partir das colunas padrão da base (recorrência / sem variables_map no CSV).
      */
     private function build_default_techia_variables_from_base_record(array $record)
@@ -3280,9 +3308,17 @@ class Painel_Campanhas
             foreach ($distributed_records as $provider_data) {
                 $provider = $provider_data['provider'];
                 $provider_records = $provider_data['records'];
+                // Mesma tabela de prefixos que pc_create_campaign / Nest identifyProvider (H=NOAH_OFICIAL, não N=NOAH legado)
                 $prefix = strtoupper(substr($provider, 0, 1));
-                // CDA_RCS usa prefixo R (RCS) para buscar credenciais RCS (URL importarcs), não CDA (URL importar/campanha)
-                if ($provider === 'CDA_RCS') {
+                if ($provider === 'OTIMA_WPP') {
+                    $prefix = 'W';
+                } elseif ($provider === 'GOSAC_OFICIAL') {
+                    $prefix = 'F';
+                } elseif ($provider === 'NOAH_OFICIAL') {
+                    $prefix = 'H';
+                } elseif ($provider === 'ROBBU_OFICIAL') {
+                    $prefix = 'B';
+                } elseif ($provider === 'CDA_RCS') {
                     $prefix = 'R';
                 } elseif ($this->is_techia_provider($provider)) {
                     $prefix = 'T';
@@ -3359,6 +3395,9 @@ class Painel_Campanhas
                             'original_message' => $mensagem_final,
                         ]);
                     } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
+                        $noah_vars_row = is_array($variables_map)
+                            ? $this->resolve_noah_variables_row_for_csv($record, $variables_map)
+                            : [];
                         $mensagem_para_armazenar = json_encode([
                             'template_code' => $template_code,
                             'template_source' => 'noah_oficial',
@@ -3367,7 +3406,8 @@ class Painel_Campanhas
                             'templateName' => $template_code,
                             'language' => $noah_language,
                             'original_message' => $mensagem_final,
-                            'variables_map' => $variables_map
+                            'variables_map' => (object) (is_array($variables_map) ? $variables_map : []),
+                            'variables' => $noah_vars_row,
                         ]);
                     } elseif ($template_source === 'robbu_oficial' && !empty($template_code)) {
                         $robbu_channel = intval($_POST['robbu_channel'] ?? 3);

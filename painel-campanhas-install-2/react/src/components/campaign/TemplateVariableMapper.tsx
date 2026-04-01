@@ -287,8 +287,8 @@ export function buildNoahOfficialTemplatePreviewMessage(template: unknown): stri
     return collectPlaceholdersSourceText(template);
 }
 
-/** Placeholders `{{1}}`, `{{ 2 }}` (apenas índices numéricos), ordenados 1..N. */
-export function extractNoahNumericPlaceholderKeys(text: string): string[] {
+/** Índices numéricos `{{1}}`, `{{ 2 }}` em um texto, ordenados. */
+function extractNoahNumericIndicesFromText(text: string): number[] {
     if (!text) return [];
     const re = /\{\{\s*(\d+)\s*\}\}/g;
     const seen = new Set<number>();
@@ -298,7 +298,65 @@ export function extractNoahNumericPlaceholderKeys(text: string): string[] {
         if (!Number.isNaN(d) && d > 0) seen.add(d);
     }
     if (seen.size === 0) return [];
-    return [...seen].sort((a, b) => a - b).map(String);
+    return [...seen].sort((a, b) => a - b);
+}
+
+/** Placeholders `{{1}}`, `{{ 2 }}` (apenas índices numéricos), ordenados 1..N. */
+export function extractNoahNumericPlaceholderKeys(text: string): string[] {
+    return extractNoahNumericIndicesFromText(text).map(String);
+}
+
+function noahKeysForSegment(segment: "header" | "body" | "footer", text: string): string[] {
+    return extractNoahNumericIndicesFromText(text).map((n) => `${segment}_${n}`);
+}
+
+/** Percorre `components` da API NOAH e gera chaves `header_1`, `body_2`, … por bloco. */
+function listNoahKeysFromApiComponents(components: unknown): string[] {
+    if (!Array.isArray(components)) return [];
+    const out: string[] = [];
+    for (const c of components) {
+        if (!c || typeof c !== "object") continue;
+        const comp = c as Record<string, any>;
+        const typ = String(comp.type ?? comp.Type ?? "").toLowerCase();
+        if (typ !== "header" && typ !== "body" && typ !== "footer") continue;
+        const txt =
+            typeof comp.text === "string"
+                ? comp.text
+                : comp.body && typeof comp.body === "object" && typeof comp.body.text === "string"
+                  ? comp.body.text
+                  : "";
+        for (const n of extractNoahNumericIndicesFromText(txt)) {
+            out.push(`${typ}_${n}`);
+        }
+        const ex = comp.example;
+        const numsFromText = extractNoahNumericIndicesFromText(txt);
+        if (
+            numsFromText.length === 0 &&
+            ex &&
+            typeof ex === "object" &&
+            Array.isArray(ex.body_text) &&
+            ex.body_text.length > 0 &&
+            typ === "body"
+        ) {
+            const first = ex.body_text[0];
+            const len = Array.isArray(first) ? first.length : typeof first === "string" ? 1 : 0;
+            for (let i = 1; i <= len; i++) {
+                out.push(`body_${i}`);
+            }
+        }
+    }
+    return out;
+}
+
+function dedupeVariableKeys(keys: string[]): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const k of keys) {
+        if (!k || seen.has(k)) continue;
+        seen.add(k);
+        out.push(k);
+    }
+    return out;
 }
 
 /** Conta parâmetros do BODY ({{n}} ou example.body_text) — Cloud API / NOAH. */
@@ -346,13 +404,41 @@ export function isNoahOfficialTemplateSource(source: unknown): boolean {
 }
 
 /**
- * NOAH Oficial: variáveis em `{{1}}`, `{{2}}` no texto do template ou contagem via `components[].example.body_text`.
- * Aceita `source` em qualquer caixa (`noah_oficial`, `NOAH_OFICIAL`, …).
+ * NOAH Oficial: chaves separadas por bloco (`header_1`, `body_1`, …) para o Nest montar `components`
+ * com header + body (evita colisão quando cabeçalho e corpo usam o mesmo índice {{1}}).
+ * Mantém chaves só numéricas (`1`, `2`) como fallback legado (apenas corpo).
  */
 export function listNoahOfficialVariableKeysFromTemplate(template: unknown): string[] {
     if (!template || typeof template !== "object") return [];
     const t = template as Record<string, any>;
     if (!isNoahOfficialTemplateSource(t.source)) return [];
+
+    const raw = (t.raw_data && typeof t.raw_data === "object" ? t.raw_data : t) as Record<string, any>;
+    const seg = (obj: Record<string, any>, camel: string, snake: string): string => {
+        const v = obj[camel] ?? obj[snake];
+        return typeof v === "string" ? v : "";
+    };
+
+    const headerText = seg(t, "textHeader", "text_header") || seg(raw, "textHeader", "text_header");
+    const bodyText = seg(t, "textBody", "text_body") || seg(raw, "textBody", "text_body");
+    const footerText = seg(t, "textFooter", "text_footer") || seg(raw, "textFooter", "text_footer");
+
+    const segmented: string[] = [
+        ...noahKeysForSegment("header", headerText),
+        ...noahKeysForSegment("body", bodyText),
+        ...noahKeysForSegment("footer", footerText),
+    ];
+    if (segmented.length > 0) {
+        return dedupeVariableKeys(segmented);
+    }
+
+    let fromComp = listNoahKeysFromApiComponents(t.components);
+    if (fromComp.length === 0) {
+        fromComp = listNoahKeysFromApiComponents(raw.components);
+    }
+    if (fromComp.length > 0) {
+        return dedupeVariableKeys(fromComp);
+    }
 
     const text = collectPlaceholdersSourceText(template);
     const fromNumeric = extractNoahNumericPlaceholderKeys(text);
@@ -361,7 +447,6 @@ export function listNoahOfficialVariableKeysFromTemplate(template: unknown): str
     const fromText = extractVariables(text);
     if (fromText.length > 0) return fromText;
 
-    const raw = (t.raw_data && typeof t.raw_data === "object" ? t.raw_data : t) as Record<string, any>;
     const nComp = inferNoahParameterCountFromComponents(t.components);
     const nRaw = inferNoahParameterCountFromComponents(raw.components);
     const n = Math.max(nComp, nRaw);

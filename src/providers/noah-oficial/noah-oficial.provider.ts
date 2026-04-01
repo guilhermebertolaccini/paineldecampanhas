@@ -19,10 +19,10 @@ export type NoahHsmTextParameter = {
 };
 
 /**
- * Bloco `components` para template HSM — `type: "body"` + `parameters` ordenados ({{1}}, {{2}}, …).
+ * Bloco `components` para template HSM — header / body / footer com `parameters` ordenados.
  */
-export type NoahHsmBodyComponent = {
-  type: 'body';
+export type NoahHsmTemplateComponent = {
+  type: 'header' | 'body' | 'footer';
   parameters: NoahHsmTextParameter[];
 };
 
@@ -35,7 +35,7 @@ export type NoahSendTemplatePayload = {
   templateId?: number;
   templateName: string;
   language: string;
-  components: NoahHsmBodyComponent[];
+  components: NoahHsmTemplateComponent[];
   externalKey: string;
 };
 
@@ -149,10 +149,6 @@ export class NoahOficialProvider extends BaseProvider {
   }
 
   /**
-   * Garante estrutura exata: `[{ "type": "body", "parameters": [{ "type": "text", "text": "..." }] }]`.
-   * Normaliza `BODY` → `body` e descarta entradas inválidas.
-   */
-  /**
    * `variables_map` pode vir objeto ou string JSON (REST / filas).
    */
   private parseNoahVariablesMap(raw: unknown): Record<string, unknown> | null {
@@ -192,15 +188,15 @@ export class NoahOficialProvider extends BaseProvider {
 
   private normalizeNoahTemplateComponents(
     components: unknown,
-  ): NoahHsmBodyComponent[] {
+  ): NoahHsmTemplateComponent[] {
     if (!Array.isArray(components)) return [];
-    const out: NoahHsmBodyComponent[] = [];
+    const out: NoahHsmTemplateComponent[] = [];
 
     for (const c of components) {
       if (!c || typeof c !== 'object') continue;
       const comp = c as Record<string, unknown>;
       const typ = String(comp.type ?? comp.Type ?? '').toLowerCase();
-      if (typ !== 'body') continue;
+      if (typ !== 'body' && typ !== 'header' && typ !== 'footer') continue;
 
       const rawParams = comp.parameters;
       if (!Array.isArray(rawParams)) continue;
@@ -218,7 +214,10 @@ export class NoahOficialProvider extends BaseProvider {
       }
 
       if (parameters.length > 0) {
-        out.push({ type: 'body', parameters });
+        out.push({
+          type: typ as 'header' | 'body' | 'footer',
+          parameters,
+        });
       }
     }
 
@@ -463,7 +462,7 @@ export class NoahOficialProvider extends BaseProvider {
           : undefined,
       );
 
-    const countBodyParams = (blocks: unknown): number => {
+    const countAllNoahParams = (blocks: unknown): number => {
       if (!Array.isArray(blocks)) return 0;
       let n = 0;
       for (const c of blocks) {
@@ -474,7 +473,7 @@ export class NoahOficialProvider extends BaseProvider {
       return n;
     };
 
-    let builtFromMap: NoahHsmBodyComponent[] | null = null;
+    let builtFromMap: NoahHsmTemplateComponent[] | null = null;
     if (variablesMapMerged && Object.keys(variablesMapMerged).length > 0) {
       builtFromMap = this.buildNoahComponentsFromVariablesMap(
         variablesMapMerged,
@@ -482,7 +481,7 @@ export class NoahOficialProvider extends BaseProvider {
       );
     }
 
-    if (countBodyParams(componentsRaw) === 0 && builtFromMap && builtFromMap.length > 0) {
+    if (countAllNoahParams(componentsRaw) === 0 && builtFromMap && builtFromMap.length > 0) {
       componentsRaw = builtFromMap;
     }
 
@@ -546,23 +545,61 @@ export class NoahOficialProvider extends BaseProvider {
   }
 
   /**
-   * Converte `variables_map` do painel (`{ type, value }` por chave `1`, `2`, …) em um único bloco `body.parameters` na ordem {{1}}, {{2}}.
+   * Interpreta chaves `header_1`, `body_2`, `footer_1` ou legado `1` (= body).
+   * Preenche buracos 1..max com espaço para não quebrar localizable_params da API NOAH.
+   */
+  private parseNoahVariableSlotKey(varName: string):
+    | { segment: 'header' | 'body' | 'footer'; index: number }
+    | null {
+    const s = varName.trim();
+    const hm = /^(header)[_-](\d+)$/i.exec(s);
+    if (hm) return { segment: 'header', index: parseInt(hm[2], 10) };
+    const bm = /^(body)[_-](\d+)$/i.exec(s);
+    if (bm) return { segment: 'body', index: parseInt(bm[2], 10) };
+    const fm = /^(footer)[_-](\d+)$/i.exec(s);
+    if (fm) return { segment: 'footer', index: parseInt(fm[2], 10) };
+    if (/^\d+$/.test(s)) {
+      const idx = parseInt(s, 10);
+      if (idx > 0) return { segment: 'body', index: idx };
+    }
+    return null;
+  }
+
+  private resolveNoahVariablesMapEntryToText(
+    mapping: unknown,
+    row: Record<string, unknown>,
+    cell: (col: string) => string,
+  ): string {
+    if (
+      mapping &&
+      typeof mapping === 'object' &&
+      !Array.isArray(mapping) &&
+      'type' in mapping &&
+      'value' in mapping
+    ) {
+      const m = mapping as { type: string; value: string };
+      if (m.type === 'field') {
+        return cell(String(m.value ?? ''));
+      }
+      return String(m.value ?? '').trim();
+    }
+    if (typeof mapping === 'string' && mapping !== '') {
+      return cell(mapping);
+    }
+    return '';
+  }
+
+  /**
+   * Converte `variables_map` em blocos `header` + `body` + `footer` para send-template.
    */
   private buildNoahComponentsFromVariablesMap(
     variablesMap: Record<string, unknown>,
     item: CampaignData,
-  ): NoahHsmBodyComponent[] {
+  ): NoahHsmTemplateComponent[] {
     const keys = Object.keys(variablesMap);
     if (keys.length === 0) return [];
 
-    const allNumeric = keys.every((k) => /^\d+$/.test(k));
-    const ordered = allNumeric
-      ? [...keys].sort((a, b) => parseInt(a, 10) - parseInt(b, 10))
-      : keys;
-
-    const bodyParams: NoahHsmTextParameter[] = [];
     const row = this.mergeNoahCampaignRow(item);
-
     const cell = (col: string): string => {
       if (!col) return '';
       const v =
@@ -572,31 +609,79 @@ export class NoahOficialProvider extends BaseProvider {
       return v != null ? String(v).trim() : '';
     };
 
-    for (const varName of ordered) {
+    const slots: Record<
+      'header' | 'body' | 'footer',
+      Map<number, string>
+    > = {
+      header: new Map(),
+      body: new Map(),
+      footer: new Map(),
+    };
+
+    const extras: string[] = [];
+
+    for (const varName of keys) {
       const mapping = variablesMap[varName];
-      let text = '';
-      if (
-        mapping &&
-        typeof mapping === 'object' &&
-        !Array.isArray(mapping) &&
-        'type' in mapping &&
-        'value' in mapping
-      ) {
-        const m = mapping as { type: string; value: string };
-        if (m.type === 'field') {
-          const col = String(m.value ?? '');
-          text = cell(col);
-        } else {
-          text = String(m.value ?? '').trim();
-        }
-      } else if (typeof mapping === 'string' && mapping !== '') {
-        text = cell(mapping);
+      let textRaw = this.resolveNoahVariablesMapEntryToText(
+        mapping,
+        row,
+        cell,
+      );
+      const rowDirect =
+        row[varName] ??
+        row[varName.toLowerCase()] ??
+        row[varName.toUpperCase()];
+      if (rowDirect != null && String(rowDirect).trim() !== '') {
+        textRaw = String(rowDirect).trim();
       }
-      const safe = text === '' ? ' ' : text;
-      bodyParams.push({ type: 'text', text: safe });
+      const safe = textRaw === '' ? ' ' : textRaw;
+
+      const parsed = this.parseNoahVariableSlotKey(varName);
+      if (parsed) {
+        slots[parsed.segment].set(parsed.index, safe);
+        continue;
+      }
+
+      extras.push(safe);
     }
 
-    if (bodyParams.length === 0) return [];
-    return [{ type: 'body', parameters: bodyParams }];
+    if (extras.length > 0) {
+      let next = 1;
+      if (slots.body.size > 0) {
+        next = Math.max(...slots.body.keys()) + 1;
+      }
+      for (const t of extras) {
+        while (slots.body.has(next)) next++;
+        slots.body.set(next, t);
+      }
+    }
+
+    const buildBlock = (
+      segment: 'header' | 'body' | 'footer',
+    ): NoahHsmTemplateComponent | null => {
+      const m = slots[segment];
+      if (m.size === 0) return null;
+      const maxIdx = Math.max(...m.keys());
+      const parameters: NoahHsmTextParameter[] = [];
+      for (let i = 1; i <= maxIdx; i++) {
+        const raw = m.get(i);
+        const t =
+          raw == null || String(raw).trim() === ''
+            ? ' '
+            : String(raw).trim();
+        parameters.push({ type: 'text', text: t });
+      }
+      if (parameters.length === 0) return null;
+      return { type: segment, parameters };
+    };
+
+    const ordered: NoahHsmTemplateComponent[] = [];
+    const h = buildBlock('header');
+    if (h) ordered.push(h);
+    const b = buildBlock('body');
+    if (b) ordered.push(b);
+    const f = buildBlock('footer');
+    if (f) ordered.push(f);
+    return ordered;
   }
 }
