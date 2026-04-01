@@ -3168,8 +3168,23 @@ class Painel_Campanhas
             $filters = json_decode($filters_json, true);
             $providers_config_json = stripslashes($_POST['providers_config'] ?? '{}');
             $providers_config = json_decode($providers_config_json, true);
-            $variables_map_json = stripslashes($_POST['variables_map'] ?? '{}');
+            $variables_map_json = isset($_POST['variables_map']) ? wp_unslash((string) $_POST['variables_map']) : '{}';
             $variables_map = json_decode($variables_map_json, true);
+            if (!is_array($variables_map)) {
+                $variables_map = [];
+            }
+
+            $noah_template_name_post = sanitize_text_field(wp_unslash($_POST['noah_template_name'] ?? ''));
+            $noah_template_data_json = isset($_POST['noah_template_data']) ? wp_unslash((string) $_POST['noah_template_data']) : '';
+            $noah_template_data = json_decode($noah_template_data_json, true);
+            if (!is_array($noah_template_data)) {
+                $noah_template_data = [];
+            }
+            $noah_components_for_file = [];
+            if (!empty($noah_template_data['components']) && is_array($noah_template_data['components'])) {
+                $noah_components_for_file = $noah_template_data['components'];
+            }
+
             $carteira = sanitize_text_field($_POST['carteira'] ?? '');
             $nome_campanha_post = sanitize_text_field(wp_unslash($_POST['nome_campanha'] ?? ''));
             $nome_carteira_persist = sanitize_text_field(wp_unslash($_POST['nome_carteira'] ?? ''));
@@ -3395,20 +3410,43 @@ class Painel_Campanhas
                             'original_message' => $mensagem_final,
                         ]);
                     } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
-                        $noah_vars_row = is_array($variables_map)
+                        $noah_display_name = $noah_template_name_post !== '' ? $noah_template_name_post : $template_code;
+                        $noah_flat_row = [
+                            'nome' => (string) ($record['nome'] ?? ''),
+                            'telefone' => (string) ($record['telefone'] ?? ''),
+                            'cpf_cnpj' => (string) ($record['cpf_cnpj'] ?? ''),
+                            'id_carteira' => (string) $id_carteira,
+                            'idcob_contrato' => (string) ($record['idcob_contrato'] ?? ''),
+                            'idgis_ambiente' => (string) (int) ($record['idgis_ambiente'] ?? 0),
+                        ];
+                        $noah_vars_row = count($variables_map) > 0
                             ? $this->resolve_noah_variables_row_for_csv($record, $variables_map)
                             : [];
+                        $row_vars_merged = array_merge($noah_flat_row, $noah_vars_row);
+
                         $mensagem_para_armazenar = json_encode([
                             'template_code' => $template_code,
                             'template_source' => 'noah_oficial',
                             'channelId' => $noah_channel_id,
                             'templateId' => $noah_template_id,
-                            'templateName' => $template_code,
+                            'templateName' => $noah_display_name,
                             'language' => $noah_language,
                             'original_message' => $mensagem_final,
-                            'variables_map' => (object) (is_array($variables_map) ? $variables_map : []),
-                            'variables' => $noah_vars_row,
-                        ]);
+                            'variables_map' => (object) $variables_map,
+                            'variables' => (object) $row_vars_merged,
+                            'components' => $noah_components_for_file,
+                            'templateData' => [
+                                'components' => $noah_components_for_file,
+                                'buttons' => $noah_template_data['buttons'] ?? null,
+                                'textHeader' => $noah_template_data['textHeader'] ?? null,
+                                'textBody' => $noah_template_data['textBody'] ?? null,
+                                'textFooter' => $noah_template_data['textFooter'] ?? null,
+                            ],
+                            'buttons' => $noah_template_data['buttons'] ?? null,
+                            'textHeader' => $noah_template_data['textHeader'] ?? null,
+                            'textBody' => $noah_template_data['textBody'] ?? null,
+                            'textFooter' => $noah_template_data['textFooter'] ?? null,
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                     } elseif ($template_source === 'robbu_oficial' && !empty($template_code)) {
                         $robbu_channel = intval($_POST['robbu_channel'] ?? 3);
                         $mensagem_para_armazenar = json_encode([

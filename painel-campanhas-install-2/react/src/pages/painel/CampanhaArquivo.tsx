@@ -781,6 +781,30 @@ export default function CampanhaArquivo() {
       }
     }
 
+    if (
+      !salesforceOnly &&
+      !isTechiaDiscador &&
+      selectedTemplate &&
+      isNoahOfficialTemplateSource(selectedTemplate.source) &&
+      noahOfficialMapperVariableKeys.length > 0
+    ) {
+      const unfilled = noahOfficialMapperVariableKeys.filter(
+        (k) =>
+          !(
+            templateVariables[k]?.value != null &&
+            String(templateVariables[k].value).trim() !== ""
+          ),
+      );
+      if (unfilled.length > 0) {
+        toast({
+          title: "Mapeamento NOAH incompleto",
+          description: `Associe o CSV a cada variável: ${unfilled.slice(0, 8).join(", ")}${unfilled.length > 8 ? "…" : ""}`,
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     if (!provider) {
       toast({
         title: "Fornecedor obrigatório",
@@ -855,6 +879,18 @@ export default function CampanhaArquivo() {
       payload.noah_channel_id = !Number.isNaN(nch) && nch > 0 ? nch : '';
       payload.noah_template_id = selectedTemplate.templateId ?? '';
       payload.noah_language = selectedTemplate.language ?? 'pt_BR';
+      const st = selectedTemplate as Record<string, unknown>;
+      payload.noah_template_data = JSON.stringify({
+        components: st.components ?? undefined,
+        buttons: st.buttons ?? undefined,
+        textHeader: st.textHeader ?? st.text_header ?? undefined,
+        textBody: st.textBody ?? st.text_body ?? undefined,
+        textFooter: st.textFooter ?? st.text_footer ?? undefined,
+        raw_data: st.raw_data ?? undefined,
+      });
+      payload.noah_template_name = String(
+        st.templateName ?? st.templateCode ?? payload.template_code ?? '',
+      );
     }
     if (templateSource === 'robbu_oficial') {
       payload.robbu_channel = 3;

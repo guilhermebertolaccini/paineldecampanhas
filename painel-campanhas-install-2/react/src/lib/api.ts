@@ -608,6 +608,14 @@ export const createCpfCampaign = (data: Record<string, any>) => {
     payload.noah_channel_id = data.noah_channel_id ?? '';
     payload.noah_template_id = data.noah_template_id ?? '';
     payload.noah_language = data.noah_language ?? 'pt_BR';
+    if (typeof data.noah_template_data === 'string' && data.noah_template_data.trim() !== '') {
+      payload.noah_template_data = data.noah_template_data;
+    } else if (data.noah_template_data && typeof data.noah_template_data === 'object') {
+      payload.noah_template_data = JSON.stringify(data.noah_template_data);
+    }
+    if (data.noah_template_name != null && String(data.noah_template_name).trim() !== '') {
+      payload.noah_template_name = String(data.noah_template_name).trim();
+    }
   }
   if (templateSource === 'robbu_oficial') {
     payload.robbu_channel = data.robbu_channel ?? 3;
