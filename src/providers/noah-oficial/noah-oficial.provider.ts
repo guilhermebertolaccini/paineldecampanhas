@@ -291,6 +291,148 @@ export class NoahOficialProvider extends BaseProvider {
   }
 
   /**
+   * Maior índice em placeholders estilo Meta (`{{1}}`, `{2}`) — define quantos parâmetros
+   * localizáveis o segmento precisa (1..N contíguos).
+   */
+  private maxPlaceholderIndexInString(s: unknown): number {
+    if (typeof s !== 'string' || !s.trim()) return 0;
+    const re = /\{\{\s*(\d+)\s*\}\}|\{(\d+)\}/g;
+    let m: RegExpExecArray | null;
+    let max = 0;
+    while ((m = re.exec(s)) !== null) {
+      const n = parseInt(m[1] || m[2], 10);
+      if (!Number.isNaN(n) && n > max) max = n;
+    }
+    return max;
+  }
+
+  /**
+   * Quantos parâmetros o template exige por segmento: blocos crus (incl. image/document no header)
+   * + texto com `{{n}}` em textHeader/textBody/textFooter (raiz ou templateData).
+   */
+  private inferExpectedNoahHsmParamCounts(
+    parsed: Record<string, unknown>,
+  ): { header: number; body: number; footer: number } {
+    const counts = { header: 0, body: 0, footer: 0 };
+
+    const scanComponentArray = (arr: unknown) => {
+      if (!Array.isArray(arr)) return;
+      for (const c of arr) {
+        if (!c || typeof c !== 'object') continue;
+        const o = c as Record<string, unknown>;
+        const typ = String(o.type ?? '').toLowerCase();
+        if (typ !== 'header' && typ !== 'body' && typ !== 'footer') continue;
+        const params = o.parameters;
+        const n = Array.isArray(params) ? params.length : 0;
+        if (n > counts[typ as 'header' | 'body' | 'footer']) {
+          counts[typ as 'header' | 'body' | 'footer'] = n;
+        }
+      }
+    };
+
+    scanComponentArray(parsed.components);
+    for (const key of ['templateData', 'template_data', 'raw_data'] as const) {
+      const v = parsed[key];
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        scanComponentArray((v as Record<string, unknown>).components);
+      }
+    }
+
+    const bumpText = (text: unknown, seg: 'header' | 'body' | 'footer') => {
+      const m = this.maxPlaceholderIndexInString(text);
+      if (m > counts[seg]) counts[seg] = m;
+    };
+
+    bumpText(parsed.textHeader ?? parsed.text_header, 'header');
+    bumpText(parsed.textBody ?? parsed.text_body, 'body');
+    bumpText(parsed.textFooter ?? parsed.text_footer, 'footer');
+
+    for (const key of ['templateData', 'template_data'] as const) {
+      const v = parsed[key];
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      const td = v as Record<string, unknown>;
+      bumpText(td.textHeader ?? td.text_header, 'header');
+      bumpText(td.textBody ?? td.text_body, 'body');
+      bumpText(td.textFooter ?? td.text_footer, 'footer');
+    }
+
+    return counts;
+  }
+
+  /**
+   * Garante header/body/footer com o número correto de `parameters` (texto), preenchendo com
+   * valores já normalizados, depois `builtFromMap`, senão espaço — evita 400 localizable_params.
+   */
+  private mergeNoahHsmComponentsToExpectedSlotCounts(
+    current: NoahHsmTemplateComponent[],
+    expected: { header: number; body: number; footer: number },
+    builtFromMap: NoahHsmTemplateComponent[] | null,
+  ): NoahHsmTemplateComponent[] {
+    const pick = (list: NoahHsmTemplateComponent[], seg: string) =>
+      list.find((c) => c.type === seg);
+
+    const segments: Array<'header' | 'body' | 'footer'> = [
+      'header',
+      'body',
+      'footer',
+    ];
+    const out: NoahHsmTemplateComponent[] = [];
+
+    for (const seg of segments) {
+      const exp = expected[seg];
+      const cur = pick(current, seg);
+      const built = pick(builtFromMap ?? [], seg);
+      const curLen = cur?.parameters?.length ?? 0;
+      const builtLen = built?.parameters?.length ?? 0;
+      const need = Math.max(exp, curLen, builtLen);
+      if (need <= 0) continue;
+
+      const parameters: NoahHsmTextParameter[] = [];
+      for (let i = 0; i < need; i++) {
+        const ct = cur?.parameters[i]?.text;
+        const bt = built?.parameters[i]?.text;
+        let text = '';
+        if (ct != null && String(ct).trim() !== '') text = String(ct).trim();
+        else if (bt != null && String(bt).trim() !== '') text = String(bt).trim();
+        else text = ' ';
+        if (text === '') text = ' ';
+        parameters.push({ type: 'text', text });
+      }
+      out.push({ type: seg, parameters });
+    }
+
+    return out;
+  }
+
+  /**
+   * Se `parsed.components` veio vazio, usa HSM em templateData / raw_data (persistência WP por arquivo).
+   */
+  private resolveNoahHsmRawBlocksFromParsed(
+    parsed: Record<string, unknown>,
+    primaryHsm: unknown[],
+  ): unknown[] {
+    if (Array.isArray(primaryHsm) && primaryHsm.length > 0) {
+      let n = 0;
+      for (const c of primaryHsm) {
+        if (!c || typeof c !== 'object') continue;
+        const params = (c as Record<string, unknown>).parameters;
+        if (Array.isArray(params)) n += params.length;
+      }
+      if (n > 0) return [...primaryHsm];
+    }
+
+    for (const key of ['templateData', 'template_data', 'raw_data'] as const) {
+      const v = parsed[key];
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      const nested = (v as Record<string, unknown>).components;
+      const part = this.partitionNoahComponentsArray(nested);
+      if (part.hsm.length > 0) return [...part.hsm];
+    }
+
+    return Array.isArray(primaryHsm) ? [...primaryHsm] : [];
+  }
+
+  /**
    * Separa blocos HSM (header/body/footer) de `button` no array persistido no JSON da mensagem.
    */
   private partitionNoahComponentsArray(
@@ -634,7 +776,10 @@ export class NoahOficialProvider extends BaseProvider {
     const language = (parsed.language as string) ?? 'pt_BR';
 
     const part = this.partitionNoahComponentsArray(parsed.components);
-    let componentsRaw: unknown[] = [...part.hsm];
+    let componentsRaw: unknown[] = this.resolveNoahHsmRawBlocksFromParsed(
+      parsed,
+      part.hsm,
+    );
 
     const variablesMapMerged = this.resolveNoahVariablesMapMerged(parsed, item);
 
@@ -676,7 +821,38 @@ export class NoahOficialProvider extends BaseProvider {
       }
     }
 
-    const buttonBlocks = this.normalizeNoahButtonBlocks(part.buttons, parsed);
+    const expectedSlots = this.inferExpectedNoahHsmParamCounts(parsed);
+    const anyExpected =
+      expectedSlots.header > 0 ||
+      expectedSlots.body > 0 ||
+      expectedSlots.footer > 0;
+    const shouldReconcileSlots =
+      anyExpected ||
+      components.length > 0 ||
+      (builtFromMap != null && builtFromMap.length > 0);
+
+    if (shouldReconcileSlots) {
+      components = this.mergeNoahHsmComponentsToExpectedSlotCounts(
+        components,
+        expectedSlots,
+        builtFromMap,
+      );
+    }
+
+    const buttonSourceArrays: unknown[] = [part.buttons];
+    for (const key of ['templateData', 'template_data', 'raw_data'] as const) {
+      const v = parsed[key];
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        const nested = (v as Record<string, unknown>).components;
+        const pb = this.partitionNoahComponentsArray(nested);
+        if (pb.buttons.length > 0) buttonSourceArrays.push(pb.buttons);
+      }
+    }
+    const mergedButtonRaw: unknown[] = [];
+    for (const arr of buttonSourceArrays) {
+      if (Array.isArray(arr)) mergedButtonRaw.push(...arr);
+    }
+    const buttonBlocks = this.normalizeNoahButtonBlocks(mergedButtonRaw, parsed);
 
     if (!channelIdNum || !templateName || String(templateName).trim() === '') {
       throw new Error(
