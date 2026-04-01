@@ -36,6 +36,7 @@ export type NoahHsmButtonComponent = {
 
 /**
  * Payload raiz POST `/v1/api/external/:apiId/send-template` (documentação NOAH).
+ * Não incluir `contactName` / `name` / `nome` na raiz — a API dispara upsert de contato e pode retornar ERR_DUPLICATED_CONTACT.
  */
 export type NoahSendTemplatePayload = {
   number: string;
@@ -94,6 +95,37 @@ export class NoahOficialProvider extends BaseProvider {
       return trimmed;
     }
     return `${trimmed}${suffix}`;
+  }
+
+  /**
+   * Corpo estrito para `/send-template`: somente campos operacionais.
+   * Qualquer outra chave na raiz (ex.: contactName) pode acionar upsert na NOAH → ERR_DUPLICATED_CONTACT.
+   */
+  private buildStrictNoahSendTemplateBody(params: {
+    number: string;
+    channelId: number;
+    templateName: string;
+    language: string;
+    components: NoahSendTemplatePayload['components'];
+    externalKey: string;
+    templateId?: number;
+  }): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      number: params.number,
+      channelId: params.channelId,
+      templateName: params.templateName,
+      language: params.language,
+      components: params.components,
+      externalKey: params.externalKey,
+    };
+    if (
+      params.templateId != null &&
+      !Number.isNaN(params.templateId) &&
+      params.templateId > 0
+    ) {
+      body.templateId = params.templateId;
+    }
+    return JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
   }
 
   /**
@@ -862,22 +894,22 @@ export class NoahOficialProvider extends BaseProvider {
 
     const url = this.resolveNoahSendTemplateUrl(baseUrl);
 
-    const payload: NoahSendTemplatePayload = {
+    const tid =
+      templateIdRaw !== undefined && templateIdRaw !== null && templateIdRaw !== ''
+        ? Number(templateIdRaw)
+        : NaN;
+    const templateIdOpt =
+      !Number.isNaN(tid) && tid > 0 ? tid : undefined;
+
+    const requestBody = this.buildStrictNoahSendTemplateBody({
       number,
       channelId: channelIdNum,
       templateName: String(templateName).trim(),
       language: String(language),
       components: [...components, ...buttonBlocks],
       externalKey,
-    };
-
-    const tid =
-      templateIdRaw !== undefined && templateIdRaw !== null && templateIdRaw !== ''
-        ? Number(templateIdRaw)
-        : NaN;
-    if (!Number.isNaN(tid) && tid > 0) {
-      payload.templateId = tid;
-    }
+      templateId: templateIdOpt,
+    });
 
     this.logger.debug(
       `NOAH send-template → ${url} | channelId=${channelIdNum} | externalKey=${externalKey} | number=${number}`,
@@ -886,7 +918,7 @@ export class NoahOficialProvider extends BaseProvider {
     await this.executeWithRetry(
       async () => {
         const result = await firstValueFrom(
-          this.httpService.post<unknown>(url, payload, {
+          this.httpService.post<unknown>(url, requestBody, {
             headers: {
               'Content-Type': 'application/json',
               Accept: 'application/json',

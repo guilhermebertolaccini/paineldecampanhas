@@ -125,6 +125,7 @@ export default function CampanhaArquivo() {
   const [carteira, setCarteira] = useState("");
   const [tableName, setTableName] = useState("");
   const [includeBaits, setIncludeBaits] = useState(false);
+  const [testOnlyBaits, setTestOnlyBaits] = useState(false);
   const [selectedBaitIds, setSelectedBaitIds] = useState<number[]>([]);
   const [showAlreadySent, setShowAlreadySent] = useState(false);
   const [baseUpdateStatus, setBaseUpdateStatus] = useState<{ isUpdated: boolean; message: string } | null>(null);
@@ -656,10 +657,16 @@ export default function CampanhaArquivo() {
 
   const createMutation = useMutation({
     mutationFn: (data: any) => createCpfCampaign(data),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      const onlyBaits =
+        variables?.test_only === 1 ||
+        variables?.test_only === true ||
+        String(variables?.test_only) === "1";
       toast({
         title: "Campanha criada com sucesso!",
-        description: `${recordCount.toLocaleString("pt-BR")} registros serão processados.`,
+        description: onlyBaits
+          ? "Disparo de teste: fila apenas com as iscas selecionadas."
+          : `${recordCount.toLocaleString("pt-BR")} registros serão processados.`,
       });
       navigate("/painel/campanhas");
     },
@@ -709,10 +716,30 @@ export default function CampanhaArquivo() {
       return;
     }
 
-    if (!file || !tempId) {
+    const baitsOnlyTestOk =
+      testOnlyBaits && includeBaits && selectedBaitIds.length > 0;
+
+    if (testOnlyBaits && !includeBaits) {
+      toast({
+        title: "Disparo de teste",
+        description: "Ative também “Incluir iscas de teste” para enviar só às iscas.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (testOnlyBaits && includeBaits && selectedBaitIds.length === 0) {
+      toast({
+        title: "Selecione iscas",
+        description: "Marque ao menos uma isca para o disparo de teste.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!baitsOnlyTestOk && (!file || !tempId)) {
       toast({
         title: "Arquivo obrigatório",
-        description: "Por favor, faça upload de um arquivo CSV válido",
+        description: "Faça upload de um CSV válido — ou use disparo de teste (apenas iscas) sem arquivo.",
         variant: "destructive",
       });
       return;
@@ -832,7 +859,7 @@ export default function CampanhaArquivo() {
       return;
     }
 
-    if (baseUpdateStatus && !baseUpdateStatus.isUpdated) {
+    if (!baitsOnlyTestOk && baseUpdateStatus && !baseUpdateStatus.isUpdated) {
       toast({
         title: "Base desatualizada",
         description: "Atualize a base antes de criar a campanha",
@@ -854,7 +881,7 @@ export default function CampanhaArquivo() {
     const payload: Record<string, any> = {
       nome_campanha: campaignName.trim(),
       nome_carteira: selectedCarteiraObj?.nome?.trim() || '',
-      temp_id: tempId,
+      temp_id: baitsOnlyTestOk ? "" : tempId,
       table_name: tableName,
       carteira: carteira || '',
       wallet_id: walletIdForOtima || selectedCarteiraObj?.id_carteira || '',
@@ -872,6 +899,7 @@ export default function CampanhaArquivo() {
       include_baits: includeBaits ? 1 : 0,
       bait_ids: includeBaits ? selectedBaitIds : [],
       show_already_sent: showAlreadySent ? 1 : 0,
+      test_only: testOnlyBaits ? 1 : 0,
     };
 
     if (templateSource === 'noah_oficial' && selectedTemplate) {
@@ -1450,11 +1478,13 @@ export default function CampanhaArquivo() {
                 </div>
               )}
 
-            {tempId && (
+            {(tempId || (testOnlyBaits && includeBaits)) && (
               <div className="rounded-lg bg-muted/50 p-4">
                 <p className="text-sm text-muted-foreground">
                   <span className="font-semibold text-foreground">Registros a processar:</span>{" "}
-                  {recordCount.toLocaleString("pt-BR")}
+                  {testOnlyBaits && includeBaits && !tempId
+                    ? `0 (arquivo) — apenas ${selectedBaitIds.length} isca(s)`
+                    : recordCount.toLocaleString("pt-BR")}
                 </p>
               </div>
             )}
@@ -1468,6 +1498,9 @@ export default function CampanhaArquivo() {
                   onCheckedChange={(checked) => {
                     const on = !!checked;
                     setIncludeBaits(on);
+                    if (!on) {
+                      setTestOnlyBaits(false);
+                    }
                     if (on && Array.isArray(baitsData) && baitsData.length) {
                       setSelectedBaitIds(
                         baitsData.map((b: any) => Number(b.id)).filter((n: number) => !Number.isNaN(n) && n > 0),
@@ -1514,6 +1547,37 @@ export default function CampanhaArquivo() {
               {includeBaits && !baitsLoading && baitsData.length === 0 && (
                 <p className="text-xs text-destructive">Nenhuma isca ativa cadastrada.</p>
               )}
+              {includeBaits && (
+                <div className="mt-4 rounded-lg bg-purple-50 dark:bg-purple-900/10 border border-purple-200 dark:border-purple-800 p-4">
+                  <div className="flex items-center gap-3">
+                    <Checkbox
+                      id="test-only-baits-file"
+                      checked={testOnlyBaits}
+                      onCheckedChange={(checked) => {
+                        const on = !!checked;
+                        setTestOnlyBaits(on);
+                        if (on) {
+                          setIncludeBaits(true);
+                          if (Array.isArray(baitsData) && baitsData.length && selectedBaitIds.length === 0) {
+                            setSelectedBaitIds(
+                              baitsData.map((b: any) => Number(b.id)).filter((n: number) => !Number.isNaN(n) && n > 0),
+                            );
+                          }
+                        }
+                      }}
+                    />
+                    <div className="flex-1">
+                      <label htmlFor="test-only-baits-file" className="font-semibold text-purple-700 dark:text-purple-300 cursor-pointer">
+                        Disparo de teste (apenas iscas)
+                      </label>
+                      <p className="text-xs text-purple-600/80 dark:text-purple-300/80 mt-1">
+                        Não usa o CSV nem registros da base: a fila terá somente as iscas marcadas. Útil para validar NOAH/Ótima/GOSAC antes do mailing.
+                        Você pode usar sem enviar arquivo.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Filtro Adicional: Mostrar já enviados */}
@@ -1535,13 +1599,15 @@ export default function CampanhaArquivo() {
               onClick={handleSubmit}
               disabled={
                 !campaignName.trim() ||
-                !file ||
-                !tempId ||
+                (!(testOnlyBaits && includeBaits && selectedBaitIds.length > 0) &&
+                  (!file || !tempId)) ||
                 (!template && provider !== "SALESFORCE" && provider !== "TECH_IA") ||
                 !provider ||
                 !tableName ||
                 createMutation.isPending ||
-                (baseUpdateStatus && !baseUpdateStatus.isUpdated)
+                (!(testOnlyBaits && includeBaits && selectedBaitIds.length > 0) &&
+                  baseUpdateStatus &&
+                  !baseUpdateStatus.isUpdated)
               }
               className="w-full gradient-primary hover:opacity-90"
             >

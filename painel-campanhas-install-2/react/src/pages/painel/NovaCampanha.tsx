@@ -919,6 +919,27 @@ export default function NovaCampanha() {
 
     const formattedFilters = buildFilterPayload(filters);
 
+    const noahScheduleExtras: Record<string, string> =
+      formData.templateSource === "noah_oficial" || formData.templateSource === "noah"
+        ? (() => {
+            const st = selectedTemplateObj as Record<string, unknown> | null | undefined;
+            if (!st) return {};
+            return {
+              noah_template_data: JSON.stringify({
+                components: st.components ?? undefined,
+                buttons: st.buttons ?? undefined,
+                textHeader: st.textHeader ?? st.text_header ?? undefined,
+                textBody: st.textBody ?? st.text_body ?? undefined,
+                textFooter: st.textFooter ?? st.text_footer ?? undefined,
+                raw_data: st.raw_data ?? undefined,
+              }),
+              noah_template_name: String(
+                st.templateName ?? st.templateCode ?? formData.templateCode ?? "",
+              ),
+            };
+          })()
+        : {};
+
     if (
       (formData.templateSource === "otima_wpp" ||
         formData.templateSource === "noah_oficial" ||
@@ -970,6 +991,7 @@ export default function NovaCampanha() {
         throttling_type: formData.throttling_type || 'none',
         throttling_config: formData.throttling_config || {},
         midia_campanha: formData.midia_campanha || '',
+        ...noahScheduleExtras,
       };
       saveRecurringMutation.mutate(recurringData);
     } else {
@@ -1014,6 +1036,7 @@ export default function NovaCampanha() {
         throttling_type: formData.throttling_type || 'none',
         throttling_config: formData.throttling_config || {},
         midia_campanha: formData.midia_campanha || '',
+        ...noahScheduleExtras,
       };
 
       if (campaignData.template_source === "gosac_oficial") {

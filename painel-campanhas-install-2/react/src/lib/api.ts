@@ -242,10 +242,18 @@ export const scheduleCampaign = (data: Record<string, any>) => {
   if (data.nome_campanha != null && String(data.nome_campanha).trim() !== '') {
     payload.nome_campanha = String(data.nome_campanha).trim();
   }
-  if (data.template_source === 'noah_oficial') {
+  if (data.template_source === 'noah_oficial' || data.template_source === 'noah') {
     payload.noah_channel_id = data.noah_channel_id ?? '';
     payload.noah_template_id = data.noah_template_id ?? '';
     payload.noah_language = data.noah_language ?? 'pt_BR';
+    if (typeof data.noah_template_data === 'string' && data.noah_template_data.trim() !== '') {
+      payload.noah_template_data = data.noah_template_data;
+    } else if (data.noah_template_data && typeof data.noah_template_data === 'object') {
+      payload.noah_template_data = JSON.stringify(data.noah_template_data);
+    }
+    if (data.noah_template_name != null && String(data.noah_template_name).trim() !== '') {
+      payload.noah_template_name = String(data.noah_template_name).trim();
+    }
   }
   if (data.template_source === 'gosac_oficial') {
     const tid = data.gosac_template_id;
@@ -497,6 +505,14 @@ export const saveRecurring = (data: Record<string, any>) => {
     payload.noah_channel_id = data.noah_channel_id ?? '';
     payload.noah_template_id = data.noah_template_id ?? '';
     payload.noah_language = data.noah_language ?? 'pt_BR';
+    if (typeof data.noah_template_data === 'string' && data.noah_template_data.trim() !== '') {
+      payload.noah_template_data = data.noah_template_data;
+    } else if (data.noah_template_data && typeof data.noah_template_data === 'object') {
+      payload.noah_template_data = JSON.stringify(data.noah_template_data);
+    }
+    if (data.noah_template_name != null && String(data.noah_template_name).trim() !== '') {
+      payload.noah_template_name = String(data.noah_template_name).trim();
+    }
   }
   if (data.template_source === 'gosac_oficial') {
     if (data.gosac_template_id != null) payload.gosac_template_id = data.gosac_template_id;
@@ -648,6 +664,10 @@ export const createCpfCampaign = (data: Record<string, any>) => {
     });
   } else {
     payload.providers_config = JSON.stringify(data.providers_config);
+  }
+
+  if (data.test_only !== undefined) {
+    payload.test_only = data.test_only ? 1 : 0;
   }
 
   return wpAjax('cpf_cm_create_campaign', payload);
