@@ -4,6 +4,7 @@ import { Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookService } from '../../webhook/webhook.service';
 import { BaseProvider } from '../../providers/base/base.provider';
+import { DigitalFunnelMssqlService } from '../../sql-server/digital-funnel-mssql.service';
 
 export interface ProviderSendJobData {
   campaignId: string;
@@ -34,6 +35,7 @@ export abstract class BaseProviderProcessor extends WorkerHost {
     protected readonly provider: BaseProvider,
     protected readonly prisma: PrismaService,
     protected readonly webhookService: WebhookService,
+    protected readonly digitalFunnel: DigitalFunnelMssqlService,
     loggerName: string,
   ) {
     super();
@@ -73,6 +75,12 @@ export abstract class BaseProviderProcessor extends WorkerHost {
         },
       });
 
+      await this.digitalFunnel.updateEnviosStatusTodos(
+        agendamentoId,
+        this.providerName,
+        'PROCESSANDO',
+      );
+
       // Envia para o provider
       const result = await this.provider.send(data, credentials);
 
@@ -97,6 +105,12 @@ export abstract class BaseProviderProcessor extends WorkerHost {
         });
 
         this.logger.log(`✅ Campaign ${campaignId} completed successfully`);
+
+        await this.digitalFunnel.updateEnviosStatusTodos(
+          agendamentoId,
+          this.providerName,
+          'SUCESSO',
+        );
         
         // Envia webhook para WordPress
         await this.webhookService.sendStatusUpdate({
@@ -137,6 +151,13 @@ export abstract class BaseProviderProcessor extends WorkerHost {
         });
 
         this.logger.error(`❌ Campaign ${campaignId} failed: ${errStr}`);
+
+        await this.digitalFunnel.updateEnviosStatusTodos(
+          agendamentoId,
+          this.providerName,
+          'ERRO',
+          errStr,
+        );
         
         // Envia webhook de erro para WordPress
         await this.webhookService.sendStatusUpdate({
@@ -168,6 +189,13 @@ export abstract class BaseProviderProcessor extends WorkerHost {
       } catch (updateError) {
         this.logger.error(`Failed to update campaign status: ${updateError}`);
       }
+
+      await this.digitalFunnel.updateEnviosStatusTodos(
+        agendamentoId,
+        this.providerName,
+        'ERRO',
+        errStr,
+      );
       
       // Envia webhook de erro para WordPress
       await this.webhookService.sendStatusUpdate({

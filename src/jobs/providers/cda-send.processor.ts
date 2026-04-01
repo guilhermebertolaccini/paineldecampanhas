@@ -4,6 +4,7 @@ import { Logger } from '@nestjs/common';
 import { CdaProvider } from '../../providers/cda/cda.provider';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookService } from '../../webhook/webhook.service';
+import { DigitalFunnelMssqlService } from '../../sql-server/digital-funnel-mssql.service';
 import { queueNames } from '../../config/bullmq.config';
 
 interface CdaSendJobData {
@@ -21,6 +22,7 @@ export class CdaSendProcessor extends WorkerHost {
     private readonly cdaProvider: CdaProvider,
     private readonly prisma: PrismaService,
     private readonly webhookService: WebhookService,
+    private readonly digitalFunnel: DigitalFunnelMssqlService,
   ) {
     super();
   }
@@ -58,6 +60,12 @@ export class CdaSendProcessor extends WorkerHost {
         },
       });
 
+      await this.digitalFunnel.updateEnviosStatusTodos(
+        agendamentoId,
+        'CDA',
+        'PROCESSANDO',
+      );
+
       // Envia para o provider CDA
       const result = await this.cdaProvider.send(data, credentials);
 
@@ -82,6 +90,12 @@ export class CdaSendProcessor extends WorkerHost {
         });
 
         this.logger.log(`✅ Campaign ${campaignId} completed successfully`);
+
+        await this.digitalFunnel.updateEnviosStatusTodos(
+          agendamentoId,
+          'CDA',
+          'SUCESSO',
+        );
         
         // Envia webhook para WordPress
         await this.webhookService.sendStatusUpdate({
@@ -120,6 +134,13 @@ export class CdaSendProcessor extends WorkerHost {
         });
 
         this.logger.error(`❌ Campaign ${campaignId} failed: ${result.error}`);
+
+        await this.digitalFunnel.updateEnviosStatusTodos(
+          agendamentoId,
+          'CDA',
+          'ERRO',
+          result.error || 'Erro desconhecido',
+        );
         
         // Envia webhook de erro para WordPress
         await this.webhookService.sendStatusUpdate({
@@ -151,6 +172,13 @@ export class CdaSendProcessor extends WorkerHost {
       } catch (updateError) {
         this.logger.error(`Failed to update campaign status: ${updateError}`);
       }
+
+      await this.digitalFunnel.updateEnviosStatusTodos(
+        agendamentoId,
+        'CDA',
+        'ERRO',
+        error.message,
+      );
       
       // Envia webhook de erro para WordPress
       await this.webhookService.sendStatusUpdate({

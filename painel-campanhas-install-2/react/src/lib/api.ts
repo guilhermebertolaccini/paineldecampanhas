@@ -152,9 +152,63 @@ export const getDashboardStats = () => {
   return wpAjax('pc_get_dashboard_stats', {});
 };
 
+export type LineHealthRow = {
+  id?: number | string;
+  id_linha: string;
+  nome_linha: string;
+  provedor?: string;
+  status_qualidade: string;
+  detalhes_retorno?: string | null;
+  /** Legado se a tabela ainda expuser data_checagem */
+  data_checagem?: string;
+};
+
+export type LineHealthResponse = {
+  rows: LineHealthRow[];
+  configured: boolean;
+};
+
+export const getLineHealth = (): Promise<LineHealthResponse> => {
+  return wpAjax('pc_get_line_health', {});
+};
+
 // Bases disponíveis
 export const getAvailableBases = () => {
   return wpAjax('pc_get_available_bases', {});
+};
+
+export type MssqlWpConfigOverride = {
+  enabled?: boolean;
+  host?: boolean;
+  port?: boolean;
+  database?: boolean;
+  user?: boolean;
+  password?: boolean;
+  views_catalog?: boolean;
+  linked_prefix?: boolean;
+};
+
+export type MssqlSettingsResponse = {
+  pc_mssql_enabled: string;
+  pc_mssql_host: string;
+  pc_mssql_port: string;
+  pc_mssql_database: string;
+  pc_mssql_user: string;
+  pc_mssql_password_masked: string;
+  has_saved_password: boolean;
+  pc_mssql_views_info_schema_catalog: string;
+  pc_mssql_linked_four_part_prefix: string;
+  wp_config_override?: MssqlWpConfigOverride;
+};
+
+export const getMssqlSettings = (): Promise<MssqlSettingsResponse> => {
+  return wpAjax('pc_get_mssql_settings', {});
+};
+
+export const saveMssqlSettings = (
+  data: Record<string, string>,
+): Promise<{ message?: string }> => {
+  return wpAjax('pc_save_mssql_settings', data);
 };
 
 // Campanhas

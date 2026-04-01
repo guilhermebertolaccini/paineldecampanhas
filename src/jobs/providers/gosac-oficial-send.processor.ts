@@ -3,6 +3,7 @@ import { Job } from 'bullmq';
 import { GosacOficialProvider } from '../../providers/gosac-oficial/gosac-oficial.provider';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookService } from '../../webhook/webhook.service';
+import { DigitalFunnelMssqlService } from '../../sql-server/digital-funnel-mssql.service';
 import { BaseProviderProcessor, ProviderSendJobData } from './base-provider.processor';
 import { queueNames } from '../../config/bullmq.config';
 
@@ -18,8 +19,9 @@ export class GosacOficialSendProcessor extends BaseProviderProcessor {
         provider: GosacOficialProvider,
         prisma: PrismaService,
         webhookService: WebhookService,
+        digitalFunnel: DigitalFunnelMssqlService,
     ) {
-        super(provider, prisma, webhookService, GosacOficialSendProcessor.name);
+        super(provider, prisma, webhookService, digitalFunnel, GosacOficialSendProcessor.name);
     }
 
     async process(job: Job<ProviderSendJobData>) {

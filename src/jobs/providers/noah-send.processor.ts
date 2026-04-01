@@ -2,6 +2,7 @@ import { Processor } from '@nestjs/bullmq';
 import { NoahProvider } from '../../providers/noah/noah.provider';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookService } from '../../webhook/webhook.service';
+import { DigitalFunnelMssqlService } from '../../sql-server/digital-funnel-mssql.service';
 import { BaseProviderProcessor, ProviderSendJobData } from './base-provider.processor';
 import { queueNames } from '../../config/bullmq.config';
 import { Job } from 'bullmq';
@@ -14,8 +15,9 @@ export class NoahSendProcessor extends BaseProviderProcessor {
     provider: NoahProvider,
     prisma: PrismaService,
     webhookService: WebhookService,
+    digitalFunnel: DigitalFunnelMssqlService,
   ) {
-    super(provider, prisma, webhookService, NoahSendProcessor.name);
+    super(provider, prisma, webhookService, digitalFunnel, NoahSendProcessor.name);
   }
 
   async process(job: Job<ProviderSendJobData>) {

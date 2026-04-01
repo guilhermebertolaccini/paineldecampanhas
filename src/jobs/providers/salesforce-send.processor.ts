@@ -2,6 +2,7 @@ import { Processor, InjectQueue } from '@nestjs/bullmq';
 import { SalesforceProvider } from '../../providers/salesforce/salesforce.provider';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookService } from '../../webhook/webhook.service';
+import { DigitalFunnelMssqlService } from '../../sql-server/digital-funnel-mssql.service';
 import { BaseProviderProcessor, ProviderSendJobData, ProcessResult } from './base-provider.processor';
 import { queueNames } from '../../config/bullmq.config';
 import { Job, Queue } from 'bullmq';
@@ -14,9 +15,10 @@ export class SalesforceSendProcessor extends BaseProviderProcessor {
     provider: SalesforceProvider,
     prisma: PrismaService,
     webhookService: WebhookService,
+    digitalFunnel: DigitalFunnelMssqlService,
     @InjectQueue(queueNames.SALESFORCE_MKC) private readonly mkcQueue: Queue,
   ) {
-    super(provider, prisma, webhookService, SalesforceSendProcessor.name);
+    super(provider, prisma, webhookService, digitalFunnel, SalesforceSendProcessor.name);
   }
 
   async process(job: Job<ProviderSendJobData>): Promise<ProcessResult> {

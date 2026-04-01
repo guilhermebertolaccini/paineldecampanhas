@@ -1,6 +1,7 @@
 import { Processor } from '@nestjs/bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookService } from '../../webhook/webhook.service';
+import { DigitalFunnelMssqlService } from '../../sql-server/digital-funnel-mssql.service';
 import { WhatsappOtimaProvider } from '../../providers/whatsapp-otima/whatsapp-otima.provider';
 import { BaseProviderProcessor } from './base-provider.processor';
 import { queueNames } from '../../config/bullmq.config';
@@ -13,7 +14,8 @@ export class WhatsappOtimaSendProcessor extends BaseProviderProcessor {
     provider: WhatsappOtimaProvider,
     prisma: PrismaService,
     webhookService: WebhookService,
+    digitalFunnel: DigitalFunnelMssqlService,
   ) {
-    super(provider, prisma, webhookService, WhatsappOtimaSendProcessor.name);
+    super(provider, prisma, webhookService, digitalFunnel, WhatsappOtimaSendProcessor.name);
   }
 }

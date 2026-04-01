@@ -19,6 +19,7 @@ if (!defined('ABSPATH')) {
 
 require_once __DIR__ . '/includes/class-pc-evolution-wa-validator.php';
 require_once __DIR__ . '/includes/class-pc-validador-historico.php';
+require_once __DIR__ . '/includes/class-pc-sqlserver-connector.php';
 
 class Painel_Campanhas
 {
@@ -405,6 +406,10 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_cancel_campanha', [$this, 'handle_cancel_campanha']);
         add_action('wp_ajax_pc_cancel_campaign', [$this, 'handle_cancel_campanha']);
         add_action('wp_ajax_pc_get_available_bases', [$this, 'handle_get_available_bases']);
+        add_action('wp_ajax_pc_get_bases_dados', [$this, 'handle_get_available_bases']);
+        add_action('wp_ajax_pc_get_line_health', [$this, 'handle_get_line_health']);
+        add_action('wp_ajax_pc_get_mssql_settings', [$this, 'handle_get_mssql_settings']);
+        add_action('wp_ajax_pc_save_mssql_settings', [$this, 'handle_save_mssql_settings']);
 
         // AJAX para Blocklist
         add_action('wp_ajax_pc_get_blocklist', [$this, 'handle_get_blocklist']);
@@ -3353,21 +3358,7 @@ class Painel_Campanhas
             foreach ($distributed_records as $provider_data) {
                 $provider = $provider_data['provider'];
                 $provider_records = $provider_data['records'];
-                // Mesma tabela de prefixos que pc_create_campaign / Nest identifyProvider (H=NOAH_OFICIAL, não N=NOAH legado)
-                $prefix = strtoupper(substr($provider, 0, 1));
-                if ($provider === 'OTIMA_WPP') {
-                    $prefix = 'W';
-                } elseif ($provider === 'GOSAC_OFICIAL') {
-                    $prefix = 'F';
-                } elseif ($provider === 'NOAH_OFICIAL') {
-                    $prefix = 'H';
-                } elseif ($provider === 'ROBBU_OFICIAL') {
-                    $prefix = 'B';
-                } elseif ($provider === 'CDA_RCS') {
-                    $prefix = 'R';
-                } elseif ($this->is_techia_provider($provider)) {
-                    $prefix = 'T';
-                }
+                $prefix = $this->resolve_envios_agendamento_id_prefix($provider, $template_source);
                 $agendamento_id = $prefix . $agendamento_base_id;
 
                 foreach ($provider_records as $record) {
@@ -3683,6 +3674,68 @@ class Painel_Campanhas
         $norm = strtoupper(str_replace('_', '', $provider));
 
         return $norm === 'TECHIA';
+    }
+
+    /**
+     * Primeira letra do `agendamento_id` em envios_pendentes — deve bater com identifyProvider no NestJS.
+     * Não usar substr($provedor,0,1): OTIMA_WPP começa com "O" mas o canal WhatsApp Ótima é W (WHATSAPP_OTIMA).
+     *
+     * @param string $provider_slug Slug do POST (ex.: OTIMA_WPP, GOSAC_OFICIAL).
+     * @param string $template_source Fallback quando o slug veio inconsistente (ex.: otima_wpp).
+     */
+    private function resolve_envios_agendamento_id_prefix($provider_slug, $template_source = '')
+    {
+        $p = strtoupper(trim(preg_replace('/[\s\-]+/', '_', (string) $provider_slug)));
+        $p = preg_replace('/_+/', '_', $p);
+        $ts = strtolower(trim((string) $template_source));
+
+        // WhatsApp (Ótima WPP, Meta/WABA se unificado no futuro)
+        if (in_array($p, ['OTIMA_WPP', 'OTIMAWPP', 'WHATSAPP_OTIMA', 'WPP_OTIMA', 'META_OFICIAL', 'META_WHATSAPP', 'WABA'], true)
+            || $ts === 'otima_wpp') {
+            return 'W';
+        }
+
+        // RCS Ótima — Nest: prefixo O → RCS_OTIMA
+        if (in_array($p, ['OTIMA_RCS', 'OTIMARCS', 'RCS_OTIMA'], true) || $ts === 'otima_rcs') {
+            return 'O';
+        }
+
+        if ($p === 'GOSAC_OFICIAL' || $ts === 'gosac_oficial') {
+            return 'F';
+        }
+        if ($p === 'NOAH_OFICIAL' || $ts === 'noah_oficial' || $ts === 'noah') {
+            return 'H';
+        }
+        if ($p === 'ROBBU_OFICIAL' || $ts === 'robbu_oficial') {
+            return 'B';
+        }
+        if ($p === 'CDA_RCS' || $ts === 'cda_rcs') {
+            return 'R';
+        }
+        if ($p === 'CDA' && $ts !== 'otima_wpp') {
+            return 'C';
+        }
+
+        if ($this->is_techia_provider($p) || $ts === 'techia_discador') {
+            return 'T';
+        }
+
+        if (in_array($p, ['SALESFORCE', 'SF', 'SFMC'], true) || $ts === 'salesforce') {
+            return 'S';
+        }
+
+        // Legado
+        if ($p === 'GOSAC') {
+            return 'G';
+        }
+        if ($p === 'NOAH') {
+            return 'N';
+        }
+
+        error_log('⚠️ [resolve_envios_agendamento_id_prefix] Provedor não mapeado; fallback 1ª letra: slug=' . $p . ' template_source=' . $ts);
+        $fallback = strtoupper(substr($p, 0, 1));
+
+        return $fallback !== '' ? $fallback : 'X';
     }
 
     /**
@@ -4294,22 +4347,7 @@ class Painel_Campanhas
         foreach ($distributed_records as $provider_data) {
             $provider = $provider_data['provider'];
             $provider_records = $provider_data['records'];
-            $prefix = strtoupper(substr($provider, 0, 1));
-            // CORREÇÃO: WhatsApp da Ótima precisa do prefixo W, mas começa com O (OTIMA_WPP)
-            if ($provider === 'OTIMA_WPP') {
-                $prefix = 'W';
-            } elseif ($provider === 'GOSAC_OFICIAL') {
-                $prefix = 'F';
-            } elseif ($provider === 'NOAH_OFICIAL') {
-                $prefix = 'H';
-            } elseif ($provider === 'ROBBU_OFICIAL') {
-                $prefix = 'B';
-            } elseif ($provider === 'CDA_RCS') {
-                // CDA_RCS usa prefixo R (RCS) para buscar credenciais RCS (URL importarcs), não CDA (URL importar/campanha)
-                $prefix = 'R';
-            } elseif ($this->is_techia_provider($provider)) {
-                $prefix = 'T';
-            }
+            $prefix = $this->resolve_envios_agendamento_id_prefix($provider, $template_source);
             $agendamento_id = $prefix . $agendamento_base_id;
 
             // Store unique ID for settings
@@ -6624,25 +6662,13 @@ class Painel_Campanhas
 
             foreach ($distribution as $provider => $provider_records) {
                 error_log("🔵 Processando provedor {$provider}: " . count($provider_records) . " registros");
-                $prefix = strtoupper(substr($provider, 0, 1));
-                if ($provider === 'OTIMA_WPP') {
-                    $prefix = 'W';
-                } elseif ($provider === 'GOSAC_OFICIAL') {
-                    $prefix = 'F';
-                } elseif ($provider === 'NOAH_OFICIAL') {
-                    $prefix = 'H';
-                } elseif ($provider === 'ROBBU_OFICIAL') {
-                    $prefix = 'B';
-                } elseif ($provider === 'CDA_RCS') {
-                    $prefix = 'R';
-                } elseif ($this->is_techia_provider($provider)) {
-                    $prefix = 'T';
-                }
+                $template_source_row = $campaign['template_source'] ?? 'local';
+                $prefix = $this->resolve_envios_agendamento_id_prefix($provider, $template_source_row);
                 $campaign_name_clean = preg_replace('/[^a-zA-Z0-9]/', '', $campaign['nome_campanha']);
                 $campaign_name_short = substr($campaign_name_clean, 0, 30);
                 $agendamento_id = $prefix . $agendamento_base_id . '_' . $campaign_name_short;
 
-                $template_source = $campaign['template_source'] ?? 'local';
+                $template_source = $template_source_row;
                 $template_code = $campaign['template_code'] ?? '';
                 $broker_code = $campaign['broker_code'] ?? '';
                 $customer_code = $campaign['customer_code'] ?? '';
@@ -10094,12 +10120,7 @@ class Painel_Campanhas
         $envios_table = $wpdb->prefix . 'envios_pendentes';
         $current_user_id = get_current_user_id();
         $agendamento_base_id = current_time('YmdHis');
-        $prefix = strtoupper(substr($provider, 0, 1));
-        if ($provider === 'CDA_RCS') {
-            $prefix = 'R';
-        } elseif ($this->is_techia_provider($provider)) {
-            $prefix = 'T';
-        }
+        $prefix = $this->resolve_envios_agendamento_id_prefix($provider, 'local');
         $agendamento_id = $prefix . $agendamento_base_id;
 
         $total_inserted = 0;
@@ -10300,12 +10321,167 @@ class Painel_Campanhas
                 $bases[] = [
                     'id' => $table_name,
                     'name' => $table_name,
+                    'label' => $table_name,
                     'records' => $count_formatted,
+                    'origem' => 'mysql',
                 ];
             }
         }
 
+        if (class_exists('PC_SqlServer_Connector') && PC_SqlServer_Connector::is_enabled()) {
+            try {
+                $seen = [];
+                foreach ($bases as $b) {
+                    $id = isset($b['id']) ? strtolower((string) $b['id']) : '';
+                    if ($id !== '') {
+                        $seen[$id] = true;
+                    }
+                }
+                $mssql_views = PC_SqlServer_Connector::list_vw_base_view_names();
+                if (!is_array($mssql_views)) {
+                    $mssql_views = [];
+                }
+                foreach ($mssql_views as $vn) {
+                    $key = strtolower($vn);
+                    if (isset($seen[$key])) {
+                        continue;
+                    }
+                    $seen[$key] = true;
+                    $bases[] = [
+                        'id' => $vn,
+                        'name' => $vn,
+                        'label' => '[MSSQL] ' . $vn,
+                        'records' => '—',
+                        'origem' => 'mssql',
+                    ];
+                }
+            } catch (Throwable $e) {
+                error_log('[Painel Campanhas] handle_get_available_bases MSSQL: ' . $e->getMessage());
+            }
+        }
+
         wp_send_json_success($bases);
+    }
+
+    /**
+     * Telemetria: TB_SAUDE_LINHAS (SQL Server).
+     */
+    public function handle_get_line_health()
+    {
+        check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error(['message' => 'Permissão negada.']);
+            return;
+        }
+        if (!class_exists('PC_SqlServer_Connector') || !PC_SqlServer_Connector::is_enabled()) {
+            wp_send_json_success(['rows' => [], 'configured' => false]);
+            return;
+        }
+        $rows = PC_SqlServer_Connector::fetch_line_health_rows(200);
+        wp_send_json_success(['rows' => $rows, 'configured' => true]);
+    }
+
+    /**
+     * Opções MSSQL para administradores (senha nunca retornada em claro).
+     */
+    public function handle_get_mssql_settings()
+    {
+        $this->pc_forbid_subscriber_ajax();
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Acesso negado.']);
+            return;
+        }
+        if (!check_ajax_referer('pc_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => 'Sessão expirada. Recarregue a página.']);
+            return;
+        }
+
+        $pwd = (string) get_option('pc_mssql_password', '');
+        $has_pwd = $pwd !== '';
+
+        $en = get_option('pc_mssql_enabled', '0');
+        $enabled_str = ($en === '1' || $en === 1 || $en === true) ? '1' : '0';
+
+        wp_send_json_success([
+            'pc_mssql_enabled' => $enabled_str,
+            'pc_mssql_host' => (string) get_option('pc_mssql_host', ''),
+            'pc_mssql_port' => (string) get_option('pc_mssql_port', '1433'),
+            'pc_mssql_database' => (string) get_option('pc_mssql_database', ''),
+            'pc_mssql_user' => (string) get_option('pc_mssql_user', ''),
+            'pc_mssql_password_masked' => $has_pwd ? '********' : '',
+            'has_saved_password' => $has_pwd,
+            'pc_mssql_views_info_schema_catalog' => (string) get_option('pc_mssql_views_info_schema_catalog', ''),
+            'pc_mssql_linked_four_part_prefix' => (string) get_option('pc_mssql_linked_four_part_prefix', ''),
+            'wp_config_override' => [
+                'enabled' => defined('PC_MSSQL_ENABLED'),
+                'host' => defined('PC_MSSQL_HOST'),
+                'port' => defined('PC_MSSQL_PORT'),
+                'database' => defined('PC_MSSQL_DATABASE'),
+                'user' => defined('PC_MSSQL_USER'),
+                'password' => defined('PC_MSSQL_PASSWORD'),
+                'views_catalog' => defined('PC_MSSQL_VIEWS_INFO_SCHEMA_CATALOG') || defined('PC_MSSQL_VIEWS_INFO_SCHEMA_PREFIX'),
+                'linked_prefix' => defined('PC_MSSQL_LINKED_FOUR_PART_PREFIX'),
+            ],
+        ]);
+    }
+
+    /**
+     * Salva opções MSSQL (apenas manage_options). Senha: só atualiza se enviar valor novo não vazio e diferente do mascaramento.
+     */
+    public function handle_save_mssql_settings()
+    {
+        $this->pc_forbid_subscriber_ajax();
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Acesso negado.']);
+            return;
+        }
+        if (!check_ajax_referer('pc_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => 'Sessão expirada. Recarregue a página.']);
+            return;
+        }
+
+        $enabled_raw = isset($_POST['pc_mssql_enabled']) ? sanitize_text_field(wp_unslash((string) $_POST['pc_mssql_enabled'])) : '0';
+        $enabled = ($enabled_raw === '1' || $enabled_raw === 'true' || $enabled_raw === 'on') ? '1' : '0';
+        update_option('pc_mssql_enabled', $enabled);
+
+        update_option('pc_mssql_host', sanitize_text_field(wp_unslash((string) ($_POST['pc_mssql_host'] ?? ''))));
+        update_option('pc_mssql_database', sanitize_text_field(wp_unslash((string) ($_POST['pc_mssql_database'] ?? ''))));
+        update_option('pc_mssql_user', sanitize_text_field(wp_unslash((string) ($_POST['pc_mssql_user'] ?? ''))));
+
+        $port = preg_replace('/[^0-9]/', '', (string) wp_unslash($_POST['pc_mssql_port'] ?? '1433'));
+        if ($port === '') {
+            $port = '1433';
+        }
+        if (strlen($port) > 5) {
+            $port = substr($port, 0, 5);
+        }
+        update_option('pc_mssql_port', $port);
+
+        $cat = trim((string) wp_unslash($_POST['pc_mssql_views_info_schema_catalog'] ?? ''));
+        if ($cat !== '' && !preg_match('/^(\[[A-Za-z0-9_]+\])(\.\[[A-Za-z0-9_]+\])+$/', $cat)) {
+            wp_send_json_error(['message' => 'Prefixo do catálogo (Info Schema) inválido. Use o formato [SERVIDOR].[BANCO].']);
+            return;
+        }
+        update_option('pc_mssql_views_info_schema_catalog', $cat);
+
+        $linkp = trim((string) wp_unslash($_POST['pc_mssql_linked_four_part_prefix'] ?? ''));
+        if ($linkp !== '' && !preg_match('/^(\[[A-Za-z0-9_]+\])(\.\[[A-Za-z0-9_]+\])+$/', $linkp)) {
+            wp_send_json_error(['message' => 'Prefixo four-part para leitura inválido. Ex.: [SRV27].[DB_DIGITAL].[dbo]']);
+            return;
+        }
+        update_option('pc_mssql_linked_four_part_prefix', $linkp);
+
+        $pwd_in = isset($_POST['pc_mssql_password']) ? (string) wp_unslash($_POST['pc_mssql_password']) : '';
+        $pwd_in = trim($pwd_in);
+        if ($pwd_in !== '' && $pwd_in !== '********') {
+            update_option('pc_mssql_password', $pwd_in);
+        }
+
+        if (class_exists('PC_SqlServer_Connector')) {
+            PC_SqlServer_Connector::reset_static_connections();
+        }
+
+        wp_send_json_success(['message' => 'Configurações MSSQL salvas.']);
     }
 
     /**

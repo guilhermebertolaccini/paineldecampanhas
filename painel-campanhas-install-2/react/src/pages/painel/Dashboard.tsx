@@ -7,6 +7,7 @@ import { CampaignTable, Campaign } from "@/components/dashboard/CampaignTable";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getDashboardStats } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
+import { OperationsHealth } from "@/components/dashboard/OperationsHealth";
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -95,6 +96,8 @@ export default function Dashboard() {
           />
         ))}
       </div>
+
+      <OperationsHealth />
 
       {/* Main Content Grid */}
       <div className="grid gap-6 lg:grid-cols-3">

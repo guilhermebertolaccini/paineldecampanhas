@@ -1250,7 +1250,7 @@ export default function NovaCampanha() {
                       >
                         <p
                           className="font-semibold text-sm truncate w-full"
-                          title={base.name}
+                          title={(base.label ?? base.name) as string}
                           style={{
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
@@ -1258,7 +1258,7 @@ export default function NovaCampanha() {
                             maxWidth: '100%'
                           }}
                         >
-                          {base.name}
+                          {(base.label ?? base.name) as string}
                         </p>
                         <p className="text-xs text-muted-foreground mt-1">{base.records} registros</p>
                       </button>

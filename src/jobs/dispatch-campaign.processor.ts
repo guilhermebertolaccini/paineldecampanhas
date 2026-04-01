@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { DigitalFunnelMssqlService } from '../sql-server/digital-funnel-mssql.service';
 import { queueNames } from '../config/bullmq.config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -12,6 +13,7 @@ export class DispatchCampaignProcessor extends WorkerHost {
 
   constructor(
     private readonly campaignsService: CampaignsService,
+    private readonly digitalFunnel: DigitalFunnelMssqlService,
     @InjectQueue(queueNames.CDA_SEND) private readonly cdaQueue: Queue,
     @InjectQueue(queueNames.GOSAC_SEND) private readonly gosacQueue: Queue,
     @InjectQueue(queueNames.NOAH_SEND) private readonly noahQueue: Queue,
@@ -79,6 +81,8 @@ export class DispatchCampaignProcessor extends WorkerHost {
       // 6. Criar mensagens no banco
       await this.campaignsService.createCampaignMessages(campaign.id, data);
       this.logger.log(`Created ${data.length} campaign messages`);
+
+      await this.digitalFunnel.upsertEnviosAguardando(agendamento_id, provider, data);
 
       // 7. Calcular distribuição e adicionar jobs
       const batches = this.distributeMessages(data, throttlingConfig);

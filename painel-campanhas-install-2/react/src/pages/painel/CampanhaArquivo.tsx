@@ -1022,7 +1022,7 @@ export default function CampanhaArquivo() {
                     ) : (
                       bases.map((base: any) => (
                         <SelectItem key={base.id} value={base.id}>
-                          {base.name} ({base.records} registros)
+                          {(base.label ?? base.name) as string} ({base.records} registros)
                         </SelectItem>
                       ))
                     )}

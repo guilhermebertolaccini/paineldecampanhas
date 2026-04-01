@@ -8,6 +8,8 @@ import { CampaignsModule } from './campaigns/campaigns.module';
 import { ProvidersModule } from './providers/providers.module';
 import { JobsModule } from './jobs/jobs.module';
 import { ValidatorModule } from './validator/validator.module';
+import { SqlServerModule } from './sql-server/sql-server.module';
+import { LineHealthModule } from './line-health/line-health.module';
 
 @Module({
   imports: [
@@ -17,9 +19,11 @@ import { ValidatorModule } from './validator/validator.module';
     }),
     ScheduleModule.forRoot(),
     PrismaModule,
+    SqlServerModule,
     CampaignsModule,
     ProvidersModule,
     JobsModule,
+    LineHealthModule,
     ValidatorModule,
   ],
   controllers: [AppController],

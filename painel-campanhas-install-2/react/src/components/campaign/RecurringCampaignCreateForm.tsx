@@ -529,9 +529,9 @@ export function RecurringCampaignCreateForm() {
                 <SelectValue placeholder={carteira ? "Selecione a base" : "Escolha a carteira primeiro"} />
               </SelectTrigger>
               <SelectContent>
-                {bases.map((b: { name?: string; id?: string }) => (
+                {bases.map((b: { name?: string; id?: string; label?: string }) => (
                   <SelectItem key={String(b.name || b.id)} value={String(b.name || b.id)}>
-                    {String(b.name || b.id)}
+                    {String(b.label ?? b.name ?? b.id)}
                   </SelectItem>
                 ))}
               </SelectContent>
