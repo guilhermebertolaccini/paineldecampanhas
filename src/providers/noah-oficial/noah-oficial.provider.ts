@@ -26,6 +26,14 @@ export type NoahHsmTemplateComponent = {
   parameters: NoahHsmTextParameter[];
 };
 
+/** Bloco `button` (quick_reply etc.) — contrato NOAH / Postman. */
+export type NoahHsmButtonComponent = {
+  type: 'button';
+  sub_type: string;
+  index: number;
+  parameters: Array<Record<string, unknown>>;
+};
+
 /**
  * Payload raiz POST `/v1/api/external/:apiId/send-template` (documentação NOAH).
  */
@@ -35,7 +43,7 @@ export type NoahSendTemplatePayload = {
   templateId?: number;
   templateName: string;
   language: string;
-  components: NoahHsmTemplateComponent[];
+  components: Array<NoahHsmTemplateComponent | NoahHsmButtonComponent | Record<string, unknown>>;
   externalKey: string;
 };
 
@@ -171,15 +179,25 @@ export class NoahOficialProvider extends BaseProvider {
     return null;
   }
 
-  /** Linha de disparo + `variables` do WP (fallback de colunas). */
+  /** Linha de disparo + `variables` do WP (fallback de colunas). CSV: `variables` pode vir string JSON. */
   private mergeNoahCampaignRow(item: CampaignData): Record<string, unknown> {
     const row = { ...(item as unknown as Record<string, unknown>) };
-    const vars = item.variables;
-    if (vars && typeof vars === 'object') {
-      for (const [k, v] of Object.entries(vars)) {
+    const varsUnknown = item.variables as unknown;
+    if (typeof varsUnknown === 'string') {
+      const inner = this.parseNoahVariablesMap(varsUnknown);
+      if (inner) {
+        for (const [k, v] of Object.entries(inner)) {
+          const cur = row[k];
+          if (cur == null || String(cur).trim() === '') {
+            row[k] = v;
+          }
+        }
+      }
+    } else if (varsUnknown && typeof varsUnknown === 'object' && !Array.isArray(varsUnknown)) {
+      for (const [k, v] of Object.entries(varsUnknown as Record<string, unknown>)) {
         const cur = row[k];
         if (cur == null || String(cur).trim() === '') {
-          row[k] = v as unknown;
+          row[k] = v;
         }
       }
     }
@@ -218,6 +236,173 @@ export class NoahOficialProvider extends BaseProvider {
           type: typ as 'header' | 'body' | 'footer',
           parameters,
         });
+      }
+    }
+
+    return out;
+  }
+
+  /**
+   * CSV / fila: `variables_map` pode vir string JSON dentro de `item.variables` ou do próprio `variables` stringificado.
+   */
+  private resolveNoahVariablesMapMerged(
+    parsed: Record<string, unknown>,
+    item: CampaignData,
+  ): Record<string, unknown> | null {
+    const merge = (
+      base: Record<string, unknown> | null,
+      layer: Record<string, unknown> | null,
+    ): Record<string, unknown> | null => {
+      if (!layer || Object.keys(layer).length === 0) return base;
+      if (!base || Object.keys(base).length === 0) return { ...layer };
+      return { ...base, ...layer };
+    };
+
+    let acc = this.parseNoahVariablesMap(parsed.variables_map);
+
+    const varsUnknown = item.variables as unknown;
+    if (typeof varsUnknown === 'string') {
+      const inner = this.parseNoahVariablesMap(varsUnknown);
+      if (inner) {
+        acc = merge(acc, this.parseNoahVariablesMap(inner.variables_map));
+      }
+    } else if (
+      varsUnknown &&
+      typeof varsUnknown === 'object' &&
+      !Array.isArray(varsUnknown)
+    ) {
+      const vr = varsUnknown as Record<string, unknown>;
+      acc = merge(acc, this.parseNoahVariablesMap(vr.variables_map));
+    }
+
+    return acc && Object.keys(acc).length > 0 ? acc : null;
+  }
+
+  /** Nunca enviar header/body/footer com `parameters` vazio (400 localizable_params). */
+  private filterNonEmptyNoahHsmComponents(
+    list: NoahHsmTemplateComponent[],
+  ): NoahHsmTemplateComponent[] {
+    return list.filter(
+      (c) =>
+        Array.isArray(c.parameters) &&
+        c.parameters.length > 0 &&
+        c.parameters.every((p) => p && typeof p === 'object'),
+    );
+  }
+
+  /**
+   * Separa blocos HSM (header/body/footer) de `button` no array persistido no JSON da mensagem.
+   */
+  private partitionNoahComponentsArray(
+    arr: unknown,
+  ): { hsm: unknown[]; buttons: unknown[] } {
+    const hsm: unknown[] = [];
+    const buttons: unknown[] = [];
+    if (!Array.isArray(arr)) return { hsm, buttons };
+    for (const c of arr) {
+      if (!c || typeof c !== 'object') continue;
+      const typ = String((c as Record<string, unknown>).type ?? '').toLowerCase();
+      if (typ === 'button') buttons.push(c);
+      else hsm.push(c);
+    }
+    return { hsm, buttons };
+  }
+
+  /**
+   * Garante `parameters` não vazio em botões (quick_reply → payload mínimo).
+   */
+  private normalizeNoahButtonBlocks(
+    rawButtons: unknown[],
+    parsed: Record<string, unknown>,
+  ): NoahHsmButtonComponent[] {
+    const out: NoahHsmButtonComponent[] = [];
+
+    const pushFromObject = (c: Record<string, unknown>) => {
+      const typ = String(c.type ?? '').toLowerCase();
+      if (typ !== 'button') return;
+
+      let params = Array.isArray(c.parameters)
+        ? (c.parameters as Record<string, unknown>[])
+        : [];
+      params = params.filter((p) => p && typeof p === 'object');
+
+      const subRaw =
+        (c.sub_type as string) ?? (c.subType as string) ?? 'quick_reply';
+      const sub = String(subRaw).toLowerCase().replace(/-/g, '_');
+
+      if (params.length === 0) {
+        if (sub === 'quick_reply' || sub === 'quickreply') {
+          const payloadText =
+            c.payload != null
+              ? String(c.payload)
+              : c.text != null
+                ? String(c.text)
+                : c.title != null
+                  ? String(c.title)
+                  : ' ';
+          params = [
+            {
+              type: 'payload',
+              payload: payloadText.trim() === '' ? ' ' : payloadText.trim(),
+            },
+          ];
+        } else {
+          params = [{ type: 'text', text: ' ' }];
+        }
+      }
+
+      let idx = Number(c.index);
+      if (Number.isNaN(idx)) idx = out.length;
+
+      out.push({
+        type: 'button',
+        sub_type: String(subRaw),
+        index: idx,
+        parameters: params,
+      });
+    };
+
+    for (const c of rawButtons) {
+      if (c && typeof c === 'object') pushFromObject(c as Record<string, unknown>);
+    }
+
+    const attachFromTemplateData = (td: unknown) => {
+      if (!td || typeof td !== 'object') return;
+      const comps = (td as Record<string, unknown>).components;
+      if (!Array.isArray(comps)) return;
+      for (const c of comps) {
+        if (c && typeof c === 'object') {
+          const o = c as Record<string, unknown>;
+          if (String(o.type ?? '').toLowerCase() === 'button') {
+            pushFromObject(o);
+          }
+        }
+      }
+    };
+
+    if (out.length === 0) {
+      attachFromTemplateData(parsed.templateData);
+      attachFromTemplateData(parsed.template_data);
+      attachFromTemplateData(parsed.rawTemplate);
+      attachFromTemplateData(parsed.raw_template);
+
+      const bwrap = parsed.buttons;
+      if (bwrap && typeof bwrap === 'object') {
+        const inner = (bwrap as Record<string, unknown>).buttons;
+        if (Array.isArray(inner)) {
+          let i = 0;
+          for (const b of inner) {
+            if (!b || typeof b !== 'object') continue;
+            const bt = b as Record<string, unknown>;
+            const text = String(bt.text ?? bt.title ?? bt.label ?? ' ').trim() || ' ';
+            pushFromObject({
+              type: 'button',
+              sub_type: 'quick_reply',
+              index: i++,
+              parameters: [{ type: 'payload', payload: text }],
+            });
+          }
+        }
       }
     }
 
@@ -448,19 +633,10 @@ export class NoahOficialProvider extends BaseProvider {
         | undefined;
     const language = (parsed.language as string) ?? 'pt_BR';
 
-    let componentsRaw = Array.isArray(parsed.components)
-      ? parsed.components
-      : [];
+    const part = this.partitionNoahComponentsArray(parsed.components);
+    let componentsRaw: unknown[] = [...part.hsm];
 
-    const variablesMapMerged =
-      this.parseNoahVariablesMap(parsed.variables_map) ??
-      this.parseNoahVariablesMap(
-        item.variables &&
-          typeof item.variables === 'object' &&
-          'variables_map' in item.variables
-          ? (item.variables as Record<string, unknown>).variables_map
-          : undefined,
-      );
+    const variablesMapMerged = this.resolveNoahVariablesMapMerged(parsed, item);
 
     const countAllNoahParams = (blocks: unknown): number => {
       if (!Array.isArray(blocks)) return 0;
@@ -485,16 +661,22 @@ export class NoahOficialProvider extends BaseProvider {
       componentsRaw = builtFromMap;
     }
 
-    let components = this.normalizeNoahTemplateComponents(componentsRaw);
+    let components = this.filterNonEmptyNoahHsmComponents(
+      this.normalizeNoahTemplateComponents(componentsRaw),
+    );
 
     if (
       components.length === 0 ||
       components.every((c) => !c.parameters || c.parameters.length === 0)
     ) {
       if (builtFromMap && builtFromMap.length > 0) {
-        components = this.normalizeNoahTemplateComponents(builtFromMap);
+        components = this.filterNonEmptyNoahHsmComponents(
+          this.normalizeNoahTemplateComponents(builtFromMap),
+        );
       }
     }
+
+    const buttonBlocks = this.normalizeNoahButtonBlocks(part.buttons, parsed);
 
     if (!channelIdNum || !templateName || String(templateName).trim() === '') {
       throw new Error(
@@ -509,7 +691,7 @@ export class NoahOficialProvider extends BaseProvider {
       channelId: channelIdNum,
       templateName: String(templateName).trim(),
       language: String(language),
-      components,
+      components: [...components, ...buttonBlocks],
       externalKey,
     };
 
