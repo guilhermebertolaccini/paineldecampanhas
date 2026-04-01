@@ -45,8 +45,9 @@ export interface Campaign {
   provider: string;
   /** Valor exato da coluna fornecedor no MySQL (para cancelamento). */
   fornecedor?: string;
-  /** Nome denormalizado vindo de `envios_pendentes.nome_carteira` (API: nomeCarteira) */
+  /** Nome denormalizado vindo de `envios_pendentes.nome_carteira` (API: carteira_nome / nomeCarteira) */
   nomeCarteira?: string;
+  carteira_nome?: string;
   /** Código cliente id_carteira — não exibir como rótulo principal */
   idCarteira?: string;
   quantity: number;
@@ -182,9 +183,15 @@ function canCancelCampaign(c: Campaign): boolean {
   return ["pendente_aprovacao", "pendente", "agendado_mkc"].includes(raw);
 }
 
+function carteiraDisplayLabel(c: Campaign): string {
+  const raw = (c.carteira_nome ?? c.nomeCarteira ?? "").trim();
+  return raw;
+}
+
 export function CampaignTable({ campaigns, showActions = true }: CampaignTableProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const showCreatorColumn = userCanManageOptions();
   const [cancelTarget, setCancelTarget] = useState<Campaign | null>(null);
   const [cancelMotivo, setCancelMotivo] = useState("");
 
@@ -200,6 +207,7 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
       setCancelTarget(null);
       setCancelMotivo("");
       queryClient.invalidateQueries({ queryKey: ["campanhas"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
     },
     onError: (e: Error) => {
       toast({
@@ -224,19 +232,19 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
             <TableHead className="font-semibold">Campanha</TableHead>
             <TableHead className="font-semibold">Carteira</TableHead>
             <TableHead className="font-semibold">Status</TableHead>
-              <TableHead className="font-semibold">Fornecedor</TableHead>
+            <TableHead className="font-semibold">Fornecedor</TableHead>
             <TableHead className="font-semibold text-right">Quantidade</TableHead>
             <TableHead className="font-semibold min-w-[220px]">Progresso</TableHead>
             <TableHead className="font-semibold">Criado em</TableHead>
-              <TableHead className="font-semibold">Usuário</TableHead>
-              <TableHead className="font-semibold min-w-[120px]">Observações</TableHead>
+            {showCreatorColumn ? <TableHead className="font-semibold">Criador</TableHead> : null}
+            <TableHead className="font-semibold min-w-[120px]">Observações</TableHead>
               {showActions && <TableHead className="font-semibold w-[100px]">Ações</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {campaigns.map((campaign, index) => {
               const feedback = motivoFeedback(campaign);
-              const carteiraLabel = (campaign.nomeCarteira ?? "").trim();
+              const carteiraLabel = carteiraDisplayLabel(campaign);
               return (
                 <TableRow
                   key={campaign.id}
@@ -289,7 +297,13 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
                     <CampaignProgressRow c={campaign} />
                   </TableCell>
                   <TableCell className="text-muted-foreground">{campaign.createdAt}</TableCell>
-                  <TableCell className="text-muted-foreground">{campaign.user}</TableCell>
+                  {showCreatorColumn ? (
+                    <TableCell className="text-muted-foreground max-w-[180px]">
+                      <span className="line-clamp-2" title={campaign.user}>
+                        {campaign.user || "—"}
+                      </span>
+                    </TableCell>
+                  ) : null}
                   <TableCell className="text-muted-foreground text-xs max-w-[220px]">
                     {feedback ? (
                       <span className="line-clamp-2" title={feedback}>

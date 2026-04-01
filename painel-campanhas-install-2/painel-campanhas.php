@@ -142,6 +142,86 @@ class Painel_Campanhas
         return $map[$s] ?? str_replace('_', '-', $s);
     }
 
+    /**
+     * Administrador do painel: mesma regra de pcAjax.canManageOptions (capability manage_options).
+     * Visão global de campanhas / métricas do dashboard só para este perfil.
+     */
+    private function is_pc_dashboard_admin(): bool
+    {
+        return current_user_can('manage_options');
+    }
+
+    /**
+     * Formata uma linha agregada de envios_pendentes (GROUP BY agendamento_id, fornecedor)
+     * para o JSON consumido pelo React (Minhas Campanhas e Últimas Campanhas).
+     */
+    private function format_campanha_envios_row(array $camp): array
+    {
+        $cancel_id = !empty($camp['cancelado_por_id']) ? (int) $camp['cancelado_por_id'] : 0;
+        $cancel_name = '';
+        if ($cancel_id > 0) {
+            $u = get_userdata($cancel_id);
+            $cancel_name = $u ? ($u->display_name ?: $u->user_login) : '';
+        }
+
+        $total = max(0, (int) ($camp['total_messages'] ?? 0));
+        $processed = max(0, (int) ($camp['processed_messages'] ?? 0));
+        $err = max(0, (int) ($camp['error_messages'] ?? 0));
+        $sent = max(0, (int) ($camp['cnt_enviado'] ?? 0));
+
+        if ($total > 0) {
+            $processed = min($processed, $total);
+        }
+
+        $agg_raw = strtolower(trim((string) ($camp['status'] ?? '')));
+        if ($total > 0 && $agg_raw === 'cancelada' && $sent === 0 && $err === 0) {
+            $processed = 0;
+        }
+
+        $progress_percent = 0.0;
+        if ($total > 0) {
+            $progress_percent = round(100.0 * ($processed / $total), 2);
+            if ($progress_percent > 100.0) {
+                $progress_percent = 100.0;
+            }
+        }
+
+        $ag_id = (string) ($camp['agendamento_id'] ?? '');
+        $nome_amigavel = trim((string) ($camp['nome_campanha'] ?? ''));
+        $nome_exibicao = $nome_amigavel !== '' ? $nome_amigavel : $ag_id;
+
+        $nome_carteira = trim((string) ($camp['nome_carteira_denorm'] ?? ''));
+
+        return [
+            'id' => $camp['agendamento_id'] . '-' . $camp['provider'],
+            'agendamentoId' => $ag_id,
+            'agendamento_id' => $ag_id,
+            'name' => $nome_exibicao,
+            'status' => $this->map_campanha_status_ui($camp['status']),
+            'statusRaw' => (string) ($camp['status'] ?? ''),
+            'provider' => strtoupper($camp['provider']),
+            'fornecedor' => $camp['provider'],
+            'quantity' => $total,
+            'createdAt' => date('d/m/Y', strtotime($camp['data_cadastro'])),
+            'user' => $camp['scheduled_by'],
+            'motivoCancelamento' => $camp['motivo_cancelamento'] ?? '',
+            'canceladoPor' => $cancel_name,
+            'idCarteira' => isset($camp['id_carteira']) ? (string) $camp['id_carteira'] : '',
+            'nomeCarteira' => $nome_carteira,
+            'carteira_nome' => $nome_carteira,
+            'wallet_name' => $nome_carteira,
+            'total_messages' => $total,
+            'processed_messages' => $processed,
+            'error_messages' => $err,
+            'progress_percent' => $progress_percent,
+            'totalMessages' => $total,
+            'totalProcessed' => $processed,
+            'messagesSent' => $sent,
+            'messagesError' => $err,
+            'progressPercent' => $progress_percent,
+        ];
+    }
+
     private function init_hooks()
     {
         // Ativação/Desativação (registrado fora da classe, mas mantemos aqui para referência)
@@ -10208,6 +10288,11 @@ class Painel_Campanhas
                 return;
             }
 
+            if (!current_user_can('edit_posts')) {
+                wp_send_json_error(['message' => 'Permissão negada.'], 403);
+                return;
+            }
+
             // #region agent log
             $log_entry = json_encode([
                 'sessionId' => 'debug-session',
@@ -10290,97 +10375,107 @@ class Painel_Campanhas
                 return;
             }
 
+            $current_user_id = get_current_user_id();
+            $is_admin = $this->is_pc_dashboard_admin();
+
+            $scope_where = '';
+            if (!$is_admin) {
+                $scope_where = $wpdb->prepare(' AND current_user_id = %d', $current_user_id);
+            }
+
             // Total de campanhas únicas (agrupadas por agendamento_id, fornecedor)
             $total_campanhas = $wpdb->get_var("
                 SELECT COUNT(DISTINCT CONCAT(agendamento_id, '-', COALESCE(fornecedor, '')))
                 FROM {$envios_table}
+                WHERE 1=1{$scope_where}
             ");
             $total_campanhas = $total_campanhas ? intval($total_campanhas) : 0;
 
             // Campanhas pendentes de aprovação
-            $campanhas_pendentes = $wpdb->get_var($wpdb->prepare("
+            $campanhas_pendentes = $wpdb->get_var(
+                $wpdb->prepare(
+                    "
                 SELECT COUNT(DISTINCT CONCAT(agendamento_id, '-', COALESCE(fornecedor, '')))
                 FROM {$envios_table}
-                WHERE status = %s
-            ", 'pendente_aprovacao'));
+                WHERE status = %s{$scope_where}
+            ",
+                    'pendente_aprovacao'
+                )
+            );
             $campanhas_pendentes = $campanhas_pendentes ? intval($campanhas_pendentes) : 0;
 
             // Campanhas enviadas
-            $campanhas_enviadas = $wpdb->get_var($wpdb->prepare("
+            $campanhas_enviadas = $wpdb->get_var(
+                $wpdb->prepare(
+                    "
                 SELECT COUNT(DISTINCT CONCAT(agendamento_id, '-', COALESCE(fornecedor, '')))
                 FROM {$envios_table}
-                WHERE status = %s
-            ", 'enviado'));
+                WHERE status = %s{$scope_where}
+            ",
+                    'enviado'
+                )
+            );
             $campanhas_enviadas = $campanhas_enviadas ? intval($campanhas_enviadas) : 0;
 
             // Campanhas criadas hoje
-            $campanhas_hoje = $wpdb->get_var($wpdb->prepare("
+            $campanhas_hoje = $wpdb->get_var(
+                $wpdb->prepare(
+                    "
                 SELECT COUNT(DISTINCT CONCAT(agendamento_id, '-', COALESCE(fornecedor, '')))
                 FROM {$envios_table}
-                WHERE DATE(data_cadastro) = %s
-            ", current_time('Y-m-d')));
+                WHERE DATE(data_cadastro) = %s{$scope_where}
+            ",
+                    current_time('Y-m-d')
+                )
+            );
             $campanhas_hoje = $campanhas_hoje ? intval($campanhas_hoje) : 0;
 
-            // Últimas 5 campanhas (garantindo diversidade de providers)
-            $recent_query = "
+            // Últimas 5 campanhas — mesmo agregado que pc_get_campanhas (nome_carteira, progresso, status UI)
+            $sql_waiting = "LOWER(TRIM(COALESCE(t1.status, ''))) IN ('pendente','pendente_aprovacao','agendado_mkc','processando')";
+            $sql_error = "LOWER(TRIM(COALESCE(t1.status, ''))) IN ('negado','erro','erro_envio','erro_credenciais','erro_validacao','mkc_erro','erro_inicio')";
+            $sql_sent = "LOWER(TRIM(COALESCE(t1.status, ''))) IN ('enviado','mkc_executado')";
+
+            $user_where_recent = '';
+            $recent_params = [];
+            if (!$is_admin) {
+                $user_where_recent = ' AND t1.current_user_id = %d';
+                $recent_params[] = $current_user_id;
+            }
+
+            $recent_sql = "
                 SELECT
                     t1.agendamento_id,
-                    t1.idgis_ambiente,
-                    COALESCE(t1.fornecedor, '') AS provider,
-                    t1.status,
-                    MIN(t1.data_cadastro) AS created_at,
-                    COUNT(t1.id) AS total_clients,
-                    COALESCE(u.display_name, 'Usuário Desconhecido') AS user
+                    MAX(t1.idgis_ambiente) AS idgis_ambiente,
+                    t1.fornecedor AS provider,
+                    MAX(t1.status) AS status,
+                    MIN(t1.data_cadastro) AS data_cadastro,
+                    COUNT(t1.id) AS total_messages,
+                    SUM(CASE WHEN {$sql_waiting} THEN 0 ELSE 1 END) AS processed_messages,
+                    SUM(CASE WHEN {$sql_error} THEN 1 ELSE 0 END) AS error_messages,
+                    SUM(CASE WHEN {$sql_sent} THEN 1 ELSE 0 END) AS cnt_enviado,
+                    COALESCE(MAX(u.display_name), 'Usuário Desconhecido') AS scheduled_by,
+                    MAX(t1.motivo_cancelamento) AS motivo_cancelamento,
+                    MAX(t1.cancelado_por) AS cancelado_por_id,
+                    MAX(t1.id_carteira) AS id_carteira,
+                    MAX(t1.nome_carteira) AS nome_carteira_denorm,
+                    MAX(t1.nome_campanha) AS nome_campanha
                 FROM `{$envios_table}` AS t1
                 LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
-                WHERE t1.fornecedor IS NOT NULL AND t1.fornecedor != ''
-                GROUP BY t1.agendamento_id, t1.idgis_ambiente, t1.fornecedor, t1.status
+                WHERE (t1.fornecedor IS NOT NULL AND TRIM(t1.fornecedor) != ''){$user_where_recent}
+                GROUP BY t1.agendamento_id, t1.fornecedor
                 ORDER BY MIN(t1.data_cadastro) DESC
-                LIMIT 10
+                LIMIT 5
             ";
 
-            $recent_campanhas_raw = $wpdb->get_results($recent_query, ARRAY_A);
-
-            // Garante diversidade: pega no máximo 1 de cada provider para ter variedade
-            $recent_campanhas = [];
-            $providers_seen = [];
-            foreach ($recent_campanhas_raw as $camp) {
-                $provider = strtoupper(trim($camp['provider']));
-                if (!in_array($provider, $providers_seen)) {
-                    $providers_seen[] = $provider;
-                    $recent_campanhas[] = $camp;
-                    if (count($recent_campanhas) >= 5) {
-                        break;
-                    }
-                }
+            if (!empty($recent_params)) {
+                $recent_sql = $wpdb->prepare($recent_sql, $recent_params);
             }
 
-            // Se não tiver 5 ainda, completa com os mais recentes independente do provider
-            if (count($recent_campanhas) < 5) {
-                $remaining = 5 - count($recent_campanhas);
-                foreach ($recent_campanhas_raw as $camp) {
-                    if (!in_array($camp, $recent_campanhas)) {
-                        $recent_campanhas[] = $camp;
-                        $remaining--;
-                        if ($remaining <= 0) {
-                            break;
-                        }
-                    }
-                }
-            }
+            $recent_rows = $wpdb->get_results($recent_sql, ARRAY_A);
 
-            // Formata as campanhas recentes
             $formatted_campaigns = array_map(function ($camp) {
-                return [
-                    'id' => $camp['agendamento_id'] . '-' . $camp['provider'],
-                    'name' => $camp['agendamento_id'],
-                    'status' => str_replace('_', '-', $camp['status']),
-                    'provider' => strtoupper($camp['provider']),
-                    'quantity' => intval($camp['total_clients']),
-                    'createdAt' => date('d/m/Y', strtotime($camp['created_at'])),
-                    'user' => $camp['user'],
-                ];
-            }, $recent_campanhas ?: []);
+                return $this->format_campanha_envios_row($camp);
+            }, $recent_rows ?: []);
 
             // #region agent log
             $log_entry = json_encode([
@@ -10458,6 +10553,12 @@ class Painel_Campanhas
     public function handle_get_campanhas()
     {
         check_ajax_referer('pc_nonce', 'nonce');
+
+        if (!is_user_logged_in() || !current_user_can('edit_posts')) {
+            wp_send_json_error(['message' => 'Permissão negada.'], 403);
+            return;
+        }
+
         $this->maybe_add_envios_cancel_columns();
 
         global $wpdb;
@@ -10469,6 +10570,7 @@ class Painel_Campanhas
         $fornecedor_filter = sanitize_text_field($_POST['fornecedor'] ?? $_GET['fornecedor'] ?? '');
         $search = sanitize_text_field($_POST['search'] ?? $_GET['search'] ?? '');
         $current_user_id = get_current_user_id();
+        $is_admin = $this->is_pc_dashboard_admin();
 
         // Estados ainda na fila / aguardando worker (não contam como "processadas" para a barra)
         $sql_waiting = "LOWER(TRIM(COALESCE(t1.status, ''))) IN ('pendente','pendente_aprovacao','agendado_mkc','processando')";
@@ -10476,6 +10578,13 @@ class Painel_Campanhas
         $sql_sent = "LOWER(TRIM(COALESCE(t1.status, ''))) IN ('enviado','mkc_executado')";
 
         // Query base — métricas por agendamento_id + fornecedor (uma linha = um destinatário)
+        $user_where = '';
+        $params = [];
+        if (!$is_admin) {
+            $user_where = ' AND t1.current_user_id = %d';
+            $params[] = $current_user_id;
+        }
+
         $query = "
             SELECT
                 t1.agendamento_id,
@@ -10495,10 +10604,8 @@ class Painel_Campanhas
                 MAX(t1.nome_campanha) AS nome_campanha
             FROM `{$envios_table}` AS t1
             LEFT JOIN `{$users_table}` AS u ON t1.current_user_id = u.ID
-            WHERE t1.current_user_id = %d
+            WHERE 1=1{$user_where}
         ";
-
-        $params = [$current_user_id];
 
         // Aplica filtros (status no front usa chaves UI: pending, scheduled, …)
         if ($status_filter) {
@@ -10542,73 +10649,8 @@ class Painel_Campanhas
 
         $campanhas = $wpdb->get_results($query, ARRAY_A);
 
-        // Formata as campanhas (+ progresso por linhas em envios_pendentes)
         $formatted = array_map(function ($camp) {
-            $cancel_id = !empty($camp['cancelado_por_id']) ? (int) $camp['cancelado_por_id'] : 0;
-            $cancel_name = '';
-            if ($cancel_id > 0) {
-                $u = get_userdata($cancel_id);
-                $cancel_name = $u ? ($u->display_name ?: $u->user_login) : '';
-            }
-
-            $total = max(0, (int) ($camp['total_messages'] ?? 0));
-            $processed = max(0, (int) ($camp['processed_messages'] ?? 0));
-            $err = max(0, (int) ($camp['error_messages'] ?? 0));
-            $sent = max(0, (int) ($camp['cnt_enviado'] ?? 0));
-
-            if ($total > 0) {
-                $processed = min($processed, $total);
-            }
-
-            // Campanha cancelada antes de qualquer envio/erro: barra em 0% (evita 100% enganoso)
-            $agg_raw = strtolower(trim((string) ($camp['status'] ?? '')));
-            if ($total > 0 && $agg_raw === 'cancelada' && $sent === 0 && $err === 0) {
-                $processed = 0;
-            }
-
-            $progress_percent = 0.0;
-            if ($total > 0) {
-                $progress_percent = round(100.0 * ($processed / $total), 2);
-                if ($progress_percent > 100.0) {
-                    $progress_percent = 100.0;
-                }
-            }
-
-            $ag_id = (string) ($camp['agendamento_id'] ?? '');
-            $nome_amigavel = trim((string) ($camp['nome_campanha'] ?? ''));
-            $nome_exibicao = $nome_amigavel !== '' ? $nome_amigavel : $ag_id;
-
-            $nome_carteira = trim((string) ($camp['nome_carteira_denorm'] ?? ''));
-
-            return [
-                'id' => $camp['agendamento_id'] . '-' . $camp['provider'],
-                'agendamento_id' => $ag_id,
-                'name' => $nome_exibicao,
-                'status' => $this->map_campanha_status_ui($camp['status']),
-                'statusRaw' => (string) ($camp['status'] ?? ''),
-                'provider' => strtoupper($camp['provider']),
-                'fornecedor' => $camp['provider'],
-                'quantity' => $total,
-                'createdAt' => date('d/m/Y', strtotime($camp['data_cadastro'])),
-                'user' => $camp['scheduled_by'],
-                'motivoCancelamento' => $camp['motivo_cancelamento'] ?? '',
-                'canceladoPor' => $cancel_name,
-                /** Código cliente (provedor); não usar como rótulo principal na UI */
-                'idCarteira' => isset($camp['id_carteira']) ? (string) $camp['id_carteira'] : '',
-                'nomeCarteira' => $nome_carteira,
-                /** Alias explícito para integrações / front */
-                'carteira_nome' => $nome_carteira,
-                'wallet_name' => $nome_carteira,
-                'total_messages' => $total,
-                'processed_messages' => $processed,
-                'error_messages' => $err,
-                'progress_percent' => $progress_percent,
-                'totalMessages' => $total,
-                'totalProcessed' => $processed,
-                'messagesSent' => $sent,
-                'messagesError' => $err,
-                'progressPercent' => $progress_percent,
-            ];
+            return $this->format_campanha_envios_row($camp);
         }, $campanhas);
 
         wp_send_json_success($formatted);

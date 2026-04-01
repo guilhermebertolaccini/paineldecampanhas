@@ -18,9 +18,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getCampanhas } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
+function userIsPanelAdmin(): boolean {
+  if (typeof window === "undefined") return false;
+  return Boolean((window as unknown as { pcAjax?: { canManageOptions?: boolean } }).pcAjax?.canManageOptions);
+}
+
 export default function Campanhas() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const isAdmin = userIsPanelAdmin();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [providerFilter, setProviderFilter] = useState("all");
@@ -62,8 +68,12 @@ export default function Campanhas() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Minhas Campanhas"
-        description="Visualize e gerencie todas as suas campanhas"
+        title={isAdmin ? "Campanhas" : "Minhas Campanhas"}
+        description={
+          isAdmin
+            ? "Visão administrador: campanhas de todos os usuários."
+            : "Visualize e gerencie todas as suas campanhas"
+        }
       >
         <Link to="/painel/nova-campanha">
           <Button className="gradient-primary hover:opacity-90">
