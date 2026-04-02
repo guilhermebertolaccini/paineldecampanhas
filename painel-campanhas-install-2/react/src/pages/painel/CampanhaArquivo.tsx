@@ -1044,12 +1044,16 @@ export default function CampanhaArquivo() {
                   Carregando bases...
                 </div>
               ) : (
-                <Select value={tableName} onValueChange={(value) => {
-                  setTableName(value);
-                  setBaseUpdateStatus(null);
-                }}>
-                  <SelectTrigger id="table-name">
-                    <SelectValue placeholder="Selecione a tabela base" />
+                <Select
+                  value={tableName}
+                  disabled={semConsulta}
+                  onValueChange={(value) => {
+                    setTableName(value);
+                    setBaseUpdateStatus(null);
+                  }}
+                >
+                  <SelectTrigger id="table-name" className={semConsulta ? "opacity-70" : undefined}>
+                    <SelectValue placeholder={semConsulta ? "Não usado no envio direto" : "Selecione a tabela base"} />
                   </SelectTrigger>
                   <SelectContent>
                     {bases.length === 0 ? (
@@ -1067,11 +1071,13 @@ export default function CampanhaArquivo() {
                 </Select>
               )}
               <p className="text-xs text-muted-foreground">
-                Tabela base para cruzamento dos dados do arquivo
+                {semConsulta
+                  ? "No envio direto a base não é consultada; o cruzamento com a planilha não ocorre."
+                  : "Tabela base para cruzamento dos dados do arquivo"}
               </p>
             </div>
 
-            {tableName && baseUpdateStatus && !baseUpdateStatus.isUpdated && (
+            {!semConsulta && tableName && baseUpdateStatus && !baseUpdateStatus.isUpdated && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>
@@ -1640,9 +1646,10 @@ export default function CampanhaArquivo() {
                   (!file || !tempId)) ||
                 (!template && provider !== "SALESFORCE" && provider !== "TECH_IA") ||
                 !provider ||
-                !tableName ||
+                (!semConsulta && !tableName) ||
                 createMutation.isPending ||
-                (!(testOnlyBaits && includeBaits && selectedBaitIds.length > 0) &&
+                (!semConsulta &&
+                  !(testOnlyBaits && includeBaits && selectedBaitIds.length > 0) &&
                   baseUpdateStatus &&
                   !baseUpdateStatus.isUpdated)
               }
