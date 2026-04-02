@@ -2450,7 +2450,9 @@ class Painel_Campanhas
         $has_header = (strpos($header_upper, 'NOME') !== false
             || strpos($header_upper, 'TELEFONE') !== false
             || strpos($header_upper, 'CPF') !== false
-            || strpos($header_upper, 'CELULAR') !== false);
+            || strpos($header_upper, 'CELULAR') !== false
+            || strpos($header_upper, 'IDCOB') !== false
+            || strpos($header_upper, 'EXTRA_') !== false);
 
         if ($has_header) {
             $headers = array_map(function ($h) {
@@ -2636,12 +2638,16 @@ class Painel_Campanhas
         $match_field = $temp_payload['match_field'] ?? 'cpf';
 
         $show_already_sent = isset($_POST['show_already_sent']) ? intval($_POST['show_already_sent']) : 0;
+        $sem_consulta = $this->parse_boolish_post_flag($_POST['sem_consulta'] ?? '');
 
-        // Busca registros usando o método que remove duplicatas
-        // Assim a contagem será precisa (sem duplicatas)
-        global $wpdb;
-        $records = $this->get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent);
-        $count = count($records);
+        if ($sem_consulta && !empty($temp_payload['rows_by_match']) && is_array($temp_payload['rows_by_match'])) {
+            $count = count($temp_payload['rows_by_match']);
+        } else {
+            // Busca registros usando o método que remove duplicatas
+            global $wpdb;
+            $records = $this->get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent);
+            $count = count($records);
+        }
 
         wp_send_json_success(['count' => intval($count)]);
     }
@@ -2740,6 +2746,176 @@ class Painel_Campanhas
         unset($rec);
 
         return $records;
+    }
+
+    /**
+     * Flag vinda do React (checkbox "sem consulta"): 1, true, on, yes.
+     */
+    private function parse_boolish_post_flag($raw): bool
+    {
+        if ($raw === true || $raw === 1 || $raw === '1') {
+            return true;
+        }
+        $s = strtolower(trim((string) $raw));
+
+        return in_array($s, ['1', 'true', 'yes', 'on'], true);
+    }
+
+    /**
+     * Campanha por arquivo em modo "envio direto": sem SELECT na base — só linhas do CSV.
+     */
+    private function build_cpf_records_from_csv_only(array $rows_by_match, string $match_field): array
+    {
+        if (!in_array($match_field, ['cpf', 'telefone'], true)) {
+            $match_field = 'cpf';
+        }
+        $records = [];
+        foreach ($rows_by_match as $match_key => $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $nome = $this->pick_csv_row_nome_for_direct_send($row);
+            if ($match_field === 'cpf') {
+                $cpf_cnpj = preg_replace('/\D/', '', (string) $match_key);
+                $telefone = $this->pick_csv_row_telefone_for_direct_send($row);
+                if ($telefone === '') {
+                    $telefone = $this->pick_csv_row_telefone_for_direct_send($row, true);
+                }
+            } else {
+                $telefone = preg_replace('/\D/', '', (string) $match_key);
+                if (strlen($telefone) > 11 && substr($telefone, 0, 2) === '55') {
+                    $telefone = substr($telefone, 2);
+                }
+                $cpf_cnpj = $this->pick_csv_row_cpf_for_direct_send($row);
+            }
+            $rec = [
+                'nome' => $nome,
+                'telefone' => $telefone,
+                'cpf_cnpj' => $cpf_cnpj,
+                'idgis_ambiente' => 0,
+                'id_carteira' => '',
+                'idcob_contrato' => 0,
+            ];
+            $idcob_raw = $this->get_cpf_record_field_ci($row, 'idcob_contrato');
+            if ($idcob_raw === '' || $idcob_raw === null) {
+                $idcob_raw = $this->get_cpf_record_field_ci($row, 'contrato');
+            }
+            if ($idcob_raw !== '' && $idcob_raw !== null && is_numeric($idcob_raw)) {
+                $rec['idcob_contrato'] = intval($idcob_raw);
+            }
+            foreach ($row as $col => $val) {
+                if ($col === '_match') {
+                    continue;
+                }
+                $rec[(string) $col] = $val;
+            }
+            $records[] = $rec;
+        }
+
+        return $records;
+    }
+
+    private function pick_csv_row_nome_for_direct_send(array $row): string
+    {
+        foreach (['nome', 'NOME', 'CLIENTE', 'cliente', 'name', 'NAME'] as $k) {
+            $v = $this->get_cpf_record_field_ci($row, $k);
+            if ($v !== '' && $v !== null) {
+                return trim((string) $v);
+            }
+        }
+
+        return '';
+    }
+
+    private function pick_csv_row_telefone_for_direct_send(array $row, bool $lenient = false): string
+    {
+        foreach (['telefone', 'TELEFONE', 'CELULAR', 'celular', 'fone', 'PHONE', 'phone'] as $k) {
+            $v = $this->get_cpf_record_field_ci($row, $k);
+            if ($v === '' || $v === null) {
+                continue;
+            }
+            $d = preg_replace('/\D/', '', (string) $v);
+            if ($lenient && strlen($d) >= 8) {
+                if (strlen($d) > 11 && substr($d, 0, 2) === '55') {
+                    $d = substr($d, 2);
+                }
+
+                return $d;
+            }
+            if (strlen($d) >= 10) {
+                if (strlen($d) > 11 && substr($d, 0, 2) === '55') {
+                    $d = substr($d, 2);
+                }
+
+                return $d;
+            }
+        }
+
+        return '';
+    }
+
+    private function pick_csv_row_cpf_for_direct_send(array $row): string
+    {
+        foreach (['cpf', 'CPF', 'cpf_cnpj', 'CPF_CNPJ', 'documento', 'DOCUMENTO'] as $k) {
+            $v = $this->get_cpf_record_field_ci($row, $k);
+            if ($v === '' || $v === null) {
+                continue;
+            }
+            $d = preg_replace('/\D/', '', (string) $v);
+            if (strlen($d) >= 11) {
+                return $d;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Colunas opcionais de rastreio (CSV + merge base) gravadas dentro do JSON em mensagem.
+     */
+    private function build_envios_tracking_data_from_record(array $record): array
+    {
+        $idcob = $this->get_cpf_record_field_ci($record, 'idcob_contrato');
+        if ($idcob === '' || $idcob === null) {
+            $idcob = $this->get_cpf_record_field_ci($record, 'contrato');
+        }
+        $out = [
+            'idcob_contrato' => ($idcob !== '' && $idcob !== null) ? (string) $idcob : null,
+        ];
+        foreach (['extra_1', 'extra_2', 'extra_3', 'extra_4'] as $ek) {
+            $v = $this->get_cpf_record_field_ci($record, $ek);
+            $out[$ek] = ($v !== '' && $v !== null) ? (string) $v : null;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Injeta tracking_data no JSON salvo em envios_pendentes.mensagem (mantém estrutura existente).
+     */
+    private function embed_tracking_data_in_envios_mensagem(string $mensagem_para_armazenar, array $tracking_data): string
+    {
+        $has = false;
+        foreach ($tracking_data as $v) {
+            if ($v !== null && $v !== '') {
+                $has = true;
+                break;
+            }
+        }
+        if (!$has) {
+            return $mensagem_para_armazenar;
+        }
+        $decoded = json_decode($mensagem_para_armazenar, true);
+        if (is_array($decoded)) {
+            $decoded['tracking_data'] = $tracking_data;
+
+            return wp_json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+
+        return wp_json_encode([
+            'original_message' => (string) $mensagem_para_armazenar,
+            'tracking_data' => $tracking_data,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 
     /**
@@ -3167,6 +3343,7 @@ class Painel_Campanhas
             global $wpdb;
             $table_name = sanitize_text_field($_POST['table_name'] ?? '');
             $temp_id = sanitize_text_field($_POST['temp_id'] ?? '');
+            $sem_consulta = $this->parse_boolish_post_flag($_POST['sem_consulta'] ?? '');
             $match_field = sanitize_text_field($_POST['match_field'] ?? 'cpf');
             $template_id = intval($_POST['template_id'] ?? 0);
             $template_code = sanitize_text_field($_POST['template_code'] ?? '');
@@ -3226,8 +3403,9 @@ class Painel_Campanhas
                 || (($template_source === 'gosac_oficial' || $template_source === 'noah_oficial' || $template_source === 'robbu_oficial') && !empty($template_code));
 
             $temp_id_required = !$baits_only_test;
-            if (empty($table_name) || ($temp_id_required && empty($temp_id)) || !$is_template_ok || empty($providers_config['providers'])) {
-                error_log('🔴 [handle_create_cpf_campaign] Dados incompletos: table_name=' . $table_name . ', temp_id=' . $temp_id . ', template_source=' . $template_source . ', template_code=' . $template_code . ', template_id=' . $template_id . ', providers_count=' . (is_array($providers_config['providers'] ?? null) ? count($providers_config['providers']) : 0));
+            $table_required = !$sem_consulta;
+            if (($table_required && empty($table_name)) || ($temp_id_required && empty($temp_id)) || !$is_template_ok || empty($providers_config['providers'])) {
+                error_log('🔴 [handle_create_cpf_campaign] Dados incompletos: table_name=' . $table_name . ', temp_id=' . $temp_id . ', sem_consulta=' . ($sem_consulta ? '1' : '0') . ', template_source=' . $template_source . ', template_code=' . $template_code . ', template_id=' . $template_id . ', providers_count=' . (is_array($providers_config['providers'] ?? null) ? count($providers_config['providers']) : 0));
                 wp_send_json_error('Dados incompletos');
             }
 
@@ -3257,6 +3435,7 @@ class Painel_Campanhas
             $uploads_dir = wp_upload_dir()['basedir'] . '/cpf-campaigns/';
             $temp_payload = [];
             $values = [];
+            $temp_file = '';
             if ($baits_only_test && $temp_id === '') {
                 // Sem upload: fila apenas com iscas
             } else {
@@ -3271,17 +3450,27 @@ class Painel_Campanhas
                 $values = $temp_payload['values'] ?? [];
             }
 
-            $show_already_sent = isset($_POST['show_already_sent']) ? intval($_POST['show_already_sent']) : 0;
+            if (!empty($temp_payload['match_field']) && in_array($temp_payload['match_field'], ['cpf', 'telefone'], true)) {
+                $match_field = sanitize_text_field((string) $temp_payload['match_field']);
+            } elseif (!in_array($match_field, ['cpf', 'telefone'], true)) {
+                $match_field = 'cpf';
+            }
 
-            // Busca registros usando o método que já remove duplicatas
-            $records = $this->get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent);
+            $show_already_sent = isset($_POST['show_already_sent']) ? intval($_POST['show_already_sent']) : 0;
 
             $rows_by_match = [];
             if (is_array($temp_payload) && !empty($temp_payload['rows_by_match']) && is_array($temp_payload['rows_by_match'])) {
                 $rows_by_match = $temp_payload['rows_by_match'];
             }
-            if (!empty($rows_by_match)) {
-                $records = $this->merge_csv_rows_into_cpf_records($records, $rows_by_match, $match_field);
+
+            if ($sem_consulta && !empty($rows_by_match)) {
+                $records = $this->build_cpf_records_from_csv_only($rows_by_match, $match_field);
+            } else {
+                // Busca registros na base e enriquece com colunas do CSV
+                $records = $this->get_cpf_records($wpdb, $table_name, $values, $filters, $match_field, $show_already_sent);
+                if (!empty($rows_by_match)) {
+                    $records = $this->merge_csv_rows_into_cpf_records($records, $rows_by_match, $match_field);
+                }
             }
 
             if (empty($records) && !($include_baits && $test_only)) {
@@ -3501,6 +3690,12 @@ class Painel_Campanhas
                         ]);
                     }
 
+                    $tracking_data = $this->build_envios_tracking_data_from_record($record);
+                    $mensagem_para_armazenar = $this->embed_tracking_data_in_envios_mensagem(
+                        (string) $mensagem_para_armazenar,
+                        $tracking_data
+                    );
+
                     $insert_data = [
                         'telefone' => $telefone,
                         'nome' => $record['nome'] ?? '',
@@ -3526,7 +3721,9 @@ class Painel_Campanhas
             }
 
             // Remove arquivo temporário
-            @unlink($temp_file);
+            if ($temp_file !== '' && is_string($temp_file) && file_exists($temp_file)) {
+                @unlink($temp_file);
+            }
 
             $message = "Campanha criada com sucesso! {$total_inserted} registros inseridos.";
             if ($baits_added > 0) {

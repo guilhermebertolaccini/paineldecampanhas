@@ -634,7 +634,11 @@ export const getCustomFilters = () => {
 };
 
 export const previewCount = (data: Record<string, any>) => {
-  return wpAjax('cpf_cm_preview_count', data);
+  const d = { ...data };
+  if (d.sem_consulta !== undefined) {
+    d.sem_consulta = d.sem_consulta ? 1 : 0;
+  }
+  return wpAjax('cpf_cm_preview_count', d);
 };
 
 export const createCpfCampaign = (data: Record<string, any>) => {
@@ -722,6 +726,10 @@ export const createCpfCampaign = (data: Record<string, any>) => {
 
   if (data.test_only !== undefined) {
     payload.test_only = data.test_only ? 1 : 0;
+  }
+
+  if (data.sem_consulta !== undefined) {
+    payload.sem_consulta = data.sem_consulta ? 1 : 0;
   }
 
   return wpAjax('cpf_cm_create_campaign', payload);

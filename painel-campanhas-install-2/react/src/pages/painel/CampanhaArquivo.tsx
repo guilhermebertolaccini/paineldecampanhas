@@ -38,6 +38,7 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import {
   uploadCampaignFile,
@@ -136,6 +137,8 @@ export default function CampanhaArquivo() {
   const [noahChannelId, setNoahChannelId] = useState<string>("");
   const [campaignName, setCampaignName] = useState("");
   const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+  /** Envio direto: não consulta a base — só dados brutos do CSV. */
+  const [semConsulta, setSemConsulta] = useState(false);
 
   // Buscar carteiras (deve vir antes do useMemo que a usa)
   const { data: carteiras = [] } = useQuery({
@@ -850,7 +853,7 @@ export default function CampanhaArquivo() {
       return;
     }
 
-    if (!tableName) {
+    if (!semConsulta && !tableName) {
       toast({
         title: "Base obrigatória",
         description: "Por favor, informe o nome da tabela base",
@@ -859,7 +862,7 @@ export default function CampanhaArquivo() {
       return;
     }
 
-    if (!baitsOnlyTestOk && baseUpdateStatus && !baseUpdateStatus.isUpdated) {
+    if (!semConsulta && !baitsOnlyTestOk && baseUpdateStatus && !baseUpdateStatus.isUpdated) {
       toast({
         title: "Base desatualizada",
         description: "Atualize a base antes de criar a campanha",
@@ -882,7 +885,8 @@ export default function CampanhaArquivo() {
       nome_campanha: campaignName.trim(),
       nome_carteira: selectedCarteiraObj?.nome?.trim() || '',
       temp_id: baitsOnlyTestOk ? "" : tempId,
-      table_name: tableName,
+      table_name: semConsulta ? (tableName || "") : tableName,
+      sem_consulta: semConsulta ? 1 : 0,
       carteira: carteira || '',
       wallet_id: walletIdForOtima || selectedCarteiraObj?.id_carteira || '',
       fornecedor: provider.toUpperCase(),
@@ -945,7 +949,7 @@ export default function CampanhaArquivo() {
         <AlertCircle className="h-4 w-4" />
         <AlertDescription>
           <strong>Formato do arquivo CSV:</strong> O arquivo deve conter as colunas: <strong>nome</strong>, <strong>telefone</strong> (obrigatório: formato 55 + DDD + Número, ex: 5511999999999), <strong>cpf</strong> (obrigatório: pelo menos 11 dígitos).
-          Colunas opcionais: <strong>carteira</strong>, <strong>contrato</strong>, <strong>id_carteira</strong>.
+          Colunas opcionais: <strong>carteira</strong>, <strong>contrato</strong>, <strong>id_carteira</strong>, <strong>idcob_contrato</strong>, <strong>extra_1</strong>, <strong>extra_2</strong>, <strong>extra_3</strong>, <strong>extra_4</strong> (rastreio para relatórios — gravadas no JSON da mensagem).
         </AlertDescription>
       </Alert>
 
@@ -996,8 +1000,41 @@ export default function CampanhaArquivo() {
               </p>
             </div>
 
+            <div className="flex items-start gap-3 rounded-lg border border-border bg-muted/20 p-3">
+              <Checkbox
+                id="sem-consulta-csv"
+                checked={semConsulta}
+                onCheckedChange={(c) => setSemConsulta(!!c)}
+              />
+              <div className="space-y-0.5 flex-1">
+                <div className="flex items-center gap-2">
+                  <label htmlFor="sem-consulta-csv" className="text-sm font-medium cursor-pointer">
+                    Envio direto (Sem consulta ao BD)
+                  </label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="text-xs text-muted-foreground cursor-help border-b border-dotted border-muted-foreground">
+                        O que é?
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs text-xs">
+                      Ignora o enriquecimento de dados e dispara exatamente com as informações da planilha.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Não cruza com a base selecionada — útil para evitar contratos ou dados desatualizados do banco.
+                </p>
+              </div>
+            </div>
+
             <div className="space-y-2">
-              <Label htmlFor="table-name">Tabela Base <span className="text-red-500">*</span></Label>
+              <Label htmlFor="table-name">
+                Tabela Base {!semConsulta && <span className="text-red-500">*</span>}
+                {semConsulta && (
+                  <span className="text-muted-foreground font-normal text-xs ml-1">(opcional neste modo)</span>
+                )}
+              </Label>
               {!carteira ? (
                 <div className="rounded-xl border-2 border-dashed border-border p-4 text-center text-sm text-muted-foreground">
                   Selecione uma carteira para listar as bases disponíveis
