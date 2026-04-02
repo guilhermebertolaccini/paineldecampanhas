@@ -10,6 +10,7 @@ import { JobsModule } from './jobs/jobs.module';
 import { ValidatorModule } from './validator/validator.module';
 import { SqlServerModule } from './sql-server/sql-server.module';
 import { LineHealthModule } from './line-health/line-health.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { LineHealthModule } from './line-health/line-health.module';
     ProvidersModule,
     JobsModule,
     LineHealthModule,
+    WebhooksModule,
     ValidatorModule,
   ],
   controllers: [AppController],

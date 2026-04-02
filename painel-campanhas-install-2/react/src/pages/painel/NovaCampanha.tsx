@@ -1224,7 +1224,7 @@ export default function NovaCampanha() {
                   <div className="rounded-xl border-2 border-dashed border-border p-8 text-center">
                     <p className="text-sm text-muted-foreground">
                       {formData.carteira
-                        ? "Nenhuma base vinculada a esta carteira. Vá em Configurações para vincular bases à carteira."
+                        ? "Nenhuma base vinculada a esta carteira. Vá em Carteiras para vincular bases à carteira."
                         : "Nenhuma base disponível"}
                     </p>
                     {formData.carteira && (

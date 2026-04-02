@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as sql from 'mssql';
@@ -35,6 +36,20 @@ WHEN NOT MATCHED THEN
   private static readonly INSERT_SAUDE_LINHA_SQL = `
 INSERT INTO TB_SAUDE_LINHAS (id_linha, nome_linha, provedor, status_qualidade, detalhes_retorno)
 VALUES (@id_linha, @nome_linha, @provedor, @status_qualidade, @detalhes_retorno);
+`;
+
+  private static readonly INSERT_SALESFORCE_TRACKING_SQL = `
+INSERT INTO dbo.TB_SALESFORCE_TRACKING (
+  uniqueid, uniqueid_hash, trackingtype, sendtype, mid, eid, contactkey, mobilenumber,
+  eventdateutc, appid, channelid, channeltype, conversationtype, activityname, channelname,
+  status, reason, jbdefinitionid, sendidentifier, assetid, messagetypeid,
+  operacao__c, cpf_cnpj__c, name, TemplateName
+) VALUES (
+  @uniqueid, @uniqueid_hash, @trackingtype, @sendtype, @mid, @eid, @contactkey, @mobilenumber,
+  @eventdateutc, @appid, @channelid, @channeltype, @conversationtype, @activityname, @channelname,
+  @status, @reason, @jbdefinitionid, @sendidentifier, @assetid, @messagetypeid,
+  @operacao__c, @cpf_cnpj__c, @name, @TemplateName
+);
 `;
 
   constructor(
@@ -164,5 +179,193 @@ WHERE agendamento_id = @agendamento_id AND provedor = @provedor
         throw e;
       }
     }
+  }
+
+  /**
+   * Webhook Salesforce: persiste uma linha colunar em TB_SALESFORCE_TRACKING.
+   * Chaves alinhadas a salesforce_returns / import_salesforce (case-insensitive no JSON).
+   * Em falha de BD retorna false (o controller responde 202 mesmo assim).
+   */
+  async insertSalesforceTrackingFromPayload(
+    raw: Record<string, unknown>,
+  ): Promise<boolean> {
+    const pool = await this.sqlServer.getPool();
+    if (!pool) {
+      this.logger.warn(
+        'TB_SALESFORCE_TRACKING: pool MSSQL indisponível; evento não persistido',
+      );
+      return false;
+    }
+
+    const pick = DigitalFunnelMssqlService.pickCaseInsensitive;
+    const uniqueid = (pick(raw, 'uniqueid') ?? '').trim();
+    if (!uniqueid) {
+      this.logger.warn(
+        'TB_SALESFORCE_TRACKING: payload sem uniqueid; não persistido',
+      );
+      return false;
+    }
+
+    let uniqueidHash = (pick(raw, 'uniqueid_hash') ?? '').trim();
+    if (!uniqueidHash) {
+      uniqueidHash = createHash('sha256').update(uniqueid, 'utf8').digest('hex');
+    } else {
+      uniqueidHash = uniqueidHash.slice(0, 64);
+    }
+
+    const eventRaw = pick(raw, 'eventdateutc');
+    let eventDateUtc: Date | null = null;
+    if (eventRaw) {
+      const d = new Date(eventRaw);
+      if (!Number.isNaN(d.getTime())) {
+        eventDateUtc = d;
+      }
+    }
+
+    const trunc = DigitalFunnelMssqlService.truncNullable;
+
+    try {
+      const req = pool.request();
+      req.input('uniqueid', sql.NVarChar(sql.MAX), uniqueid);
+      req.input('uniqueid_hash', sql.VarChar(64), uniqueidHash);
+      req.input(
+        'trackingtype',
+        sql.NVarChar(100),
+        trunc(pick(raw, 'trackingtype'), 100),
+      );
+      req.input('sendtype', sql.NVarChar(100), trunc(pick(raw, 'sendtype'), 100));
+      req.input('mid', sql.NVarChar(100), trunc(pick(raw, 'mid'), 100));
+      req.input('eid', sql.NVarChar(200), trunc(pick(raw, 'eid'), 200));
+      req.input(
+        'contactkey',
+        sql.NVarChar(200),
+        trunc(pick(raw, 'contactkey'), 200),
+      );
+      req.input(
+        'mobilenumber',
+        sql.NVarChar(50),
+        trunc(pick(raw, 'mobilenumber'), 50),
+      );
+      req.input('eventdateutc', sql.DateTime2, eventDateUtc);
+      req.input('appid', sql.NVarChar(100), trunc(pick(raw, 'appid'), 100));
+      req.input(
+        'channelid',
+        sql.NVarChar(100),
+        trunc(pick(raw, 'channelid'), 100),
+      );
+      req.input(
+        'channeltype',
+        sql.NVarChar(50),
+        trunc(pick(raw, 'channeltype'), 50),
+      );
+      req.input(
+        'conversationtype',
+        sql.NVarChar(50),
+        trunc(pick(raw, 'conversationtype'), 50),
+      );
+      req.input(
+        'activityname',
+        sql.NVarChar(150),
+        trunc(pick(raw, 'activityname'), 150),
+      );
+      req.input(
+        'channelname',
+        sql.NVarChar(150),
+        trunc(pick(raw, 'channelname'), 150),
+      );
+      req.input('status', sql.NVarChar(100), trunc(pick(raw, 'status'), 100));
+      const reasonVal = pick(raw, 'reason');
+      req.input(
+        'reason',
+        sql.NVarChar(sql.MAX),
+        reasonVal != null && String(reasonVal).trim() !== ''
+          ? String(reasonVal)
+          : null,
+      );
+      req.input(
+        'jbdefinitionid',
+        sql.NVarChar(200),
+        trunc(pick(raw, 'jbdefinitionid'), 200),
+      );
+      req.input(
+        'sendidentifier',
+        sql.NVarChar(200),
+        trunc(pick(raw, 'sendidentifier'), 200),
+      );
+      req.input('assetid', sql.NVarChar(100), trunc(pick(raw, 'assetid'), 100));
+      req.input(
+        'messagetypeid',
+        sql.NVarChar(100),
+        trunc(pick(raw, 'messagetypeid'), 100),
+      );
+      req.input(
+        'operacao__c',
+        sql.NVarChar(100),
+        trunc(pick(raw, 'operacao__c'), 100),
+      );
+      req.input(
+        'cpf_cnpj__c',
+        sql.NVarChar(50),
+        trunc(pick(raw, 'cpf_cnpj__c'), 50),
+      );
+      req.input('name', sql.NVarChar(255), trunc(pick(raw, 'name'), 255));
+      req.input(
+        'TemplateName',
+        sql.NVarChar(255),
+        trunc(pick(raw, 'templatename', 'TemplateName'), 255),
+      );
+
+      await req.query(DigitalFunnelMssqlService.INSERT_SALESFORCE_TRACKING_SQL);
+      return true;
+    } catch (e: unknown) {
+      const err = e as { number?: number; message?: string };
+      const msg = String(err?.message ?? e);
+      if (
+        err?.number === 2627 ||
+        err?.number === 2601 ||
+        /UNIQUE KEY|duplicate/i.test(msg)
+      ) {
+        this.logger.warn(
+          `TB_SALESFORCE_TRACKING: duplicado uniqueid_hash (idempotência)`,
+        );
+        return true;
+      }
+      this.logger.error(`TB_SALESFORCE_TRACKING INSERT falhou: ${msg}`);
+      if (this.strict()) {
+        throw e;
+      }
+      return false;
+    }
+  }
+
+  private static pickCaseInsensitive(
+    raw: Record<string, unknown>,
+    ...keys: string[]
+  ): string | null {
+    const lower = new Map<string, unknown>();
+    for (const [k, v] of Object.entries(raw)) {
+      lower.set(k.toLowerCase(), v);
+    }
+    for (const key of keys) {
+      const v = lower.get(key.toLowerCase());
+      if (v != null && String(v).trim() !== '') {
+        return String(v);
+      }
+    }
+    return null;
+  }
+
+  private static truncNullable(
+    s: string | null,
+    max: number,
+  ): string | null {
+    if (s == null) {
+      return null;
+    }
+    const t = s.trim();
+    if (!t) {
+      return null;
+    }
+    return t.length <= max ? t : t.slice(0, max);
   }
 }

@@ -28,9 +28,9 @@ export class SalesforceSendProcessor extends BaseProviderProcessor {
     // O automationId vem em result.data.automationId (retornado pelo provider)
     if (result.success && result.data?.automationId) {
       const automationId = result.data.automationId;
-      const delay = 20 * 60 * 1000; // 20 minutos em milissegundos
-      
-      this.logger.log(`📅 Agendando Marketing Cloud para ${automationId} em 20 minutos...`);
+      const delay = 15 * 60 * 1000; // 15 minutos (tempo para o Core/MC assimilarem os contatos)
+
+      this.logger.log(`📅 Agendando Marketing Cloud para ${automationId} em 15 minutos...`);
       
       await this.mkcQueue.add(
         'trigger-automation',
@@ -50,7 +50,7 @@ export class SalesforceSendProcessor extends BaseProviderProcessor {
         },
       );
       
-      this.logger.log(`✅ Marketing Cloud agendado para executar em 20 minutos`);
+      this.logger.log(`✅ Marketing Cloud agendado para executar em 15 minutos`);
     }
     
     return result;

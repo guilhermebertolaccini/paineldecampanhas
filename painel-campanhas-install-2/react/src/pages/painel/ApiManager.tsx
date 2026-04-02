@@ -37,6 +37,7 @@ import {
 } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { MssqlConnectionCard } from "@/components/settings/MssqlConnectionCard";
 
 function RobbuWebhookCard() {
   const { toast } = useToast();
@@ -883,6 +884,8 @@ export default function ApiManager() {
           )}
         </CardContent>
       </Card>
+
+      <MssqlConnectionCard />
 
       {/* ── Robbu Webhook ───────────────────────────────────────────────────── */}
       <RobbuWebhookCard />

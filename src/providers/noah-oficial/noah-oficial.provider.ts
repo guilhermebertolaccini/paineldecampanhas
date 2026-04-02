@@ -36,7 +36,7 @@ export type NoahHsmButtonComponent = {
 
 /**
  * Payload raiz POST `/v1/api/external/:apiId/send-template` (documentação NOAH).
- * Não incluir `contactName` / `name` / `nome` na raiz — a API dispara upsert de contato e pode retornar ERR_DUPLICATED_CONTACT.
+ * `name` é opcional: só enviamos string não vazia (evita payload inconsistente; duplicidade de contato depende do contrato NOAH).
  */
 export type NoahSendTemplatePayload = {
   number: string;
@@ -46,6 +46,7 @@ export type NoahSendTemplatePayload = {
   language: string;
   components: Array<NoahHsmTemplateComponent | NoahHsmButtonComponent | Record<string, unknown>>;
   externalKey: string;
+  name?: string;
 };
 
 /**
@@ -98,8 +99,7 @@ export class NoahOficialProvider extends BaseProvider {
   }
 
   /**
-   * Corpo estrito para `/send-template`: somente campos operacionais.
-   * Qualquer outra chave na raiz (ex.: contactName) pode acionar upsert na NOAH → ERR_DUPLICATED_CONTACT.
+   * Corpo estrito para `/send-template`: campos operacionais + `name` apenas se houver texto válido.
    */
   private buildStrictNoahSendTemplateBody(params: {
     number: string;
@@ -109,6 +109,8 @@ export class NoahOficialProvider extends BaseProvider {
     components: NoahSendTemplatePayload['components'];
     externalKey: string;
     templateId?: number;
+    /** Nome do contato (painel NOAH); omitido se vazio. */
+    name?: string;
   }): Record<string, unknown> {
     const body: Record<string, unknown> = {
       number: params.number,
@@ -124,6 +126,11 @@ export class NoahOficialProvider extends BaseProvider {
       params.templateId > 0
     ) {
       body.templateId = params.templateId;
+    }
+    const trimmedName =
+      params.name != null ? String(params.name).trim() : '';
+    if (trimmedName !== '') {
+      body.name = trimmedName;
     }
     return JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
   }
@@ -234,6 +241,69 @@ export class NoahOficialProvider extends BaseProvider {
       }
     }
     return row;
+  }
+
+  /**
+   * Nome exibido no painel NOAH: campanha normal (`nome`) ou CSV/arquivo (colunas em `variables` / linha mesclada).
+   */
+  private extractNoahContactDisplayName(item: CampaignData): string {
+    if (item.nome != null && String(item.nome).trim() !== '') {
+      return String(item.nome).trim();
+    }
+
+    const fromVars = this.pickNoahVariableField(item.variables, [
+      'nome',
+      'name',
+      'Nome',
+      'NOME',
+      'contactName',
+      'contact_name',
+      'full_name',
+      'fullname',
+      'cliente',
+      'razao_social',
+      'razao',
+    ]);
+    if (fromVars) {
+      return fromVars;
+    }
+
+    const row = this.mergeNoahCampaignRow(item);
+    const directKeys = [
+      'nome',
+      'name',
+      'contactName',
+      'contact_name',
+      'full_name',
+      'razao_social',
+    ];
+    for (const k of directKeys) {
+      const v =
+        row[k] ??
+        row[k.toLowerCase()] ??
+        row[k.toUpperCase()];
+      if (v != null && String(v).trim() !== '') {
+        return String(v).trim();
+      }
+    }
+
+    for (const key of Object.keys(row)) {
+      const kl = key.toLowerCase().replace(/[\s_-]/g, '');
+      if (
+        kl === 'nome' ||
+        kl === 'name' ||
+        kl === 'contactname' ||
+        kl === 'fullname' ||
+        kl === 'razaosocial'
+      ) {
+        const v = row[key];
+        if (v != null && String(v).trim() !== '') {
+          return String(v).trim();
+        }
+      }
+    }
+
+    return '';
   }
 
   private normalizeNoahTemplateComponents(
@@ -901,6 +971,8 @@ export class NoahOficialProvider extends BaseProvider {
     const templateIdOpt =
       !Number.isNaN(tid) && tid > 0 ? tid : undefined;
 
+    const contactDisplayName = this.extractNoahContactDisplayName(item);
+
     const requestBody = this.buildStrictNoahSendTemplateBody({
       number,
       channelId: channelIdNum,
@@ -909,6 +981,7 @@ export class NoahOficialProvider extends BaseProvider {
       components: [...components, ...buttonBlocks],
       externalKey,
       templateId: templateIdOpt,
+      name: contactDisplayName,
     });
 
     this.logger.debug(

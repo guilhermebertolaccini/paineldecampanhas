@@ -1,6 +1,6 @@
 <?php
 /**
- * Página de Configurações - Gerenciamento de Carteiras
+ * Página Carteiras (slug legado: configuracoes)
  */
 
 if (!defined('ABSPATH')) exit;
@@ -10,7 +10,7 @@ if (!current_user_can('manage_options')) {
 }
 
 $current_page = 'configuracoes';
-$page_title = 'Configurações';
+$page_title = 'Carteiras';
 
 // Busca bases disponíveis
 global $wpdb;
@@ -27,7 +27,7 @@ ob_start();
 ?>
 <div class="max-w-7xl mx-auto">
     <div class="mb-6">
-        <h2 class="text-2xl font-bold text-gray-900 dark:text-white">Configurações</h2>
+        <h2 class="text-2xl font-bold text-gray-900 dark:text-white">Carteiras</h2>
         <p class="text-gray-600 dark:text-gray-400 mt-2">Gerencie carteiras e vincule bases de dados</p>
     </div>
 

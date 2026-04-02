@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import { AxiosResponse } from 'axios';
 import { BaseProvider } from '../base/base.provider';
 import {
   CampaignData,
@@ -8,6 +9,16 @@ import {
   ProviderCredentials,
   RetryStrategy,
 } from '../base/provider.interface';
+
+/** Limite da Composite API (Salesforce Core). */
+const COMPOSITE_SOBJECTS_MAX_RECORDS = 200;
+
+const DEFAULT_SF_API_VERSION = 'v59.0';
+
+export type SalesforceCoreAuthResult = {
+  accessToken: string;
+  instanceUrl: string;
+};
 
 @Injectable()
 export class SalesforceProvider extends BaseProvider {
@@ -22,16 +33,278 @@ export class SalesforceProvider extends BaseProvider {
     };
   }
 
+  /** MC: aceita mc_* (Postman) ou mkc_* (legado UI). */
+  private resolveMcClientId(c: ProviderCredentials): string | undefined {
+    const v = c.mc_client_id ?? c.mkc_client_id;
+    return v != null ? String(v).trim() || undefined : undefined;
+  }
+
+  private resolveMcClientSecret(c: ProviderCredentials): string | undefined {
+    const v = c.mc_client_secret ?? c.mkc_client_secret;
+    return v != null ? String(v).trim() || undefined : undefined;
+  }
+
+  private resolveMcTokenUrl(c: ProviderCredentials): string | undefined {
+    const v = c.mc_token_url ?? c.mkc_token_url;
+    return v != null ? String(v).trim() || undefined : undefined;
+  }
+
+  /**
+   * Base REST do Marketing Cloud para disparar automação (host + path até antes do automation id).
+   * Não usar `api_url` do WordPress quando for a URL do Composite do Core (.../composite/sobjects).
+   */
+  private resolveMcRestBaseUrl(c: ProviderCredentials): string | undefined {
+    const explicit = c.mkc_api_url ?? c.mc_api_url;
+    if (explicit != null && String(explicit).trim()) {
+      return String(explicit).trim().replace(/\/+$/, '');
+    }
+    const apiUrl = c.api_url != null ? String(c.api_url).trim() : '';
+    if (!apiUrl) {
+      return undefined;
+    }
+    if (/\/composite\/sobjects/i.test(apiUrl)) {
+      return undefined;
+    }
+    return apiUrl.replace(/\/+$/, '');
+  }
+
+  /**
+   * URL exata do POST composite/sobjects: usa `api_url` se o WP já enviar o path completo; senão monta com instance_url.
+   */
+  private resolveCompositePostUrl(
+    instanceUrl: string,
+    credentials: ProviderCredentials,
+  ): string {
+    const apiUrl = credentials.api_url != null ? String(credentials.api_url).trim() : '';
+    if (apiUrl && /\/composite\/sobjects/i.test(apiUrl)) {
+      return apiUrl.replace(/\/+$/, '');
+    }
+    return this.buildCompositeSobjectsUrl(instanceUrl, credentials);
+  }
+
+  private resolveSfApiVersion(c: ProviderCredentials): string {
+    const v = c.sf_api_version;
+    if (v != null && String(v).trim()) {
+      const s = String(v).trim();
+      return s.startsWith('v') ? s : `v${s}`;
+    }
+    return DEFAULT_SF_API_VERSION;
+  }
+
+  private joinUrlPath(base: string, path: string): string {
+    const b = base.replace(/\/+$/, '');
+    const p = path.replace(/^\/+/, '');
+    return `${b}/${p}`;
+  }
+
   validateCredentials(credentials: ProviderCredentials): boolean {
-    // Credenciais estáticas para Salesforce
+    // MC é validado ao rodar o job atrasado (triggerMarketingCloud); o WP pode não enviar mkc_* no mesmo objeto.
     return !!(
       credentials.client_id &&
       credentials.client_secret &&
       credentials.username &&
       credentials.password &&
       credentials.token_url &&
-      credentials.api_url
+      credentials.operacao &&
+      credentials.automation_id
     );
+  }
+
+  /**
+   * 1) Auth Salesforce Core — OAuth2 password (token_url).
+   */
+  async authenticateSalesforceCore(
+    credentials: ProviderCredentials,
+  ): Promise<SalesforceCoreAuthResult> {
+    const params = new URLSearchParams();
+    params.append('grant_type', 'password');
+    params.append('client_id', String(credentials.client_id));
+    params.append('client_secret', String(credentials.client_secret));
+    params.append('username', String(credentials.username));
+    params.append('password', String(credentials.password));
+
+    const tokenResponse = await this.executeWithRetry(
+      async () =>
+        firstValueFrom(
+          this.httpService.post(
+            String(credentials.token_url),
+            params.toString(),
+            {
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                Accept: 'application/json',
+              },
+              timeout: 30000,
+            },
+          ),
+        ),
+      this.getRetryStrategy(),
+      { provider: 'SALESFORCE' },
+    );
+
+    const accessToken = tokenResponse.data?.access_token as string | undefined;
+    let instanceUrl = tokenResponse.data?.instance_url as string | undefined;
+
+    if (!accessToken) {
+      throw new Error('Resposta OAuth Core sem access_token');
+    }
+
+    if (!instanceUrl?.trim()) {
+      instanceUrl =
+        (credentials.instance_url as string) ||
+        (credentials.sf_instance_url as string) ||
+        (credentials.core_instance_url as string);
+    }
+
+    if (!instanceUrl?.trim()) {
+      throw new Error(
+        'OAuth Core não retornou instance_url; defina instance_url / sf_instance_url nas credenciais',
+      );
+    }
+
+    return {
+      accessToken,
+      instanceUrl: instanceUrl.trim().replace(/\/+$/, ''),
+    };
+  }
+
+  /**
+   * URL da Composite API — sempre no host do Salesforce Core, nunca na raiz do MC.
+   */
+  buildCompositeSobjectsUrl(
+    instanceUrl: string,
+    credentials: ProviderCredentials,
+  ): string {
+    const version = this.resolveSfApiVersion(credentials);
+    return this.joinUrlPath(
+      instanceUrl,
+      `services/data/${version}/composite/sobjects`,
+    );
+  }
+
+  private mapRowToContactRecord(
+    dado: CampaignData,
+    operacao: string,
+  ): Record<string, unknown> {
+    const doc = (dado.cpf_cnpj ?? '').toString().trim();
+    const lastName = (dado.nome ?? '').toString().trim() || 'Contato';
+    return {
+      attributes: { type: 'Contact' },
+      MobilePhone: this.normalizePhoneNumber(dado.telefone),
+      LastName: lastName,
+      CPF_CNPJ__c: doc,
+      Operacao__c: operacao,
+      disparo__c: true,
+    };
+  }
+
+  /**
+   * 2) Importação no Core — lotes de até 200 em POST .../composite/sobjects.
+   */
+  async importContactsCompositeInChunks(
+    accessToken: string,
+    compositeUrl: string,
+    rows: CampaignData[],
+    operacao: string,
+  ): Promise<{ chunksOk: number; totalRecords: number; lastResponse?: unknown }> {
+    const records = rows.map((d) => this.mapRowToContactRecord(d, operacao));
+    const chunks: Record<string, unknown>[][] = [];
+    for (let i = 0; i < records.length; i += COMPOSITE_SOBJECTS_MAX_RECORDS) {
+      chunks.push(records.slice(i, i + COMPOSITE_SOBJECTS_MAX_RECORDS));
+    }
+
+    let chunksOk = 0;
+    let lastResponse: unknown;
+
+    for (let idx = 0; idx < chunks.length; idx++) {
+      const chunk = chunks[idx];
+      const payload = { allOrNone: false, records: chunk };
+
+      this.logger.log(
+        `Composite sobjects: chunk ${idx + 1}/${chunks.length} (${chunk.length} registros) → ${compositeUrl}`,
+      );
+
+      const response: AxiosResponse = await this.executeWithRetry(
+        async () =>
+          firstValueFrom(
+            this.httpService.post(compositeUrl, payload, {
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${accessToken}`,
+              },
+              timeout: 120000,
+            }),
+          ),
+        this.getRetryStrategy(),
+        { provider: 'SALESFORCE' },
+      );
+
+      lastResponse = response.data;
+      const data = response.data as {
+        hasErrors?: boolean;
+        results?: Array<{ statusCode?: number; errors?: unknown }>;
+      };
+
+      if (data?.hasErrors && Array.isArray(data.results)) {
+        const failed = data.results.filter(
+          (r) => r.statusCode != null && r.statusCode >= 400,
+        );
+        this.logger.warn(
+          `Composite chunk ${idx + 1}: hasErrors=true, ${failed.length} linha(s) com status >= 400`,
+        );
+      }
+
+      chunksOk += 1;
+    }
+
+    return {
+      chunksOk,
+      totalRecords: records.length,
+      lastResponse,
+    };
+  }
+
+  /**
+   * 3) Auth Marketing Cloud — client_credentials em .../v2/token.
+   */
+  async authenticateMarketingCloud(
+    credentials: ProviderCredentials,
+  ): Promise<string> {
+    const clientId = this.resolveMcClientId(credentials);
+    const clientSecret = this.resolveMcClientSecret(credentials);
+    const tokenUrl = this.resolveMcTokenUrl(credentials);
+
+    if (!clientId || !clientSecret || !tokenUrl) {
+      throw new Error(
+        'Credenciais MC incompletas (mc_client_id/mkc_client_id, secret, mc_token_url/mkc_token_url)',
+      );
+    }
+
+    const tokenResponse = await this.executeWithRetry(
+      async () =>
+        firstValueFrom(
+          this.httpService.post(
+            tokenUrl,
+            {
+              grant_type: 'client_credentials',
+              client_id: clientId,
+              client_secret: clientSecret,
+            },
+            {
+              headers: { 'Content-Type': 'application/json' },
+              timeout: 30000,
+            },
+          ),
+        ),
+      this.getRetryStrategy(),
+      { provider: 'SALESFORCE_MKC' },
+    );
+
+    const accessToken = tokenResponse.data?.access_token as string | undefined;
+    if (!accessToken) {
+      throw new Error('Resposta MC token sem access_token');
+    }
+    return accessToken;
   }
 
   async send(
@@ -41,7 +314,8 @@ export class SalesforceProvider extends BaseProvider {
     if (!this.validateCredentials(credentials)) {
       return {
         success: false,
-        error: 'Credenciais inválidas: client_id, client_secret, username, password, token_url e api_url são obrigatórias',
+        error:
+          'Credenciais inválidas: token_url, client_id, client_secret, username, password, operacao e automation_id são obrigatórios',
       };
     }
 
@@ -52,7 +326,6 @@ export class SalesforceProvider extends BaseProvider {
       };
     }
 
-    // WordPress pode enviar fila sem JSON de template — o conteúdo fica na automação SFMC.
     const rows: CampaignData[] = data.map((d) => ({
       ...d,
       mensagem:
@@ -61,178 +334,71 @@ export class SalesforceProvider extends BaseProvider {
           : '',
     }));
 
-    // Verifica se tem operacao e automation_id (credenciais dinâmicas por ambiente)
-    if (!credentials.operacao || !credentials.automation_id) {
-      return {
-        success: false,
-        error: 'Credenciais de ambiente inválidas: operacao e automation_id são obrigatórias',
-      };
-    }
-
-    const operacao = credentials.operacao;
-    const automationId = credentials.automation_id;
-
-    // PASSO 1: Obter token de acesso
-    let accessToken: string;
-    try {
-      const tokenResponse = await this.executeWithRetry(
-        async () => {
-          // Salesforce OAuth2 requer application/x-www-form-urlencoded
-          const params = new URLSearchParams();
-          params.append('grant_type', 'password');
-          params.append('client_id', credentials.client_id as string);
-          params.append('client_secret', credentials.client_secret as string);
-          params.append('username', credentials.username as string);
-          params.append('password', credentials.password as string);
-
-          const result = await firstValueFrom(
-            this.httpService.post(
-              credentials.token_url as string,
-              params.toString(),
-              {
-                headers: {
-                  'Content-Type': 'application/x-www-form-urlencoded',
-                  Accept: 'application/json',
-                },
-                timeout: 30000,
-              },
-            ),
-          );
-          return result;
-        },
-        this.getRetryStrategy(),
-        { provider: 'SALESFORCE' },
-      );
-
-      if (!tokenResponse.data?.access_token) {
-        return {
-          success: false,
-          error: 'Falha ao obter token de acesso da Salesforce',
-        };
-      }
-
-      accessToken = tokenResponse.data.access_token;
-    } catch (error: any) {
-      return this.handleError(error, { provider: 'SALESFORCE' });
-    }
-
-    // PASSO 2: Enviar contatos
-    const contacts = rows.map((dado) => ({
-      attributes: { type: 'Contact' },
-      MobilePhone: this.normalizePhoneNumber(dado.telefone),
-      LastName: dado.nome,
-      CPF_CNPJ__c: dado.cpf_cnpj || '12312312312',
-      Operacao__c: operacao,
-      disparo__c: true,
-    }));
-
-    const payload = {
-      allOrNone: false,
-      records: contacts,
-    };
+    const operacao = String(credentials.operacao);
+    const automationId = String(credentials.automation_id);
 
     try {
-      const response = await this.executeWithRetry(
-        async () => {
-          const result = await firstValueFrom(
-            this.httpService.post(
-              credentials.api_url as string,
-              payload,
-              {
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${accessToken}`,
-                },
-                timeout: 30000,
-              },
-            ),
-          );
-          return result;
-        },
-        this.getRetryStrategy(),
-        { provider: 'SALESFORCE' },
+      const { accessToken, instanceUrl } =
+        await this.authenticateSalesforceCore(credentials);
+
+      const compositeUrl = this.resolveCompositePostUrl(instanceUrl, credentials);
+
+      const importResult = await this.importContactsCompositeInChunks(
+        accessToken,
+        compositeUrl,
+        rows,
+        operacao,
       );
 
-      // Retorna sucesso, mas indica que precisa agendar o disparo MKC (20 minutos depois)
       return {
         success: true,
-        message: 'Contatos enviados, disparo final agendado para 20 minutos',
+        message:
+          'Contatos importados no Core (composite em lotes de 200); automação MC agendada em 15 minutos',
         data: {
           automationId,
-          scheduledAt: new Date(Date.now() + 20 * 60 * 1000).toISOString(), // 20 minutos
-          contactsSent: contacts.length,
+          scheduledAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+          contactsSent: importResult.totalRecords,
+          compositeChunks: importResult.chunksOk,
+          instanceUrl,
         },
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return this.handleError(error, { provider: 'SALESFORCE' });
     }
   }
 
   /**
-   * Executa o disparo final no Marketing Cloud (chamado após 20 minutos)
+   * 4) Disparo da automação no MC (job atrasado ~15 min) — POST .../{automationId}/actions/runallonce
    */
   async triggerMarketingCloud(
     automationId: string,
     credentials: ProviderCredentials,
   ): Promise<ProviderResponse> {
-    if (
-      !credentials.mkc_client_id ||
-      !credentials.mkc_client_secret ||
-      !credentials.mkc_token_url ||
-      !credentials.mkc_api_url
-    ) {
+    const mcBase = this.resolveMcRestBaseUrl(credentials);
+    if (!mcBase) {
       return {
         success: false,
-        error: 'Credenciais do Marketing Cloud não configuradas',
+        error:
+          'Base REST do Marketing Cloud não configurada (mkc_api_url, mc_api_url ou api_url)',
       };
     }
 
-    // PASSO 1: Obter token MKC
     let accessToken: string;
     try {
-      const tokenResponse = await this.executeWithRetry(
-        async () => {
-          const result = await firstValueFrom(
-            this.httpService.post(
-              credentials.mkc_token_url as string,
-              {
-                grant_type: 'client_credentials',
-                client_id: credentials.mkc_client_id,
-                client_secret: credentials.mkc_client_secret,
-              },
-              {
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                timeout: 30000,
-              },
-            ),
-          );
-          return result;
-        },
-        this.getRetryStrategy(),
-        { provider: 'SALESFORCE_MKC' },
-      );
-
-      if (!tokenResponse.data?.access_token) {
-        return {
-          success: false,
-          error: 'Falha ao obter token do Marketing Cloud',
-        };
-      }
-
-      accessToken = tokenResponse.data.access_token;
-    } catch (error: any) {
+      accessToken = await this.authenticateMarketingCloud(credentials);
+    } catch (error: unknown) {
       return this.handleError(error, { provider: 'SALESFORCE_MKC' });
     }
 
-    // PASSO 2: Executar automação
-    const url = `${credentials.mkc_api_url}/${automationId}/actions/runallonce`;
+    const url = this.joinUrlPath(
+      mcBase,
+      `${encodeURIComponent(automationId)}/actions/runallonce`,
+    );
 
     try {
       const response = await this.executeWithRetry(
-        async () => {
-          const result = await firstValueFrom(
+        async () =>
+          firstValueFrom(
             this.httpService.post(
               url,
               {},
@@ -244,9 +410,7 @@ export class SalesforceProvider extends BaseProvider {
                 timeout: 30000,
               },
             ),
-          );
-          return result;
-        },
+          ),
         this.getRetryStrategy(),
         { provider: 'SALESFORCE_MKC' },
       );
@@ -259,11 +423,8 @@ export class SalesforceProvider extends BaseProvider {
           body: response.data,
         },
       };
-    } catch (error: any) {
-      return this.handleError(error, {
-        provider: 'SALESFORCE_MKC',
-      });
+    } catch (error: unknown) {
+      return this.handleError(error, { provider: 'SALESFORCE_MKC' });
     }
   }
 }
-

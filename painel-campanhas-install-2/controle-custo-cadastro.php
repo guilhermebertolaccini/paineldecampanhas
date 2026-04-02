@@ -317,7 +317,7 @@ jQuery(document).ready(function($) {
             },
             success: function(basesResponse) {
                 if (!basesResponse.success || !basesResponse.data || basesResponse.data.length === 0) {
-                    alert('Esta carteira não tem bases vinculadas. Vincule bases em Configurações primeiro.');
+                    alert('Esta carteira não tem bases vinculadas. Vincule bases em Carteiras primeiro.');
                     return;
                 }
                 

@@ -109,7 +109,7 @@ const navItems: NavItem[] = [
       { label: "Relatório", href: "/painel/controle-custo/relatorio" },
     ],
   },
-  { label: "Configurações", href: "/painel/configuracoes", icon: Settings, adminOnly: true },
+  { label: "Carteiras", href: "/painel/configuracoes", icon: Settings, adminOnly: true },
   { label: "Cadastro de Iscas", href: "/painel/iscas", icon: Fish },
   { label: "Blocklist", href: "/painel/blocklist", icon: Shield, adminOnly: true },
   { label: "Saúde das Linhas", href: "/painel/saude-linhas", icon: Activity },

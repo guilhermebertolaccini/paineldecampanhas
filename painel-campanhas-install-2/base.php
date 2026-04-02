@@ -174,7 +174,7 @@ $current_page = $pc_current_page ?? 'home';
                         <li>
                             <a href="<?php echo esc_url(home_url('/painel/configuracoes')); ?>" class="flex items-center px-3 py-2 rounded-lg no-underline <?php echo ($current_page === 'configuracoes') ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'; ?> theme-transition">
                                 <i class="fas fa-cog w-5 mr-3"></i>
-                                <span>Configurações</span>
+                                <span>Carteiras</span>
                             </a>
                         </li>
                     </ul>

@@ -756,7 +756,7 @@ export const getRelatorioCustos = (params: Record<string, any> = {}) => {
   return wpAjax('pc_get_relatorio_custos', params);
 };
 
-// Configurações (Carteiras)
+// Carteiras (rota legada: /painel/configuracoes)
 export const getCarteiras = () => {
   return wpAjax('pc_get_carteiras', {});
 };
