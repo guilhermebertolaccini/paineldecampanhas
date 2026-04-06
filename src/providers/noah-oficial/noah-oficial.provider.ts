@@ -47,6 +47,8 @@ export type NoahSendTemplatePayload = {
   components: Array<NoahHsmTemplateComponent | NoahHsmButtonComponent | Record<string, unknown>>;
   externalKey: string;
   name?: string;
+  /** Status do ticket na NOAH (contrato operação). */
+  ticketStatus?: string;
 };
 
 /**
@@ -119,6 +121,7 @@ export class NoahOficialProvider extends BaseProvider {
       language: params.language,
       components: params.components,
       externalKey: params.externalKey,
+      ticketStatus: 'closed',
     };
     if (
       params.templateId != null &&
@@ -830,6 +833,7 @@ export class NoahOficialProvider extends BaseProvider {
       contactName: contactName || undefined,
       body,
       externalKey,
+      ticketStatus: 'closed',
     };
 
     await this.executeWithRetry(
