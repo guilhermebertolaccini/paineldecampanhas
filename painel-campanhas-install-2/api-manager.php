@@ -345,12 +345,17 @@ ob_start();
                 }
 
                 $has_credentials = false;
-                foreach (['gosac', 'noah', 'noah_oficial', 'cda', 'salesforce', 'rcs'] as $provider_name) {
-                    if (isset($provider_credentials[$provider_name]) && is_array($provider_credentials[$provider_name])) {
-                        foreach ($provider_credentials[$provider_name] as $env_id => $data) {
-                            if (is_array($data) && !empty($data)) {
-                                $has_credentials = true;
-                                ?>
+                // Todas as chaves em acm_provider_credentials (React/API Manager gravam gosac_oficial, making_oficial, techia, etc.)
+                foreach ($provider_credentials as $provider_name => $envs) {
+                    if (!is_string($provider_name) || $provider_name === '' || !is_array($envs)) {
+                        continue;
+                    }
+                    foreach ($envs as $env_id => $data) {
+                        if (!is_array($data) || empty($data)) {
+                            continue;
+                        }
+                        $has_credentials = true;
+                        ?>
                                 <div class="credential-card p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
                                     data-provider="<?php echo esc_attr($provider_name); ?>"
                                     data-env-id="<?php echo esc_attr($env_id); ?>">
@@ -381,18 +386,31 @@ ob_start();
                                         <?php elseif ($provider_name === 'rcs'): ?>
                                             <p><strong>Broker Code:</strong> <?php echo esc_html($data['broker_code'] ?? ''); ?></p>
                                             <p><strong>Customer Code:</strong> <?php echo esc_html($data['customer_code'] ?? ''); ?></p>
+                                        <?php elseif ($provider_name === 'making_oficial'): ?>
+                                            <?php
+                                            $tok = (string) ($data['token'] ?? '');
+                                            $team_disp = $data['team_id'] ?? '';
+                                            if (is_array($team_disp)) {
+                                                $team_disp = implode(', ', array_map('strval', $team_disp));
+                                            }
+                                            ?>
+                                            <p><strong>cost_center_id:</strong> <?php echo esc_html((string) ($data['cost_center_id'] ?? '')); ?></p>
+                                            <p><strong>phone_number_id:</strong> <?php echo esc_html((string) ($data['phone_number_id'] ?? '')); ?></p>
+                                            <p><strong>team_id:</strong> <?php echo esc_html((string) $team_disp); ?></p>
+                                            <?php if (!empty($data['url'])): ?>
+                                                <p><strong>URL (opcional):</strong> <code class="text-xs break-all"><?php echo esc_html((string) $data['url']); ?></code></p>
+                                            <?php endif; ?>
+                                            <p><strong>Token:</strong> <code class="text-xs"><?php echo esc_html($tok !== '' ? (substr($tok, 0, 30) . '…') : '—'); ?></code></p>
                                         <?php else: ?>
                                             <p><strong>URL:</strong> <code
                                                     class="text-xs break-all"><?php echo esc_html($data['url'] ?? ''); ?></code></p>
                                             <p><strong>Token:</strong> <code
-                                                    class="text-xs"><?php echo esc_html(substr($data['token'] ?? '', 0, 30)) . '...'; ?></code>
+                                                    class="text-xs"><?php echo esc_html(substr($data['token'] ?? '', 0, 30)) . (strlen((string) ($data['token'] ?? '')) > 30 ? '…' : ''); ?></code>
                                             </p>
                                         <?php endif; ?>
                                     </div>
                                 </div>
                                 <?php
-                            }
-                        }
                     }
                 }
 
@@ -421,8 +439,10 @@ ob_start();
                         class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
                         <option value="">Selecione um Provider</option>
                         <option value="gosac">GOSAC</option>
+                        <option value="gosac_oficial">Gosac Oficial</option>
                         <option value="noah">Noah</option>
                         <option value="noah_oficial">Noah Oficial</option>
+                        <option value="making_oficial">Making Oficial (WhatsApp Oficial)</option>
                         <option value="cda">CDA</option>
                         <option value="salesforce">Salesforce</option>
                         <option value="rcs">RCS CDA (CromosApp)</option>
@@ -472,6 +492,46 @@ ob_start();
                         </label>
                         <input type="text" id="create-automation-id" name="automation_id"
                             placeholder="0e309929-51ae-4e2a-b8d1-ee17c055f42e"
+                            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
+                    </div>
+                </div>
+
+                <!-- Making Oficial (JWT + IDs — mesmo formato do painel React) -->
+                <div id="making-fields" class="hidden space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            Token JWT <span class="text-red-500">*</span>
+                        </label>
+                        <input type="text" id="create-making-token" name="making_token"
+                            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            cost_center_id <span class="text-red-500">*</span>
+                        </label>
+                        <input type="number" id="create-making-cc" name="making_cost_center_id" min="1" placeholder="Ex: 123"
+                            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            phone_number_id <span class="text-red-500">*</span>
+                        </label>
+                        <input type="number" id="create-making-pn" name="making_phone_number_id" min="1" placeholder="Ex: 456"
+                            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            team_id(s) <span class="text-red-500">*</span>
+                        </label>
+                        <input type="text" id="create-making-team" name="making_team_id" placeholder="Um ou vários: 10 ou 10, 11"
+                            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            URL da API (opcional)
+                        </label>
+                        <input type="url" id="create-making-url" name="making_url"
+                            placeholder="https://campanhas.makingpublicidade.com.br/campaign/create_api_oficial"
                             class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
                     </div>
                 </div>
@@ -575,12 +635,14 @@ ob_start();
         // Toggle fields based on provider
         $('#create-provider').on('change', function () {
             const provider = $(this).val();
-            $('#url-token-fields, #salesforce-fields, #rcs-fields').addClass('hidden');
+            $('#url-token-fields, #salesforce-fields, #rcs-fields, #making-fields').addClass('hidden');
 
             if (provider === 'salesforce') {
                 $('#salesforce-fields').removeClass('hidden');
             } else if (provider === 'rcs') {
                 $('#rcs-fields').removeClass('hidden');
+            } else if (provider === 'making_oficial') {
+                $('#making-fields').removeClass('hidden');
             } else if (provider && provider !== '') {
                 $('#url-token-fields').removeClass('hidden');
             }
@@ -695,6 +757,27 @@ ob_start();
                     codigo_equipe: $('#create-codigo-equipe').val(),
                     codigo_usuario: $('#create-codigo-usuario').val()
                 };
+            } else if (provider === 'making_oficial') {
+                const teamRaw = String($('#create-making-team').val() || '').trim();
+                const teamParts = teamRaw.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+                const teamIds = teamParts.map(s => parseInt(s, 10)).filter(n => !Number.isNaN(n) && n > 0);
+                const cc = parseInt(String($('#create-making-cc').val() || '').trim(), 10);
+                const pn = parseInt(String($('#create-making-pn').val() || '').trim(), 10);
+                const jwt = String($('#create-making-token').val() || '').trim();
+                const optUrl = String($('#create-making-url').val() || '').trim();
+                if (!jwt || !cc || cc <= 0 || !pn || pn <= 0 || teamIds.length === 0) {
+                    showToast('Making: preencha JWT, cost_center_id, phone_number_id e ao menos um team_id válido.', 'error');
+                    return;
+                }
+                credentialData = {
+                    token: jwt,
+                    cost_center_id: cc,
+                    phone_number_id: pn,
+                    team_id: teamIds.length === 1 ? teamIds[0] : teamIds
+                };
+                if (optUrl) {
+                    credentialData.url = optUrl;
+                }
             } else {
                 credentialData = {
                     url: $('#create-url').val(),
@@ -716,7 +799,7 @@ ob_start();
                     if (response.success) {
                         showToast('Credencial criada com sucesso!', 'success');
                         $('#create-credential-form')[0].reset();
-                        $('#url-token-fields, #salesforce-fields, #rcs-fields').addClass('hidden');
+                        $('#url-token-fields, #salesforce-fields, #rcs-fields, #making-fields').addClass('hidden');
                         setTimeout(() => location.reload(), 1000);
                     } else {
                         showToast(response.data || 'Erro ao criar credencial', 'error');
@@ -745,7 +828,10 @@ ob_start();
                 },
                 success: function (response) {
                     if (response.success) {
-                        const data = response.data;
+                        const raw = response.data;
+                        const data = raw && typeof raw === 'object' && raw.data && typeof raw.data === 'object'
+                            ? raw.data
+                            : raw;
                         $('#edit-provider').val(provider);
                         $('#edit-env-id').val(envId);
 
@@ -774,6 +860,35 @@ ob_start();
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Código do Usuário</label>
                                 <input type="text" name="codigo_usuario" value="${escapeHtml(data.codigo_usuario || '')}" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" required>
+                            </div>
+                        `;
+                        } else if (provider === 'making_oficial') {
+                            let teamStr = '';
+                            if (Array.isArray(data.team_id)) {
+                                teamStr = data.team_id.join(', ');
+                            } else if (data.team_id != null && data.team_id !== '') {
+                                teamStr = String(data.team_id);
+                            }
+                            html = `
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Token JWT</label>
+                                <input type="text" name="token" value="${escapeHtml(data.token || '')}" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" required>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">cost_center_id</label>
+                                <input type="number" name="cost_center_id" value="${escapeHtml(String(data.cost_center_id ?? ''))}" min="1" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" required>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">phone_number_id</label>
+                                <input type="number" name="phone_number_id" value="${escapeHtml(String(data.phone_number_id ?? ''))}" min="1" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" required>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">team_id(s), separados por vírgula</label>
+                                <input type="text" name="team_id_csv" value="${escapeHtml(teamStr)}" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" required>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">URL (opcional)</label>
+                                <input type="url" name="url" value="${escapeHtml(data.url || '')}" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
                             </div>
                         `;
                         } else {
@@ -814,6 +929,20 @@ ob_start();
                     formData[item.name] = item.value;
                 }
             });
+
+            if (provider === 'making_oficial') {
+                const teamRaw = String(formData.team_id_csv || '').trim();
+                delete formData.team_id_csv;
+                const teamParts = teamRaw.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+                const teamIds = teamParts.map(s => parseInt(s, 10)).filter(n => !Number.isNaN(n) && n > 0);
+                if (teamIds.length === 0) {
+                    showToast('Informe ao menos um team_id válido.', 'error');
+                    return;
+                }
+                formData.team_id = teamIds.length === 1 ? teamIds[0] : teamIds;
+                formData.cost_center_id = parseInt(String(formData.cost_center_id || '').trim(), 10);
+                formData.phone_number_id = parseInt(String(formData.phone_number_id || '').trim(), 10);
+            }
 
             $.ajax({
                 url: pcAjax.ajaxUrl,
@@ -892,7 +1021,7 @@ ob_start();
         // Reset form
         $('#reset-form').on('click', function () {
             $('#create-credential-form')[0].reset();
-            $('#url-token-fields, #salesforce-fields, #rcs-fields').addClass('hidden');
+            $('#url-token-fields, #salesforce-fields, #rcs-fields, #making-fields').addClass('hidden');
         });
 
         // Funções auxiliares
