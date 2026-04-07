@@ -206,6 +206,21 @@ export const saveMssqlSettings = (
   return wpAjax('pc_save_mssql_settings', data);
 };
 
+export type MssqlOperationalSyncResponse = {
+  message?: string;
+  warning?: string;
+  schema_ok?: boolean;
+  mirror_row_counts_by_table?: Record<string, number>;
+  snapshot_ok?: boolean;
+  last_mirror_sync?: string;
+  last_snapshot_refresh?: string;
+};
+
+/** Admin: DDL idempotente no MSSQL + espelho completo + snapshot de saúde. */
+export const runMssqlOperationalSyncNow = (): Promise<MssqlOperationalSyncResponse> => {
+  return wpAjax('pc_mssql_operational_sync_now', {});
+};
+
 // Campanhas
 export const getCampanhas = (params: Record<string, any> = {}) => {
   return wpAjax('pc_get_campanhas', params);

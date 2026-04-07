@@ -43,6 +43,9 @@ export type GosacOfficialCampaignPayload = {
 /** Entrada em `variables_map` vinda do React: string (campo) ou `{ type, value }`. */
 type GosacVariablesMapEntry = string | { type?: string; value?: string };
 
+/** Nome exibido quando não há nome válido (evita `-` genérico onde a API aceita texto amigável). */
+const GOSAC_DEFAULT_CONTACT_DISPLAY_NAME = 'Cliente';
+
 @Injectable()
 export class GosacOficialProvider extends BaseProvider {
     constructor(httpService: HttpService) {
@@ -63,6 +66,59 @@ export class GosacOficialProvider extends BaseProvider {
             typeof credentials.url === 'string' &&
             typeof credentials.token === 'string'
         );
+    }
+
+    /**
+     * Normaliza valores vindos do WP/MySQL para texto de template ou nome de contato.
+     * Evita enviar `"{}"`, objeto vazio serializado ou `[object Object]` como conteúdo visível.
+     */
+    private coerceToDisplayString(raw: unknown): string {
+        if (raw == null) {
+            return '';
+        }
+        if (typeof raw === 'string') {
+            const s = raw.trim();
+            if (s === '' || s === '{}' || /^\{\s*\}$/.test(s)) {
+                return '';
+            }
+            const low = s.toLowerCase();
+            if (low === '[object object]') {
+                return '';
+            }
+            if (s.startsWith('{') && s.endsWith('}')) {
+                try {
+                    const j = JSON.parse(s) as unknown;
+                    if (
+                        typeof j === 'object' &&
+                        j !== null &&
+                        !Array.isArray(j) &&
+                        Object.keys(j).length === 0
+                    ) {
+                        return '';
+                    }
+                } catch {
+                    /* manter string original se não for JSON */
+                }
+            }
+            return s;
+        }
+        if (typeof raw === 'number' && Number.isFinite(raw)) {
+            return String(raw);
+        }
+        if (typeof raw === 'boolean') {
+            return raw ? 'true' : 'false';
+        }
+        if (typeof raw === 'object') {
+            if (Array.isArray(raw)) {
+                return raw.length === 0 ? '' : JSON.stringify(raw);
+            }
+            return Object.keys(raw as object).length === 0 ? '' : JSON.stringify(raw);
+        }
+        const s = String(raw).trim();
+        if (s.toLowerCase() === '[object object]') {
+            return '';
+        }
+        return s;
     }
 
     private parseGosacMensagemJson(mensagem: string): Record<string, unknown> | null {
@@ -123,9 +179,9 @@ export class GosacOficialProvider extends BaseProvider {
         if (vars && typeof vars === 'object' && !Array.isArray(vars)) {
             const mk = Object.keys(vars).find((k) => k.toLowerCase() === fl);
             if (mk != null) {
-                const v = vars[mk];
-                if (v != null && String(v).trim() !== '') {
-                    return String(v).trim();
+                const coerced = this.coerceToDisplayString(vars[mk]);
+                if (coerced !== '') {
+                    return coerced;
                 }
             }
         }
@@ -138,9 +194,9 @@ export class GosacOficialProvider extends BaseProvider {
                 k !== 'mensagem',
         );
         if (mk2 != null) {
-            const v = rec[mk2];
-            if (v != null && typeof v !== 'object' && String(v).trim() !== '') {
-                return String(v).trim();
+            const coerced = this.coerceToDisplayString(rec[mk2]);
+            if (coerced !== '') {
+                return coerced;
             }
         }
         return '';
@@ -154,7 +210,7 @@ export class GosacOficialProvider extends BaseProvider {
         if (!first) {
             return `Campanha ${Date.now()}`;
         }
-        const fromCol = (first.nome_campanha ?? '').trim();
+        const fromCol = this.coerceToDisplayString(first.nome_campanha);
         if (fromCol) {
             return fromCol.slice(0, 255);
         }
@@ -165,13 +221,16 @@ export class GosacOficialProvider extends BaseProvider {
         return `Campanha ${Date.now()}`;
     }
 
-    /** Exibeção do contato: prioriza `variables.nome`, senão `dado.nome`, senão `-` (Swagger exige string). */
+    /**
+     * Nome do contato no payload GOSAC: prioriza `variables.nome`, senão `dado.nome`,
+     * senão nome amigável (nunca string literal `"{}"` nem objeto vazio serializado).
+     */
     private gosacContactName(dado: CampaignData): string {
         const fromVars = this.pickRowFieldValue(dado, 'nome');
         if (fromVars) return fromVars.slice(0, 255);
-        const root = (dado.nome ?? '').trim();
+        const root = this.coerceToDisplayString(dado.nome);
         if (root) return root.slice(0, 255);
-        return '-';
+        return GOSAC_DEFAULT_CONTACT_DISPLAY_NAME;
     }
 
     /** CPF 11 dígitos; sem dado válido usa `-` para não enviar string vazia. */
@@ -188,9 +247,10 @@ export class GosacOficialProvider extends BaseProvider {
 
     /**
      * Regra anti-422: `variables[].value` nunca pode ser `""`.
+     * Valores inválidos (`{}`, objeto vazio, etc.) viram espaço — não texto `"{}"` na mensagem.
      */
-    private gosacApiVariableValue(raw: string): string {
-        const t = (raw ?? '').trim();
+    private gosacApiVariableValue(raw: unknown): string {
+        const t = this.coerceToDisplayString(raw);
         return t === '' ? ' ' : t;
     }
 
@@ -211,11 +271,12 @@ export class GosacOficialProvider extends BaseProvider {
         }
         if (typeof entry === 'object') {
             const t = String(entry.type ?? '');
-            const v = entry.value != null ? String(entry.value) : '';
-            if (t === 'field' && v !== '') {
-                return this.pickRowFieldValue(dado, v);
+            const fieldKey =
+                entry.value != null ? this.coerceToDisplayString(entry.value) : '';
+            if (t === 'field' && fieldKey !== '') {
+                return this.pickRowFieldValue(dado, fieldKey);
             }
-            return v;
+            return this.coerceToDisplayString(entry.value);
         }
         return '';
     }
@@ -228,7 +289,7 @@ export class GosacOficialProvider extends BaseProvider {
             const r = row as Record<string, unknown>;
             const componentId = Number(r.componentId ?? r.component_id ?? 0) || 0;
             const variable = r.variable != null ? String(r.variable) : '';
-            const value = this.gosacApiVariableValue(r.value != null ? String(r.value) : '');
+            const value = this.gosacApiVariableValue(r.value);
             if (variable === '' && componentId === 0) continue;
             out.push({ componentId, variable, value });
         }
@@ -253,7 +314,7 @@ export class GosacOficialProvider extends BaseProvider {
                 const pr = p as Record<string, unknown>;
                 const pTyp = String(pr.type ?? 'text').toLowerCase();
                 if (pTyp === 'text') {
-                    texts.push(pr.text != null ? String(pr.text) : '');
+                    texts.push(this.coerceToDisplayString(pr.text));
                 }
             }
             if (texts.length === 0) continue;
@@ -449,6 +510,15 @@ export class GosacOficialProvider extends BaseProvider {
         const authHeader = authToken?.toLowerCase().startsWith('bearer ')
             ? authToken
             : `Bearer ${authToken}`;
+
+        this.logger.debug(
+            `[GOSAC AUDIT] POST ${postUrl} | templateId=${templateId} | connectionId=${connectionId} | contatos=${contacts.length}`,
+        );
+        for (const c of contacts) {
+            this.logger.debug(
+                `[GOSAC AUDIT] Disparando para ${c.number} | name no payload: ${JSON.stringify(c.name)} | Variáveis injetadas: ${JSON.stringify(c.variables)}`,
+            );
+        }
 
         try {
             const createResponse = await this.executeWithRetry(

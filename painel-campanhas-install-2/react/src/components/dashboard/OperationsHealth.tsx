@@ -95,13 +95,15 @@ export function OperationsHealth() {
           <Activity className="h-5 w-5" />
           Saúde das Operações
         </CardTitle>
-        <CardDescription>Última checagem diária por linha (TB_SAUDE_LINHAS)</CardDescription>
+        <CardDescription>
+          Snapshot operacional no SQL Server (PC_LINE_HEALTH_SNAPSHOT), alimentado pelo MySQL do painel
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {rows.length === 0 ? (
           <p className="text-sm text-muted-foreground py-4 text-center">
-            Nenhum registro ainda. O job Nest às 06h preenche após configurar{" "}
-            <code className="text-xs">LINE_HEALTH_TARGETS</code>.
+            Nenhum registro ainda. Ative o MSSQL no painel e aguarde o cron WordPress ou abra a página
+            Saúde das Linhas para recalcular o snapshot.
           </p>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">

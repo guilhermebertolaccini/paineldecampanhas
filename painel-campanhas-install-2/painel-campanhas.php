@@ -33,6 +33,11 @@ if (is_readable($pc_sqlserver_connector)) {
     error_log('Painel Campanhas: inclua includes/class-pc-sqlserver-connector.php — arquivo ausente: ' . $pc_sqlserver_connector);
 }
 
+$pc_wp_mssql_bridge = __DIR__ . '/includes/class-pc-wp-mssql-bridge.php';
+if (is_readable($pc_wp_mssql_bridge)) {
+    require_once $pc_wp_mssql_bridge;
+}
+
 class Painel_Campanhas
 {
     private static $instance = null;
@@ -245,6 +250,10 @@ class Painel_Campanhas
         add_action('pc_salesforce_import_cron', [$this, 'run_salesforce_import_cron']);
         add_action('init', [$this, 'maybe_reschedule_salesforce_cron_9am'], 5);
 
+        // Ponte MySQL → MSSQL: espelho operacional + snapshot de saúde (diário)
+        add_action('painel_campanhas_daily_mssql_bridge', [$this, 'run_mssql_wp_bridge_cron']);
+        add_action('init', [$this, 'maybe_schedule_mssql_bridge_cron'], 6);
+
         // Inicialização
         add_action('init', [$this, 'init']);
         add_action('wp_enqueue_scripts', [$this, 'enqueue_assets']);
@@ -421,6 +430,7 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_get_line_health', [$this, 'handle_get_line_health']);
         add_action('wp_ajax_pc_get_mssql_settings', [$this, 'handle_get_mssql_settings']);
         add_action('wp_ajax_pc_save_mssql_settings', [$this, 'handle_save_mssql_settings']);
+        add_action('wp_ajax_pc_mssql_operational_sync_now', [$this, 'handle_mssql_operational_sync_now']);
 
         // AJAX para Blocklist
         add_action('wp_ajax_pc_get_blocklist', [$this, 'handle_get_blocklist']);
@@ -1057,6 +1067,24 @@ class Painel_Campanhas
         flush_rewrite_rules();
         wp_clear_scheduled_hook('pc_salesforce_import_cron');
         wp_clear_scheduled_hook(PC_Validador_Historico::CRON_HOOK);
+        wp_clear_scheduled_hook('painel_campanhas_daily_mssql_bridge');
+    }
+
+    /**
+     * Agenda sincronização diária MySQL → MSSQL (espelho + snapshot de saúde).
+     */
+    public function maybe_schedule_mssql_bridge_cron()
+    {
+        if (!wp_next_scheduled('painel_campanhas_daily_mssql_bridge')) {
+            wp_schedule_event(time() + 300, 'daily', 'painel_campanhas_daily_mssql_bridge');
+        }
+    }
+
+    public function run_mssql_wp_bridge_cron()
+    {
+        if (class_exists('PC_Wp_Mssql_Bridge')) {
+            PC_Wp_Mssql_Bridge::run_daily_operational_job();
+        }
     }
 
     /**
@@ -10684,8 +10712,20 @@ class Painel_Campanhas
             wp_send_json_success(['rows' => [], 'configured' => false]);
             return;
         }
+        if (class_exists('PC_Wp_Mssql_Bridge')) {
+            PC_Wp_Mssql_Bridge::on_operational_health_page_visit();
+            $snap = PC_Wp_Mssql_Bridge::fetch_snapshot_rows_for_api(200);
+            if (!empty($snap)) {
+                wp_send_json_success([
+                    'rows' => $snap,
+                    'configured' => true,
+                    'source' => 'pc_line_health_snapshot',
+                ]);
+                return;
+            }
+        }
         $rows = PC_SqlServer_Connector::fetch_line_health_rows(200);
-        wp_send_json_success(['rows' => $rows, 'configured' => true]);
+        wp_send_json_success(['rows' => $rows, 'configured' => true, 'source' => 'tb_saude_linhas_legacy']);
     }
 
     /**
@@ -10787,8 +10827,50 @@ class Painel_Campanhas
         if (class_exists('PC_SqlServer_Connector')) {
             PC_SqlServer_Connector::reset_static_connections();
         }
+        if (class_exists('PC_Wp_Mssql_Bridge')) {
+            PC_Wp_Mssql_Bridge::reset_schema_cache();
+        }
 
         wp_send_json_success(['message' => 'Configurações MSSQL salvas.']);
+    }
+
+    /**
+     * Admin: cria tabelas de espelho no MSSQL (se faltarem) e roda espelho + snapshot na hora.
+     */
+    public function handle_mssql_operational_sync_now()
+    {
+        $this->pc_forbid_subscriber_ajax();
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Acesso negado.']);
+            return;
+        }
+        if (!check_ajax_referer('pc_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => 'Sessão expirada. Recarregue a página.']);
+            return;
+        }
+        if (!class_exists('PC_Wp_Mssql_Bridge')) {
+            wp_send_json_error(['message' => 'Ponte MSSQL não está disponível.']);
+            return;
+        }
+        if (class_exists('PC_SqlServer_Connector')) {
+            PC_SqlServer_Connector::reset_static_connections();
+        }
+        PC_Wp_Mssql_Bridge::reset_schema_cache();
+        $result = PC_Wp_Mssql_Bridge::run_daily_operational_job();
+        if (empty($result['ok'])) {
+            $reason = (string) ($result['reason'] ?? '');
+            $msg = $reason === 'disabled'
+                ? 'MSSQL está desativado nas opções ou o PHP não tem pdo_sqlsrv.'
+                : 'Não foi possível conectar ao SQL Server ou executar o DDL das tabelas de espelho. Verifique host, banco, usuário, senha e se o login tem permissão CREATE TABLE no banco alvo.';
+            wp_send_json_error(['message' => $msg]);
+            return;
+        }
+        $payload = $result;
+        $payload['message'] = 'Tabelas verificadas/criadas e sincronização concluída.';
+        if (empty($result['snapshot_ok'])) {
+            $payload['warning'] = 'O espelho foi atualizado, mas o snapshot de saúde não pôde ser recalculado (confira se existe wp_envios_pendentes com colunas fornecedor e status).';
+        }
+        wp_send_json_success($payload);
     }
 
     /**
@@ -11719,12 +11801,17 @@ class Painel_Campanhas
 
     public function handle_get_all_connections_health()
     {
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Acesso negado');
             return;
         }
 
         check_ajax_referer('pc_nonce', 'nonce');
+
+        if (class_exists('PC_Wp_Mssql_Bridge')) {
+            PC_Wp_Mssql_Bridge::on_operational_health_page_visit();
+        }
+
         global $wpdb;
         $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
         $carteiras = $wpdb->get_results("SELECT id, nome, id_carteira, id_ruler FROM $table_carteiras WHERE ativo = 1", ARRAY_A);

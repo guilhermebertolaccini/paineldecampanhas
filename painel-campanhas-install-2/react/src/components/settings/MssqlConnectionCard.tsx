@@ -11,6 +11,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import {
   getMssqlSettings,
+  runMssqlOperationalSyncNow,
   saveMssqlSettings,
   type MssqlSettingsResponse,
 } from "@/lib/api";
@@ -93,6 +94,27 @@ export function MssqlConnectionCard() {
     },
   });
 
+  const syncNowMutation = useMutation({
+    mutationFn: runMssqlOperationalSyncNow,
+    onSuccess: (res) => {
+      toast({
+        title: res?.message || "Sincronização MSSQL",
+        description: res?.warning
+          ? res.warning
+          : `Último espelho: ${res?.last_mirror_sync || "—"} · Snapshot: ${res?.last_snapshot_refresh || "—"}`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["line-health"] });
+      queryClient.invalidateQueries({ queryKey: ["available-bases"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Falha na sincronização MSSQL",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const mssqlWpOverrides = mssqlSettings?.wp_config_override;
   const hasAnyMssqlWpOverride =
     mssqlWpOverrides && Object.values(mssqlWpOverrides).some(Boolean);
@@ -112,7 +134,11 @@ export function MssqlConnectionCard() {
             <CardTitle className="text-lg">Conexão de Dados Externa (MSSQL / DB_DIGITAL)</CardTitle>
             <CardDescription>
               Credenciais para listar views <code className="text-xs">VW_BASE%</code> e telemetria. Exige extensão{" "}
-              <code className="text-xs">pdo_sqlsrv</code> no PHP.
+              <code className="text-xs">pdo_sqlsrv</code> no PHP. As tabelas{" "}
+              <code className="text-xs">PC_WP_MIRROR_ROWS</code> e{" "}
+              <code className="text-xs">PC_LINE_HEALTH_SNAPSHOT</code> são criadas automaticamente no banco MSSQL
+              configurado na primeira sincronização bem-sucedida — não é preciso criar manualmente no servidor (ex.:{" "}
+              <span className="text-xs">.26</span>).
             </CardDescription>
           </div>
         </div>
@@ -231,15 +257,31 @@ export function MssqlConnectionCard() {
                 </p>
               </div>
             </div>
-            <Button
-              type="button"
-              onClick={() => saveMssqlMutation.mutate()}
-              disabled={saveMssqlMutation.isPending}
-              className="gradient-primary hover:opacity-90"
-            >
-              {saveMssqlMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Salvar conexão MSSQL
-            </Button>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                type="button"
+                onClick={() => saveMssqlMutation.mutate()}
+                disabled={saveMssqlMutation.isPending}
+                className="gradient-primary hover:opacity-90"
+              >
+                {saveMssqlMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Salvar conexão MSSQL
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => syncNowMutation.mutate()}
+                disabled={syncNowMutation.isPending || !mssqlForm.enabled}
+                title={
+                  !mssqlForm.enabled
+                    ? "Ative a integração MSSQL acima para sincronizar."
+                    : "Cria as tabelas de espelho no SQL Server se não existirem e copia os dados do WordPress."
+                }
+              >
+                {syncNowMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Sincronizar espelho agora
+              </Button>
+            </div>
           </>
         )}
       </CardContent>

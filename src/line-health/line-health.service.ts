@@ -60,7 +60,8 @@ export class LineHealthService {
   /** Diariamente às 06:00 (minuto 0, hora 6). */
   @Cron('0 0 6 * * *')
   async runDailyLineHealth(): Promise<void> {
-    if (this.config.get<string>('LINE_HEALTH_CRON_ENABLED', 'true') !== 'true') {
+    // Desativado por padrão: saúde operacional vem da ponte WP → MSSQL (PC_LINE_HEALTH_SNAPSHOT).
+    if (this.config.get<string>('LINE_HEALTH_CRON_ENABLED', 'false') !== 'true') {
       return;
     }
     const targets = this.parseTargets();
