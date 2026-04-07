@@ -1278,14 +1278,9 @@ export const getWalletsHealth = async (): Promise<{ connections: any[]; debug_in
   };
 };
 
-/** Fetch Templates from backend (GOSAC Oficial + NOAH Oficial) for a given wallet */
+/** Fetch Templates from backend (GOSAC / NOAH / Making Oficial, etc.) para a carteira */
 export const getTemplatesByWallet = async (walletId: number | string): Promise<any[]> => {
   if (!walletId) return [];
-  try {
-    const data = await wpAjax('pc_get_templates_by_wallet', { wallet_id: String(walletId) });
-    return Array.isArray(data) ? data : [];
-  } catch (err) {
-    console.error('🔴 [Templates] getTemplatesByWallet error:', err);
-    return [];
-  }
+  const data = await wpAjax('pc_get_templates_by_wallet', { wallet_id: String(walletId) });
+  return Array.isArray(data) ? data : [];
 };

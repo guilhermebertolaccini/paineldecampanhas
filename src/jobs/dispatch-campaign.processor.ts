@@ -25,6 +25,7 @@ export class DispatchCampaignProcessor extends WorkerHost {
     @InjectQueue(queueNames.NOAH_OFICIAL_SEND) private readonly noahOficialQueue: Queue,
     @InjectQueue(queueNames.ROBBU_OFICIAL_SEND) private readonly robbuOficialQueue: Queue,
     @InjectQueue(queueNames.TECHIA_SEND) private readonly techiaQueue: Queue,
+    @InjectQueue(queueNames.MAKING_OFICIAL_SEND) private readonly makingOficialQueue: Queue,
   ) {
     super();
   }
@@ -44,11 +45,12 @@ export class DispatchCampaignProcessor extends WorkerHost {
 
       // 3. Buscar credenciais
       // GOSAC_OFICIAL: usa carteira_nome quando disponível - lookup por nome (ex: "BV BOM PAGADOR") identifica a carteira exata
-      // NOAH_OFICIAL, ROBBU_OFICIAL: usam id_carteira
+      // NOAH_OFICIAL, ROBBU_OFICIAL, MAKING_OFICIAL: usam id_carteira
       const useIdCarteira =
         provider === 'NOAH_OFICIAL' ||
         provider === 'ROBBU_OFICIAL' ||
-        provider === 'GOSAC_OFICIAL';
+        provider === 'GOSAC_OFICIAL' ||
+        provider === 'MAKING_OFICIAL';
       const envId =
         provider === 'GOSAC_OFICIAL' && data[0]?.carteira_nome
           ? data[0].carteira_nome
@@ -214,6 +216,7 @@ export class DispatchCampaignProcessor extends WorkerHost {
       'NOAH_OFICIAL': this.noahOficialQueue,
       'ROBBU_OFICIAL': this.robbuOficialQueue,
       'TECHIA': this.techiaQueue,
+      'MAKING_OFICIAL': this.makingOficialQueue,
     };
 
     const queue = queueMap[provider];

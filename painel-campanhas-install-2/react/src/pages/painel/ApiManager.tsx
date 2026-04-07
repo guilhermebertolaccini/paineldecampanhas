@@ -286,6 +286,7 @@ const PROVIDERS = [
   { value: 'gosac_oficial', label: 'Gosac Oficial' },
   { value: 'noah', label: 'Noah' },
   { value: 'noah_oficial', label: 'Noah Oficial' },
+  { value: 'making_oficial', label: 'Making Oficial (WhatsApp Oficial)' },
   { value: 'salesforce', label: 'Salesforce' },
 ];
 
@@ -505,6 +506,9 @@ export default function ApiManager() {
     operacao: "",
     automation_id: "",
     chave_api: "",
+    making_cost_center_id: "",
+    making_team_id: "",
+    making_phone_number_id: "",
   });
 
   // Buscar configuração do microserviço
@@ -784,6 +788,38 @@ export default function ApiManager() {
         return;
       }
       credentialData.chave_api = dynamicCredential.chave_api;
+    } else if (dynamicCredential.provider === 'making_oficial') {
+      if (!dynamicCredential.token?.trim()) {
+        toast({
+          title: "Campos obrigatórios",
+          description: "Token JWT da Making é obrigatório",
+          variant: "destructive",
+        });
+        return;
+      }
+      const cc = parseInt(String(dynamicCredential.making_cost_center_id || "").trim(), 10);
+      const pn = parseInt(String(dynamicCredential.making_phone_number_id || "").trim(), 10);
+      const teamRaw = String(dynamicCredential.making_team_id || "").trim();
+      const teamParts = teamRaw.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+      const teamIds = teamParts
+        .map((s) => parseInt(s, 10))
+        .filter((n) => !Number.isNaN(n) && n > 0);
+      if (!cc || cc <= 0 || !pn || pn <= 0 || teamIds.length === 0) {
+        toast({
+          title: "Campos obrigatórios",
+          description: "Informe cost_center_id, phone_number_id e ao menos um team_id válidos (números).",
+          variant: "destructive",
+        });
+        return;
+      }
+      credentialData.token = dynamicCredential.token.trim();
+      credentialData.cost_center_id = cc;
+      credentialData.phone_number_id = pn;
+      credentialData.team_id = teamIds.length === 1 ? teamIds[0] : teamIds;
+      const optUrl = dynamicCredential.url?.trim();
+      if (optUrl) {
+        credentialData.url = optUrl;
+      }
     }
 
     createCredential({
@@ -808,6 +844,9 @@ export default function ApiManager() {
           operacao: "",
           automation_id: "",
           chave_api: "",
+          making_cost_center_id: "",
+          making_team_id: "",
+          making_phone_number_id: "",
         });
       })
       .catch((error: any) => {
@@ -1808,6 +1847,87 @@ export default function ApiManager() {
                           </p>
                         </div>
                       )}
+                    </>
+                  )}
+
+                  {dynamicCredential.provider === 'making_oficial' && (
+                    <>
+                      <div className="space-y-2">
+                        <Label>Token JWT *</Label>
+                        <div className="relative">
+                          <Input
+                            type={visibleKeys.includes("making_jwt") ? "text" : "password"}
+                            value={dynamicCredential.token}
+                            onChange={(e) =>
+                              setDynamicCredential({ ...dynamicCredential, token: e.target.value })
+                            }
+                            className="pr-10"
+                            placeholder="Bearer é adicionado automaticamente no disparo"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => toggleKeyVisibility("making_jwt")}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                          >
+                            {visibleKeys.includes("making_jwt") ? (
+                              <EyeOff className="h-4 w-4" />
+                            ) : (
+                              <Eye className="h-4 w-4" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Cost center ID *</Label>
+                        <Input
+                          inputMode="numeric"
+                          value={dynamicCredential.making_cost_center_id}
+                          onChange={(e) =>
+                            setDynamicCredential({
+                              ...dynamicCredential,
+                              making_cost_center_id: e.target.value,
+                            })
+                          }
+                          placeholder="Ex: 1486"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Team ID(s) *</Label>
+                        <Input
+                          value={dynamicCredential.making_team_id}
+                          onChange={(e) =>
+                            setDynamicCredential({ ...dynamicCredential, making_team_id: e.target.value })
+                          }
+                          placeholder="Um número ou vários separados por vírgula (ex: 1 ou 1, 2)"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Phone number ID *</Label>
+                        <Input
+                          inputMode="numeric"
+                          value={dynamicCredential.making_phone_number_id}
+                          onChange={(e) =>
+                            setDynamicCredential({
+                              ...dynamicCredential,
+                              making_phone_number_id: e.target.value,
+                            })
+                          }
+                          placeholder="Ex: 1"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>URL create_api_oficial (opcional)</Label>
+                        <Input
+                          value={dynamicCredential.url}
+                          onChange={(e) =>
+                            setDynamicCredential({ ...dynamicCredential, url: e.target.value })
+                          }
+                          placeholder="https://campanhas.makingpublicidade.com.br/campaign/create_api_oficial"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Deixe em branco para usar o endpoint padrão da Making.
+                        </p>
+                      </div>
                     </>
                   )}
 

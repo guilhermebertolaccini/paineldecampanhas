@@ -792,6 +792,16 @@ class Painel_Campanhas
                 $variables_row['noah_channel_id'] = $noah_channel_rest;
                 $variables_row['broker_code'] = $noah_channel_rest;
             }
+            if (is_array($msg_decoded) && ($msg_decoded['template_source'] ?? '') === 'making_oficial') {
+                $mk_vars = $msg_decoded['variables'] ?? [];
+                if (is_array($mk_vars)) {
+                    foreach ($mk_vars as $mk_k => $mk_v) {
+                        if (is_string($mk_k) && $mk_k !== '') {
+                            $variables_row[$mk_k] = (string) $mk_v;
+                        }
+                    }
+                }
+            }
 
             $formatted_data[] = [
                 'id' => isset($row['id']) ? (string) $row['id'] : '',
@@ -3531,7 +3541,7 @@ class Painel_Campanhas
                 || $is_techia_discador
                 || ($template_source === 'local' && $template_id > 0)
                 || (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code))
-                || (($template_source === 'gosac_oficial' || $template_source === 'noah_oficial' || $template_source === 'robbu_oficial') && !empty($template_code));
+                || (($template_source === 'gosac_oficial' || $template_source === 'noah_oficial' || $template_source === 'robbu_oficial' || $template_source === 'making_oficial') && !empty($template_code));
 
             $temp_id_required = !$baits_only_test;
             $table_required = !$sem_consulta;
@@ -3557,6 +3567,8 @@ class Painel_Campanhas
                 $message_content = 'Template NOAH Oficial: ' . $template_code;
             } elseif ($template_source === 'robbu_oficial') {
                 $message_content = 'Template Robbu Oficial: ' . $template_code;
+            } elseif ($template_source === 'making_oficial') {
+                $message_content = 'Template Making Oficial: ' . $template_code;
             } else {
                 // Templates da Ótima usam template_code
                 $message_content = 'Template da Ótima: ' . $template_code;
@@ -3695,7 +3707,7 @@ class Painel_Campanhas
                     }
 
                     // Para templates Ótima/GOSAC/NOAH/Salesforce/TECHIA, não substitui placeholders (será resolvido no microserviço / SFMC)
-                    if (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'robbu_oficial', 'techia_discador']) || $only_sf) {
+                    if (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'robbu_oficial', 'making_oficial', 'techia_discador']) || $only_sf) {
                         $mensagem_final = $message_content;
                     } else {
                         $mensagem_final = $this->replace_placeholders($message_content, $record);
@@ -3805,6 +3817,17 @@ class Painel_Campanhas
                             'original_message' => $mensagem_final,
                             'variables_map' => $variables_map
                         ]);
+                    } elseif ($template_source === 'making_oficial' && !empty($template_code)) {
+                        $making_vars = $this->resolve_noah_variables_row_for_csv($record, $variables_map);
+                        $mensagem_para_armazenar = json_encode([
+                            'template_source' => 'making_oficial',
+                            'send_meta_template' => $template_code,
+                            'template_code' => $template_code,
+                            'nome_campanha' => $nome_campanha_row,
+                            'variables_map' => $variables_map,
+                            'variables' => $making_vars,
+                            'original_message' => $mensagem_final,
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                     } elseif ($only_sf) {
                         $mensagem_para_armazenar = json_encode([
                             'template_source' => 'salesforce',
@@ -4044,6 +4067,9 @@ class Painel_Campanhas
         if ($p === 'ROBBU_OFICIAL' || $ts === 'robbu_oficial') {
             return 'B';
         }
+        if ($p === 'MAKING_OFICIAL' || $ts === 'making_oficial') {
+            return 'M';
+        }
         if ($p === 'CDA_RCS' || $ts === 'cda_rcs') {
             return 'R';
         }
@@ -4198,7 +4224,7 @@ class Painel_Campanhas
             // Discador TECHIA: sem post de template local nem template_code
         } elseif ($template_source === 'local' && $template_id <= 0) {
             wp_send_json_error('Template_id inválido para template local.');
-        } elseif (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'noah', 'robbu_oficial'], true) && $template_code === '') {
+        } elseif (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'noah', 'robbu_oficial', 'making_oficial'], true) && $template_code === '') {
             wp_send_json_error('Informe o template (código/nome) para este fornecedor.');
         }
 
@@ -4541,8 +4567,15 @@ class Painel_Campanhas
                 'template_name' => $template_code,
                 'channel' => 3,
             ];
+        } elseif ($template_source === 'making_oficial' && !empty($template_code)) {
+            $message_content = 'Template Making Oficial: ' . $template_code;
+            $template_info = [
+                'template_code' => $template_code,
+                'source' => 'making_oficial',
+                'send_meta_template' => $template_code,
+            ];
         } else {
-            wp_send_json_error('Template inválido. Informe template_id para templates locais ou template_code para templates externos (Ótima, GOSAC Oficial, NOAH Oficial).');
+            wp_send_json_error('Template inválido. Informe template_id para templates locais ou template_code para templates externos (Ótima, GOSAC Oficial, NOAH Oficial, Making Oficial).');
         }
 
         // Colunas extras do mapeamento de variáveis (Ótima/NOAH/Robbu etc.) — evita SELECT * em bases enormes
@@ -4827,6 +4860,18 @@ class Painel_Campanhas
                         'components' => $gosac_components,
                         'original_message' => $mensagem_final,
                     ]);
+                } elseif ($template_source === 'making_oficial' && !empty($template_code)) {
+                    $making_vars = $this->resolve_noah_variables_row_for_csv($record, is_array($variables_map) ? $variables_map : []);
+                    $send_meta = (string) ($template_info['send_meta_template'] ?? $template_code);
+                    $mensagem_para_armazenar = json_encode([
+                        'template_source' => 'making_oficial',
+                        'send_meta_template' => $send_meta,
+                        'template_code' => $send_meta,
+                        'nome_campanha' => $nome_campanha_camp,
+                        'variables_map' => $variables_map,
+                        'variables' => $making_vars,
+                        'original_message' => $mensagem_final,
+                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 } elseif ($only_salesforce) {
                     $mensagem_para_armazenar = json_encode([
                         'template_source' => 'salesforce',
@@ -6966,6 +7011,9 @@ class Painel_Campanhas
                 $template_info_recurring['channel'] = intval($template_meta['robbu_channel'] ?? 3);
                 $template_info_recurring['template_name'] = $template_code_top;
             }
+            if ($template_source_row === 'making_oficial') {
+                $template_info_recurring['send_meta_template'] = $template_code_top;
+            }
 
             // 6. Distribui registros entre provedores
             $distribution = $this->distribute_records_for_recurring($records, $providers_config);
@@ -7152,6 +7200,19 @@ class Painel_Campanhas
                             'components' => $gosac_components,
                             'original_message' => $mensagem_final,
                         ]);
+                    } elseif ($template_source === 'making_oficial' && !empty($template_code)) {
+                        $making_vars = $this->resolve_noah_variables_row_for_csv($record, is_array($variables_map) ? $variables_map : []);
+                        $send_meta = (string) ($template_info_recurring['send_meta_template'] ?? $template_code);
+                        $nome_rec = sanitize_text_field($campaign['nome_campanha'] ?? '');
+                        $mensagem_para_armazenar = json_encode([
+                            'template_source' => 'making_oficial',
+                            'send_meta_template' => $send_meta,
+                            'template_code' => $send_meta,
+                            'nome_campanha' => $nome_rec,
+                            'variables_map' => $variables_map,
+                            'variables' => $making_vars,
+                            'original_message' => $mensagem_final,
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                     } elseif ($template_source === 'techia_discador') {
                         $techia_vars = (!empty($variables_map))
                             ? $this->resolve_techia_variables_for_row($record, $variables_map)
@@ -12135,6 +12196,70 @@ class Painel_Campanhas
         ]);
     }
 
+    /**
+     * Lista modelos Making (WhatsApp Oficial) — GET /models/list_api.
+     * Credenciais: JWT em acm_provider_credentials[making_oficial][id_ambient].token
+     *
+     * @param string $bearer_raw Token (com ou sem prefixo Bearer)
+     * @return array|WP_Error Lista de itens para o painel ou erro
+     */
+    private function fetch_making_oficial_models_list($bearer_raw)
+    {
+        $raw = trim((string) $bearer_raw);
+        if ($raw === '') {
+            return new WP_Error('making_token_empty', 'Token ausente');
+        }
+        $auth = (stripos($raw, 'Bearer ') === 0) ? $raw : ('Bearer ' . $raw);
+        $url = 'https://campanhas.makingpublicidade.com.br/models/list_api';
+        $response = wp_remote_get($url, [
+            'headers' => [
+                'Authorization' => $auth,
+                'Accept' => 'application/json',
+            ],
+            'timeout' => 20,
+            'sslverify' => true,
+        ]);
+        if (is_wp_error($response)) {
+            return $response;
+        }
+        $code = (int) wp_remote_retrieve_response_code($response);
+        if ($code === 401) {
+            return new WP_Error('making_unauthorized', 'Token inválido');
+        }
+        if ($code < 200 || $code >= 300) {
+            return new WP_Error('making_http', 'HTTP ' . $code);
+        }
+        $body = wp_remote_retrieve_body($response);
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded) || empty($decoded['success']) || !isset($decoded['models']) || !is_array($decoded['models'])) {
+            error_log('🔴 [Making Oficial] list_api resposta inesperada: ' . substr((string) $body, 0, 400));
+
+            return new WP_Error('making_parse', 'Resposta inválida da API Making');
+        }
+        $out = [];
+        foreach ($decoded['models'] as $model) {
+            if (!is_array($model)) {
+                continue;
+            }
+            $mid = isset($model['id']) ? sanitize_text_field((string) $model['id']) : '';
+            $mname = isset($model['name']) ? trim(sanitize_text_field((string) $model['name'])) : '';
+            if ($mname === '') {
+                continue;
+            }
+            $slug = isset($model['slug']) ? trim(sanitize_text_field((string) $model['slug'])) : '';
+            $send_meta = $slug !== '' ? $slug : $mname;
+            $out[] = [
+                'id' => ($mid !== '' ? $mid : $mname),
+                'name' => $mname,
+                'send_meta_template' => $send_meta,
+                'templateName' => $mname,
+                'provider' => 'Making Oficial',
+            ];
+        }
+
+        return $out;
+    }
+
     public function handle_get_templates_by_wallet()
     {
         if (!current_user_can('manage_options')) {
@@ -12289,8 +12414,30 @@ class Painel_Campanhas
                         error_log('🔴 [Noah] getTemplatesByWallet falhou: ' . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
                     }
                 }
-                // robbu_oficial: templates via pc_get_robbu_oficial_templates (não dependem da carteira)
+            } elseif ($provider === 'making_oficial') {
+                $tok = trim((string) ($data['token'] ?? ''));
+                if ($tok === '') {
+                    continue;
+                }
+                $mk_list = $this->fetch_making_oficial_models_list($tok);
+                if (is_wp_error($mk_list)) {
+                    $ec = $mk_list->get_error_code();
+                    if ($ec === 'http_request_failed' || $ec === 'making_unauthorized' || $ec === 'making_http') {
+                        wp_send_json_error(['message' => 'Token da Making inválido ou expirado. Verifique o API Manager.']);
+                        return;
+                    }
+                    error_log('🔴 [Making Oficial] getTemplatesByWallet: ' . $mk_list->get_error_message());
+                    continue;
+                }
+                foreach ($mk_list as $tpl) {
+                    if (!is_array($tpl)) {
+                        continue;
+                    }
+                    $tpl['id_ambient'] = $id_ambient;
+                    $all_templates[] = $tpl;
+                }
             }
+            // robbu_oficial: templates via pc_get_robbu_oficial_templates (não dependem da carteira)
         }
 
         wp_send_json_success($all_templates);

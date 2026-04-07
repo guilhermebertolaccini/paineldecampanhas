@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Database, Loader2, Send } from "lucide-react";
 import {
@@ -55,6 +55,7 @@ const PROVIDERS_LIST = [
   { id: "NOAH", name: "Noah" },
   { id: "NOAH_OFICIAL", name: "Noah Oficial" },
   { id: "ROBBU_OFICIAL", name: "Robbu Oficial" },
+  { id: "MAKING_OFICIAL", name: "Making Oficial" },
   { id: "SALESFORCE", name: "Salesforce" },
   { id: "TECH_IA", name: "TECHIA (Discador)" },
 ];
@@ -69,6 +70,7 @@ const PROVIDER_TO_SOURCE_MAP: Record<string, string[]> = {
   NOAH: [],
   NOAH_OFICIAL: ["noah_oficial"],
   ROBBU_OFICIAL: ["robbu_oficial"],
+  MAKING_OFICIAL: ["making_oficial"],
   TECH_IA: [],
   GOSAC: [],
 };
@@ -125,11 +127,30 @@ export function RecurringCampaignCreateForm() {
   });
 
   const { data: localTemplatesData = [] } = useQuery({ queryKey: ["messages"], queryFn: getMessages });
-  const { data: externalTemplatesData = [] } = useQuery({
+  const {
+    data: externalTemplatesData = [],
+    isError: externalTemplatesIsError,
+    error: externalTemplatesErr,
+  } = useQuery({
     queryKey: ["external-templates-recurring", carteira],
     queryFn: () => getTemplatesByWallet(carteira),
     enabled: !!carteira,
   });
+
+  const externalTemplatesErrorShownRef = useRef<unknown>(null);
+  useEffect(() => {
+    if (!externalTemplatesIsError || !externalTemplatesErr) {
+      externalTemplatesErrorShownRef.current = null;
+      return;
+    }
+    if (externalTemplatesErrorShownRef.current === externalTemplatesErr) return;
+    externalTemplatesErrorShownRef.current = externalTemplatesErr;
+    const msg =
+      externalTemplatesErr instanceof Error
+        ? externalTemplatesErr.message
+        : "Não foi possível carregar templates desta carteira.";
+    toast({ variant: "destructive", title: "Templates (carteira)", description: msg });
+  }, [externalTemplatesIsError, externalTemplatesErr, toast]);
   const { data: gosacTemplatesData = [] } = useQuery({
     queryKey: ["gosac-oficial-templates-rec"],
     queryFn: getGosacOficialTemplates,
@@ -217,15 +238,30 @@ export function RecurringCampaignCreateForm() {
       const isGosac = t.provider === "Gosac Oficial";
       const isNoah = t.provider === "Noah Oficial";
       const isRobbu = t.provider === "Robbu Oficial";
-      const source = isGosac ? "gosac_oficial" : isNoah ? "noah_oficial" : isRobbu ? "robbu_oficial" : "external";
+      const isMaking = t.provider === "Making Oficial";
+      const source = isGosac
+        ? "gosac_oficial"
+        : isNoah
+          ? "noah_oficial"
+          : isRobbu
+            ? "robbu_oficial"
+            : isMaking
+              ? "making_oficial"
+              : "external";
+      const makingSendMeta =
+        typeof t.send_meta_template === "string" && t.send_meta_template.trim() !== ""
+          ? t.send_meta_template.trim()
+          : "";
       return {
         id: `${t.provider}_${t.id}_${t.id_ambient}`,
         name: (t.name as string) || String(t.id),
         source,
-        templateCode: (t.templateName as string) || (t.name as string) || "",
+        templateCode: makingSendMeta || (t.templateName as string) || (t.name as string) || "",
+        sendMetaTemplate: makingSendMeta,
         walletId: t.id_ambient,
         channelId: t.channelId,
         templateId: t.templateId,
+        templateName: t.templateName || t.name,
         language: t.language || "pt_BR",
         content: t.content || "",
         components: t.components,
@@ -458,7 +494,11 @@ export function RecurringCampaignCreateForm() {
     const sel = templates.find((t: { id?: string }) => String(t.id) === String(templateId)) as Record<string, unknown> | undefined;
     if (!sel) return;
     setSelectedTemplateObj(sel);
-    setTemplateCode(String(sel.templateCode || ""));
+    const sendMeta =
+      typeof sel.sendMetaTemplate === "string" && sel.sendMetaTemplate.trim() !== ""
+        ? sel.sendMetaTemplate.trim()
+        : "";
+    setTemplateCode(sendMeta || String(sel.templateCode || ""));
     setTemplateSource(String(sel.source || ""));
     setBrokerCode(String(sel.brokerCode || ""));
     setCustomerCode(String(sel.customerCode || ""));

@@ -75,6 +75,7 @@ const providers = [
   { id: "GOSAC_OFICIAL", name: "Gosac Oficial", available: true },
   { id: "NOAH", name: "Noah", available: true },
   { id: "NOAH_OFICIAL", name: "Noah Oficial", available: true },
+  { id: "MAKING_OFICIAL", name: "Making Oficial", available: true },
   { id: "ROBBU_OFICIAL", name: "Robbu Oficial", available: true },
   { id: "SALESFORCE", name: "Salesforce", available: true },
   { id: "TECH_IA", name: "TECHIA (Discador)", available: true },
@@ -213,11 +214,31 @@ export default function NovaCampanha() {
   });
 
   // Buscar templates externos por carteira (GOSAC, NOAH)
-  const { data: externalTemplatesData = [], isLoading: externalTemplatesLoading } = useQuery({
+  const {
+    data: externalTemplatesData = [],
+    isLoading: externalTemplatesLoading,
+    isError: externalTemplatesIsError,
+    error: externalTemplatesErr,
+  } = useQuery({
     queryKey: ['external-templates', formData.carteira],
     queryFn: () => getTemplatesByWallet(formData.carteira),
     enabled: !!formData.carteira,
   });
+
+  const externalTemplatesErrorShownRef = useRef<unknown>(null);
+  useEffect(() => {
+    if (!externalTemplatesIsError || !externalTemplatesErr) {
+      externalTemplatesErrorShownRef.current = null;
+      return;
+    }
+    if (externalTemplatesErrorShownRef.current === externalTemplatesErr) return;
+    externalTemplatesErrorShownRef.current = externalTemplatesErr;
+    const msg =
+      externalTemplatesErr instanceof Error
+        ? externalTemplatesErr.message
+        : 'Não foi possível carregar templates desta carteira.';
+    toast({ variant: 'destructive', title: 'Templates (carteira)', description: msg });
+  }, [externalTemplatesIsError, externalTemplatesErr, toast]);
 
   // Templates GOSAC Oficial (estáticos)
   const { data: gosacTemplatesData = [], isLoading: gosacTemplatesLoading } = useQuery({
@@ -454,13 +475,27 @@ export default function NovaCampanha() {
       const isGosac = t.provider === 'Gosac Oficial';
       const isNoah = t.provider === 'Noah Oficial';
       const isRobbu = t.provider === 'Robbu Oficial';
-      const source = isGosac ? 'gosac_oficial' : (isNoah ? 'noah_oficial' : (isRobbu ? 'robbu_oficial' : (t.source || 'external')));
+      const isMaking = t.provider === 'Making Oficial';
+      const source = isGosac
+        ? 'gosac_oficial'
+        : isNoah
+          ? 'noah_oficial'
+          : isRobbu
+            ? 'robbu_oficial'
+            : isMaking
+              ? 'making_oficial'
+              : (t.source || 'external');
+      const makingSendMeta =
+        typeof t.send_meta_template === 'string' && t.send_meta_template.trim() !== ''
+          ? t.send_meta_template.trim()
+          : '';
       return {
         id: `${t.provider}_${t.id}_${t.id_ambient}`,
         name: t.name || t.id || '',
         source,
         provider: t.provider || null,
-        templateCode: t.templateName || t.name || '',
+        templateCode: makingSendMeta || t.templateName || t.name || '',
+        sendMetaTemplate: makingSendMeta,
         walletId: t.id_ambient,
         walletName: t.wallet_name || `${t.provider} (${t.id_ambient})`,
         imageUrl: t.image_url,
@@ -556,6 +591,7 @@ export default function NovaCampanha() {
     'NOAH': [],
     'NOAH_OFICIAL': ['noah_oficial'],
     'ROBBU_OFICIAL': ['robbu_oficial'],
+    'MAKING_OFICIAL': ['making_oficial'],
     'TECH_IA': [],
   };
 
@@ -944,7 +980,8 @@ export default function NovaCampanha() {
       (formData.templateSource === "otima_wpp" ||
         formData.templateSource === "noah_oficial" ||
         formData.templateSource === "noah" ||
-        formData.templateSource === "gosac_oficial") &&
+        formData.templateSource === "gosac_oficial" ||
+        formData.templateSource === "making_oficial") &&
       Object.keys(templateVariables).length > 0
     ) {
       console.log(
@@ -1094,7 +1131,12 @@ export default function NovaCampanha() {
         if (!formData.template) return false;
         const isOtima = formData.templateSource === 'otima_rcs' || formData.templateSource === 'otima_wpp';
         if (isOtima && !formData.brokerCode) return false;
-        const isExternalProvider = isOtima || formData.templateSource === 'gosac_oficial' || formData.templateSource === 'noah_oficial' || formData.templateSource === 'robbu_oficial';
+        const isExternalProvider =
+          isOtima ||
+          formData.templateSource === 'gosac_oficial' ||
+          formData.templateSource === 'noah_oficial' ||
+          formData.templateSource === 'robbu_oficial' ||
+          formData.templateSource === 'making_oficial';
         // GOSAC/NOAH/Robbu: templateCode (nome do template) é suficiente; message pode vir vazio da API
         if (isExternalProvider) return boolean(formData.message.trim() || formData.templateCode);
         // Local templates (incl. Salesforce custom): accept if message loaded OR template selected
@@ -1531,7 +1573,10 @@ export default function NovaCampanha() {
                                   setFormData({
                                     ...formData,
                                     template: v,
-                                    templateCode: selectedTemplate?.templateCode || '',
+                                    templateCode:
+                                      (selectedTemplate?.sendMetaTemplate as string | undefined)?.trim() ||
+                                      selectedTemplate?.templateCode ||
+                                      '',
                                     templateSource: selectedTemplate?.source || '',
                                     brokerCode: selectedTemplate?.brokerCode || '',
                                     customerCode: selectedTemplate?.customerCode || '',

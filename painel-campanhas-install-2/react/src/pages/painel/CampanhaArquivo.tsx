@@ -68,6 +68,7 @@ const providers = [
   { id: "NOAH", name: "NOAH" },
   { id: "NOAH_OFICIAL", name: "Noah Oficial" },
   { id: "ROBBU_OFICIAL", name: "Robbu Oficial" },
+  { id: "MAKING_OFICIAL", name: "Making Oficial" },
   { id: "TECH_IA", name: "TECHIA (Discador)" },
   { id: "RCS", name: "RCS" },
   { id: "SALESFORCE", name: "Salesforce" },
@@ -84,6 +85,7 @@ const PROVIDER_TO_SOURCE_MAP: Record<string, string[]> = {
   NOAH: [],
   NOAH_OFICIAL: ["noah_oficial"],
   ROBBU_OFICIAL: ["robbu_oficial"],
+  MAKING_OFICIAL: ["making_oficial"],
   TECH_IA: [],
   RCS: [],
 };
@@ -193,12 +195,34 @@ export default function CampanhaArquivo() {
     staleTime: 5 * 60 * 1000,
   });
 
-  // Buscar templates externos (GOSAC Oficial + NOAH Oficial) por carteira
-  const { data: externalTemplatesData = [], isLoading: externalTemplatesLoading } = useQuery({
+  // Buscar templates externos (GOSAC / NOAH / Making Oficial) por carteira
+  const {
+    data: externalTemplatesData = [],
+    isLoading: externalTemplatesLoading,
+    isError: externalTemplatesIsError,
+    error: externalTemplatesErr,
+  } = useQuery({
     queryKey: ['external-templates', carteira],
     queryFn: () => getTemplatesByWallet(carteira),
-    enabled: !!carteira && (provider === "NOAH_OFICIAL" || provider === "GOSAC_OFICIAL"),
+    enabled:
+      !!carteira &&
+      (provider === "NOAH_OFICIAL" || provider === "GOSAC_OFICIAL" || provider === "MAKING_OFICIAL"),
   });
+
+  const externalTemplatesErrorShownRef = useRef<unknown>(null);
+  useEffect(() => {
+    if (!externalTemplatesIsError || !externalTemplatesErr) {
+      externalTemplatesErrorShownRef.current = null;
+      return;
+    }
+    if (externalTemplatesErrorShownRef.current === externalTemplatesErr) return;
+    externalTemplatesErrorShownRef.current = externalTemplatesErr;
+    const msg =
+      externalTemplatesErr instanceof Error
+        ? externalTemplatesErr.message
+        : 'Não foi possível carregar templates desta carteira.';
+    toast({ variant: 'destructive', title: 'Templates (carteira)', description: msg });
+  }, [externalTemplatesIsError, externalTemplatesErr, toast]);
 
   // Templates GOSAC Oficial (estáticos)
   const { data: gosacTemplatesData = [], isLoading: gosacTemplatesLoading } = useQuery({
@@ -283,18 +307,26 @@ export default function CampanhaArquivo() {
           const isGosac = t.provider === 'Gosac Oficial';
           const isNoah = t.provider === 'Noah Oficial';
           const isRobbu = t.provider === 'Robbu Oficial';
+          const isMaking = t.provider === 'Making Oficial';
           const source = isGosac
             ? 'gosac_oficial'
             : isNoah
               ? 'noah_oficial'
               : isRobbu
                 ? 'robbu_oficial'
-                : t.source || 'external';
+                : isMaking
+                  ? 'making_oficial'
+                  : t.source || 'external';
+          const makingSendMeta =
+            typeof t.send_meta_template === 'string' && t.send_meta_template.trim() !== ''
+              ? t.send_meta_template.trim()
+              : '';
           return {
             id: `${t.provider}_${t.id}_${t.id_ambient}`,
             name: t.name || t.id || '',
             source,
-            templateCode: t.templateName || t.name || '',
+            templateCode: makingSendMeta || t.templateName || t.name || '',
+            sendMetaTemplate: makingSendMeta,
             walletId: t.id_ambient,
             walletName: t.wallet_name || `${t.provider} (${t.id_ambient})`,
             channelId: t.channelId,
@@ -1396,6 +1428,7 @@ export default function CampanhaArquivo() {
                                       {isNoah && "NOAH Oficial"}
                                       {isGosac && "GOSAC Oficial"}
                                       {t.source === "robbu_oficial" && "Robbu Oficial"}
+                                      {t.source === "making_oficial" && "Making Oficial"}
                                       {t.source === "local" && "Local"}
                                     </span>
                                   </div>

@@ -10,6 +10,7 @@ import { GosacOficialModule } from './gosac-oficial/gosac-oficial.module';
 import { NoahOficialModule } from './noah-oficial/noah-oficial.module';
 import { RobbOficialModule } from './robbu-oficial/robbu-oficial.module';
 import { TechiaModule } from './techia/techia.module';
+import { MakingOficialModule } from './making-oficial/making-oficial.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { TechiaModule } from './techia/techia.module';
     NoahOficialModule,
     RobbOficialModule,
     TechiaModule,
+    MakingOficialModule,
   ],
   exports: [
     CdaModule,
@@ -37,6 +39,7 @@ import { TechiaModule } from './techia/techia.module';
     NoahOficialModule,
     RobbOficialModule,
     TechiaModule,
+    MakingOficialModule,
   ],
 })
 export class ProvidersModule { }

@@ -25,6 +25,8 @@ export const queueNames = {
   ROBBU_OFICIAL_SEND: 'robbu-oficial-send',
   /** Exportação / discador TECHIA (mailing em lote). */
   TECHIA_SEND: 'techia-send',
+  /** Making — WhatsApp Oficial (API `create_api_oficial`). */
+  MAKING_OFICIAL_SEND: 'making-oficial-send',
 } as const;
 
 export type QueueName = typeof queueNames[keyof typeof queueNames];

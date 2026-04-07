@@ -246,6 +246,8 @@ export class CampaignsService {
       'B': 'ROBBU_OFICIAL',
       /** Discador / mailing TECHIA — `agendamento_id` deve começar com T no WordPress. */
       'T': 'TECHIA',
+      /** Making — WhatsApp Oficial; `agendamento_id` com prefixo M no WordPress. */
+      'M': 'MAKING_OFICIAL',
     };
 
     const provider = providerMap[prefix];
@@ -364,6 +366,7 @@ export class CampaignsService {
       case 'GOSAC_OFICIAL':
       case 'NOAH_OFICIAL':
       case 'ROBBU_OFICIAL':
+      case 'MAKING_OFICIAL':
         // Já recebem no formato correto (ROBBU: company, username, password, invenio_private_token)
         return credentials;
 
