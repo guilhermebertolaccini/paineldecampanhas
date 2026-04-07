@@ -19,8 +19,7 @@ if (!defined('ABSPATH')) {
 
 /** Token fixo para GET /campaigns/v1/bases/{base}/stats (scripts externos). Sobrescreva em wp-config.php antes do plugin carregar. */
 if (!defined('PC_AUDIT_API_TOKEN')) {
-    define('PC_AUDIT_API_TOKEN', 'ay+mBF69qqr37+e+OG82fHNvrdLulIFj1h/KyfUa0ddMci1znBYZY9dwr+1BSySO
-Yar1cI0un/bGnWjDSNC6vw==');
+    define('PC_AUDIT_API_TOKEN', 'ABC123');
 }
 
 require_once __DIR__ . '/includes/class-pc-evolution-wa-validator.php';
