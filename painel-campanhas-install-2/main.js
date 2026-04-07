@@ -61,27 +61,18 @@
         initLogout: function() {
             $('#logoutBtn').on('click', function(e) {
                 e.preventDefault();
-                
+
                 if (!confirm('Tem certeza que deseja sair?')) {
                     return;
                 }
 
-                $.ajax({
-                    url: pcData.ajaxUrl,
-                    type: 'POST',
-                    data: {
-                        action: 'pc_logout',
-                        nonce: pcData.nonce
-                    },
-                    success: function(response) {
-                        if (response.success) {
-                            window.location.href = response.data.redirect;
-                        }
-                    },
-                    error: function() {
-                        alert('Erro ao fazer logout. Tente novamente.');
-                    }
-                });
+                var url = (typeof pcAjax !== 'undefined' && pcAjax.logoutUrl) ? pcAjax.logoutUrl
+                    : (typeof pcData !== 'undefined' && pcData.logoutUrl) ? pcData.logoutUrl : '';
+                if (url) {
+                    window.location.href = url;
+                } else {
+                    window.location.href = (typeof pcData !== 'undefined' && pcData.homeUrl) ? pcData.homeUrl : '/';
+                }
             });
         },
 

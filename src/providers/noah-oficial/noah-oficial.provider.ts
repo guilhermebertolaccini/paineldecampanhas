@@ -114,6 +114,7 @@ export class NoahOficialProvider extends BaseProvider {
     /** Nome do contato (painel NOAH); omitido se vazio. */
     name?: string;
   }): Record<string, unknown> {
+    // `name` vem só de `params` (por chamada); não há variável de instância / fechamento sobre o loop de campanha.
     const body: Record<string, unknown> = {
       number: params.number,
       channelId: params.channelId,
@@ -836,6 +837,14 @@ export class NoahOficialProvider extends BaseProvider {
       ticketStatus: 'closed',
     };
 
+    const textPayloadName =
+      payload.contactName != null && String(payload.contactName).trim() !== ''
+        ? String(payload.contactName).trim()
+        : 'N/A';
+    this.logger.debug(
+      `[NOAH AUDIT] Disparando texto livre para ${number} | contactName no payload: ${textPayloadName}`,
+    );
+
     await this.executeWithRetry(
       async () => {
         const result = await firstValueFrom(
@@ -988,6 +997,13 @@ export class NoahOficialProvider extends BaseProvider {
       name: contactDisplayName,
     });
 
+    const auditName =
+      requestBody.name != null && String(requestBody.name).trim() !== ''
+        ? String(requestBody.name).trim()
+        : 'N/A';
+    this.logger.debug(
+      `[NOAH AUDIT] Disparando para ${number} | Nome no payload: ${auditName}`,
+    );
     this.logger.debug(
       `NOAH send-template → ${url} | channelId=${channelIdNum} | externalKey=${externalKey} | number=${number}`,
     );

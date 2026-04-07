@@ -5,8 +5,8 @@
 
 if (!defined('ABSPATH')) exit;
 
-if (!current_user_can('manage_options')) {
-    wp_die('Acesso negado. Apenas administradores podem acessar esta página.');
+if (!current_user_can('read')) {
+    wp_die('Acesso negado. É necessário estar logado com permissão para acessar o painel.');
 }
 
 $current_page = 'configuracoes';

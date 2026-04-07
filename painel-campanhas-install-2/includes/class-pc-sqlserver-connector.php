@@ -275,6 +275,45 @@ class PC_SqlServer_Connector
      * @param int    $limit
      * @return array<int, array<string, mixed>>
      */
+    /**
+     * MIN(ult_atualizacao) em view VW_BASE* no SQL Server (mesmo FROM que fetch_external_view_data).
+     *
+     * @return array{ok: bool, min: ?string} ok=false → objeto inexistente, erro de rede/SQL ou PDO indisponível (usar fallback MySQL).
+     */
+    public static function fetch_min_ult_atualizacao(string $view_name): array
+    {
+        if (!self::is_safe_sql_identifier($view_name)) {
+            return ['ok' => false, 'min' => null];
+        }
+        $pdo = self::get_pdo_views();
+        if (!$pdo) {
+            return ['ok' => false, 'min' => null];
+        }
+        $from = self::view_from_clause($view_name);
+        $sql = 'SELECT MIN(ult_atualizacao) AS min_atualizacao FROM ' . $from;
+        try {
+            $stmt = $pdo->query($sql);
+            if (!$stmt) {
+                return ['ok' => false, 'min' => null];
+            }
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($row)) {
+                return ['ok' => true, 'min' => null];
+            }
+            $v = $row['min_atualizacao'] ?? null;
+            if ($v === null || $v === '') {
+                return ['ok' => true, 'min' => null];
+            }
+            if ($v instanceof \DateTimeInterface) {
+                return ['ok' => true, 'min' => $v->format('Y-m-d H:i:s')];
+            }
+            return ['ok' => true, 'min' => (string) $v];
+        } catch (PDOException $e) {
+            error_log('[PC_SqlServer_Connector] fetch_min_ult_atualizacao: ' . $e->getMessage());
+            return ['ok' => false, 'min' => null];
+        }
+    }
+
     public static function fetch_external_view_data($view_name, $limit = 500)
     {
         if (!self::is_safe_sql_identifier($view_name)) {

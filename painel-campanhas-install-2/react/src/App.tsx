@@ -30,14 +30,12 @@ import TrackingSalesforce from "./pages/painel/TrackingSalesforce";
 import RelatoriosDetalhados from "./pages/painel/RelatoriosDetalhados";
 import Validador from "./pages/painel/Validador";
 
-function isWpSubscriber(): boolean {
+/** Alinhado ao PHP: aprovação e API Manager exigem `manage_options` (`pcAjax.canManageOptions`). */
+function userCanManageOptions(): boolean {
   if (typeof window === "undefined") return false;
-  const w = window as unknown as {
-    pc_user_data?: { roles?: string[] };
-    pcAjax?: { currentUser?: { roles?: string[] } };
-  };
-  const r = w.pc_user_data?.roles ?? w.pcAjax?.currentUser?.roles;
-  return Array.isArray(r) && r.includes("subscriber");
+  return Boolean(
+    (window as unknown as { pcAjax?: { canManageOptions?: boolean } }).pcAjax?.canManageOptions,
+  );
 }
 
 const queryClient = new QueryClient({
@@ -85,7 +83,7 @@ function RouterSync() {
       if (targetRoute) {
         let hashPart = targetRoute.replace("/#", "");
         if (
-          isWpSubscriber() &&
+          !userCanManageOptions() &&
           (hashPart.includes("aprovar-campanhas") || hashPart.includes("api-manager"))
         ) {
           hashPart = "painel/home";
@@ -105,7 +103,7 @@ const App = () => {
     const hash = window.location.hash.replace("#", "");
     if (hash && hash !== "/") {
       if (
-        isWpSubscriber() &&
+        !userCanManageOptions() &&
         (hash.includes("aprovar-campanhas") || hash.includes("api-manager"))
       ) {
         return "/painel/home";
@@ -141,7 +139,7 @@ const App = () => {
       };
       const mapped = routeMap[currentPage] || "/painel/home";
       if (
-        isWpSubscriber() &&
+        !userCanManageOptions() &&
         (mapped.includes("aprovar-campanhas") || mapped.includes("api-manager"))
       ) {
         return "/painel/home";
@@ -175,7 +173,7 @@ const App = () => {
               <Route path="campanhas-recorrentes" element={<CampanhasRecorrentes />} />
               <Route
                 path="aprovar-campanhas"
-                element={isWpSubscriber() ? <Navigate to="/painel/home" replace /> : <AprovarCampanhas />}
+                element={!userCanManageOptions() ? <Navigate to="/painel/home" replace /> : <AprovarCampanhas />}
               />
               <Route path="mensagens" element={<Mensagens />} />
               <Route path="relatorios" element={<Relatorios />} />
@@ -186,7 +184,7 @@ const App = () => {
               <Route path="blocklist" element={<Blocklist />} />
               <Route
                 path="api-manager"
-                element={isWpSubscriber() ? <Navigate to="/painel/home" replace /> : <ApiManager />}
+                element={!userCanManageOptions() ? <Navigate to="/painel/home" replace /> : <ApiManager />}
               />
               <Route path="iscas" element={<Iscas />} />
               <Route path="ranking" element={<Ranking />} />

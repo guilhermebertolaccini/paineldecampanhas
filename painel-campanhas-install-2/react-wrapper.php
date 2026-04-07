@@ -128,6 +128,8 @@ usort($js_files, function($a, $b) {
             'csvNonce' => wp_create_nonce('pc_csv_download'),
             'adminPostUrl' => $site_url . '/wp-admin/admin-post.php',
             'homeUrl' => home_url('/'),
+            /** Logout nativo WP: encerra sessão e redireciona para a home do site. */
+            'logoutUrl' => wp_logout_url( home_url( '/' ) ),
             'siteUrl' => $site_url,
             'restUrl' => rest_url('campaigns/v1/'),
             'restNonce' => wp_create_nonce('wp_rest'),

@@ -294,7 +294,7 @@ final class PC_Validador_Historico
      */
     public static function rest_historico($request)
     {
-        if (!is_user_logged_in() || !current_user_can('edit_posts')) {
+        if (!is_user_logged_in() || !current_user_can('read')) {
             return new WP_Error('pc_val_hist_forbidden', 'Acesso negado.', ['status' => 403]);
         }
 
@@ -354,7 +354,7 @@ final class PC_Validador_Historico
      */
     public static function handle_download_historico($kind)
     {
-        if (!is_user_logged_in() || !current_user_can('edit_posts')) {
+        if (!is_user_logged_in() || !current_user_can('read')) {
             wp_die('Acesso negado', '', ['response' => 403]);
         }
 

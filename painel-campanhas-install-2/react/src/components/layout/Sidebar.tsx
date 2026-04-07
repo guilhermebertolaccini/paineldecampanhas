@@ -30,22 +30,16 @@ interface NavItem {
   label: string;
   href: string;
   icon: React.ElementType;
+  /** Visível só com `pcAjax.canManageOptions` (manage_options no WP). */
   adminOnly?: boolean;
-  /** Oculto para usuários com role WordPress `subscriber` (assinante). */
-  subscriberForbidden?: boolean;
   children?: { label: string; href: string }[];
 }
 
-function getWpUserRoles(): string[] {
-  if (typeof window === "undefined") return [];
-  const w = window as unknown as {
-    pc_user_data?: { roles?: string[] };
-    pcAjax?: { currentUser?: { roles?: string[] } };
-  };
-  const fromPc = w.pc_user_data?.roles;
-  if (Array.isArray(fromPc)) return fromPc;
-  const fromAjax = w.pcAjax?.currentUser?.roles;
-  return Array.isArray(fromAjax) ? fromAjax : [];
+function userCanManageOptions(): boolean {
+  if (typeof window === "undefined") return false;
+  return Boolean(
+    (window as unknown as { pcAjax?: { canManageOptions?: boolean } }).pcAjax?.canManageOptions,
+  );
 }
 
 function getWpUserProfile(): { name: string; email: string } {
@@ -88,7 +82,7 @@ const navItems: NavItem[] = [
   { label: "Campanha via Arquivo", href: "/painel/campanha-arquivo", icon: Upload },
   { label: "Validador WhatsApp", href: "/painel/validador", icon: Phone },
   { label: "Campanhas Recorrentes", href: "/painel/campanhas-recorrentes", icon: RefreshCw },
-  { label: "Aprovar Campanhas", href: "/painel/aprovar-campanhas", icon: CheckCircle, adminOnly: true, subscriberForbidden: true },
+  { label: "Aprovar Campanhas", href: "/painel/aprovar-campanhas", icon: CheckCircle, adminOnly: true },
   { label: "Templates de Mensagem", href: "/painel/mensagens", icon: MessageSquare },
   {
     label: "Relatórios",
@@ -109,12 +103,12 @@ const navItems: NavItem[] = [
       { label: "Relatório", href: "/painel/controle-custo/relatorio" },
     ],
   },
-  { label: "Carteiras", href: "/painel/configuracoes", icon: Settings, adminOnly: true },
+  { label: "Carteiras", href: "/painel/configuracoes", icon: Settings },
   { label: "Cadastro de Iscas", href: "/painel/iscas", icon: Fish },
-  { label: "Blocklist", href: "/painel/blocklist", icon: Shield, adminOnly: true },
+  { label: "Blocklist", href: "/painel/blocklist", icon: Shield },
   { label: "Saúde das Linhas", href: "/painel/saude-linhas", icon: Activity },
-  { label: "Tracking Salesforce", href: "/painel/tracking-salesforce", icon: Satellite, adminOnly: true },
-  { label: "API Manager", href: "/painel/api-manager", icon: Key, adminOnly: true, subscriberForbidden: true },
+  { label: "Tracking Salesforce", href: "/painel/tracking-salesforce", icon: Satellite },
+  { label: "API Manager", href: "/painel/api-manager", icon: Key, adminOnly: true },
 ];
 
 export function Sidebar() {
@@ -122,9 +116,8 @@ export function Sidebar() {
   const [expandedItems, setExpandedItems] = useState<string[]>(["Controle de Custo", "Relatórios"]);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
 
-  const roles = getWpUserRoles();
-  const isSubscriber = roles.includes("subscriber");
-  const visibleNavItems = isSubscriber ? navItems.filter((item) => !item.subscriberForbidden) : navItems;
+  const showAdminNav = userCanManageOptions();
+  const visibleNavItems = navItems.filter((item) => !item.adminOnly || showAdminNav);
   const { name: userName, email: userEmail } = getWpUserProfile();
   const userInitials = initialsFromName(userName, userEmail);
 
@@ -134,26 +127,16 @@ export function Sidebar() {
     );
   };
 
-  const handleLogout = async () => {
-    try {
-      // Chama o endpoint de logout
-      await fetch('/wordpress/wp-admin/admin-ajax.php', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams({
-          action: 'pc_logout',
-        }),
-        credentials: 'include', // Importante para enviar cookies
-      });
-    } catch (error) {
-      console.error('Erro ao fazer logout:', error);
-    } finally {
-      // SEMPRE redireciona para o login do WordPress, independente do resultado
-      // Isso garante que o usuário seja deslogado mesmo que o AJAX falhe
-      window.location.href = '/wordpress/wp-login.php?loggedout=true&redirect_to=' + encodeURIComponent(window.location.origin + '/wordpress/wp-admin/');
+  const handleLogout = () => {
+    const w = window as unknown as { pcAjax?: { logoutUrl?: string; homeUrl?: string } };
+    const logoutUrl = w.pcAjax?.logoutUrl?.trim();
+    if (logoutUrl) {
+      window.location.assign(logoutUrl);
+      return;
     }
+    // Fallback mínimo se `logoutUrl` não veio do PHP (ex.: ambiente sem wrapper)
+    const home = w.pcAjax?.homeUrl?.trim();
+    window.location.assign(home && home.length > 0 ? home : "/");
   };
 
   const isActive = (href: string) => location.pathname === href;

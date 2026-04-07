@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) exit;
 
 $current_user = wp_get_current_user();
 $is_admin = current_user_can('manage_options');
+$can_read_panel = current_user_can('read');
 global $pc_current_page;
 $current_page = $pc_current_page ?? 'home';
 ?>
@@ -160,7 +161,22 @@ $current_page = $pc_current_page ?? 'home';
                     </ul>
                 </div>
 
-                <!-- Administração Section (Apenas Admin) -->
+                <!-- Carteiras: qualquer usuário com read (painel operacional) -->
+                <?php if ($can_read_panel): ?>
+                <div class="mt-6">
+                    <h3 class="text-xs uppercase font-semibold text-gray-500 dark:text-gray-400 tracking-wider mb-3 px-2">Configuração</h3>
+                    <ul class="space-y-1">
+                        <li>
+                            <a href="<?php echo esc_url(home_url('/painel/configuracoes')); ?>" class="flex items-center px-3 py-2 rounded-lg no-underline <?php echo ($current_page === 'configuracoes') ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'; ?> theme-transition">
+                                <i class="fas fa-cog w-5 mr-3"></i>
+                                <span>Carteiras</span>
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+                <?php endif; ?>
+
+                <!-- API Manager: apenas administradores -->
                 <?php if ($is_admin): ?>
                 <div class="mt-6">
                     <h3 class="text-xs uppercase font-semibold text-gray-500 dark:text-gray-400 tracking-wider mb-3 px-2">Administração</h3>
@@ -169,12 +185,6 @@ $current_page = $pc_current_page ?? 'home';
                             <a href="<?php echo esc_url(home_url('/painel/api-manager')); ?>" class="flex items-center px-3 py-2 rounded-lg no-underline <?php echo ($current_page === 'api-manager') ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'; ?> theme-transition">
                                 <i class="fas fa-key w-5 mr-3"></i>
                                 <span>API Manager</span>
-                            </a>
-                        </li>
-                        <li>
-                            <a href="<?php echo esc_url(home_url('/painel/configuracoes')); ?>" class="flex items-center px-3 py-2 rounded-lg no-underline <?php echo ($current_page === 'configuracoes') ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'; ?> theme-transition">
-                                <i class="fas fa-cog w-5 mr-3"></i>
-                                <span>Carteiras</span>
                             </a>
                         </li>
                     </ul>

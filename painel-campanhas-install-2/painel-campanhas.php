@@ -80,15 +80,15 @@ class Painel_Campanhas
     }
 
     /**
-     * Bloqueia usuários com role subscriber em rotas do API Manager e fluxo de aprovação (403).
+     * Exige sessão WordPress válida e capability read (analistas / painel operacional).
+     * Ações administrativas continuam com checagem adicional (ex.: manage_options).
      */
     private function pc_forbid_subscriber_ajax()
     {
-        $user = wp_get_current_user();
-        if (!$user || !$user->ID) {
+        if (!is_user_logged_in()) {
             wp_send_json_error(['message' => 'Sessão inválida', 'code' => 'forbidden'], 401);
         }
-        if (in_array('subscriber', (array) $user->roles, true)) {
+        if (!current_user_can('read')) {
             wp_send_json_error(['message' => 'Acesso negado.', 'code' => 'forbidden'], 403);
         }
     }
@@ -255,7 +255,6 @@ class Painel_Campanhas
         // AJAX
         add_action('wp_ajax_pc_login', [$this, 'handle_login']);
         add_action('wp_ajax_nopriv_pc_login', [$this, 'handle_login']);
-        add_action('wp_ajax_pc_logout', [$this, 'handle_logout']);
 
         // AJAX para campanhas CPF
         add_action('wp_ajax_cpf_cm_upload_csv', [$this, 'handle_cpf_upload_csv']);
@@ -506,12 +505,26 @@ class Painel_Campanhas
             ],
         ]);
 
-        // Métricas do Validador WhatsApp (Evolution) — apenas administradores
+        register_rest_route('campaigns/v1', '/bases/(?P<base_name>[a-zA-Z0-9_]+)/stats', [
+            'methods' => 'GET',
+            'callback' => [$this, 'rest_get_base_min_ult_atualizacao'],
+            'permission_callback' => function () {
+                return is_user_logged_in() && current_user_can('read');
+            },
+            'args' => [
+                'base_name' => [
+                    'required' => true,
+                    'type' => 'string',
+                ],
+            ],
+        ]);
+
+        // Métricas do Validador WhatsApp (Evolution) — usuários do painel (read)
         register_rest_route('api/v1', '/validador/metricas', [
             'methods' => 'GET',
             'callback' => ['PC_Evolution_WA_Validator', 'rest_validador_metricas'],
             'permission_callback' => function () {
-                return is_user_logged_in() && current_user_can('manage_options');
+                return is_user_logged_in() && current_user_can('read');
             },
             'args' => [
                 'data_inicio' => [
@@ -529,7 +542,7 @@ class Painel_Campanhas
             'methods' => 'GET',
             'callback' => ['PC_Validador_Historico', 'rest_historico'],
             'permission_callback' => function () {
-                return is_user_logged_in() && current_user_can('edit_posts');
+                return is_user_logged_in() && current_user_can('read');
             },
         ]);
     }
@@ -565,6 +578,71 @@ class Painel_Campanhas
 
         error_log('✅ [REST API] API Key válida');
         return true;
+    }
+
+    /**
+     * Nome de base para auditoria REST: somente VW_BASE_* com [A-Za-z0-9_].
+     */
+    private function is_valid_vw_base_audit_table_name(string $name): bool
+    {
+        return (bool) preg_match('/^VW_BASE_[A-Za-z0-9_]+$/', $name);
+    }
+
+    /**
+     * GET /wp-json/campaigns/v1/bases/{base_name}/stats — MIN(ult_atualizacao) (MSSQL primeiro, fallback MySQL).
+     */
+    public function rest_get_base_min_ult_atualizacao($request)
+    {
+        $base_name = sanitize_text_field((string) $request->get_param('base_name'));
+        if (!$this->is_valid_vw_base_audit_table_name($base_name)) {
+            return new WP_Error(
+                'invalid_base_name',
+                'Nome de base inválido. Use apenas VW_BASE_ seguido de letras, números e underscores.',
+                ['status' => 400]
+            );
+        }
+
+        if (class_exists('PC_SqlServer_Connector') && PC_SqlServer_Connector::is_enabled()) {
+            $mssql = PC_SqlServer_Connector::fetch_min_ult_atualizacao($base_name);
+            if (!empty($mssql['ok'])) {
+                return rest_ensure_response([
+                    'base' => $base_name,
+                    'min_atualizacao' => $mssql['min'],
+                    'source' => 'MSSQL',
+                ]);
+            }
+        }
+
+        global $wpdb;
+        $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $base_name));
+        if (empty($exists)) {
+            return new WP_Error(
+                'base_not_found',
+                'Base não encontrada no MySQL nem consultável no MSSQL.',
+                ['status' => 404]
+            );
+        }
+
+        $wpdb->suppress_errors(true);
+        $min = $wpdb->get_var(
+            'SELECT MIN(`ult_atualizacao`) FROM `' . esc_sql($base_name) . '`'
+        );
+        $db_err = $wpdb->last_error;
+        $wpdb->suppress_errors(false);
+
+        if ($db_err !== '') {
+            return new WP_Error(
+                'db_error',
+                'Erro ao consultar a base (confira se a coluna ult_atualizacao existe): ' . $db_err,
+                ['status' => 500]
+            );
+        }
+
+        return rest_ensure_response([
+            'base' => $base_name,
+            'min_atualizacao' => ($min !== null && $min !== '') ? (string) $min : null,
+            'source' => 'MySQL',
+        ]);
     }
 
     public function get_campaign_data_rest($request)
@@ -1030,7 +1108,7 @@ class Painel_Campanhas
     public function handle_get_salesforce_sync_status()
     {
         check_ajax_referer('pc_nonce', 'nonce');
-        if (!is_user_logged_in() || !current_user_can('edit_posts')) {
+        if (!is_user_logged_in() || !current_user_can('read')) {
             wp_send_json_error('Acesso negado');
             return;
         }
@@ -1169,6 +1247,15 @@ class Painel_Campanhas
         if ($page !== 'login' && !$this->is_authenticated()) {
             wp_redirect(home_url('/painel/login'));
             exit;
+        }
+
+        // Painel operacional: capability mínima read (exceto login, tratado acima)
+        if ($page !== 'login' && !current_user_can('read')) {
+            wp_die(
+                esc_html__('Você não tem permissão para acessar o painel.', 'painel-campanhas'),
+                esc_html__('Acesso negado', 'painel-campanhas'),
+                ['response' => 403]
+            );
         }
 
         // Redireciona para home se já autenticado e tentando acessar login
@@ -1310,6 +1397,7 @@ class Painel_Campanhas
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('pc_nonce'),
             'homeUrl' => home_url(),
+            'logoutUrl' => wp_logout_url( home_url( '/' ) ),
             'apiUrl' => rest_url('painel-campanhas/v1/'),
         ]);
 
@@ -1336,6 +1424,7 @@ class Painel_Campanhas
             'csvNonce' => wp_create_nonce('pc_csv_download'),
             'adminPostUrl' => admin_url('admin-post.php'),
             'homeUrl' => home_url(),
+            'logoutUrl' => wp_logout_url( home_url( '/' ) ),
             'canManageOptions' => current_user_can('manage_options'),
         ]);
     }
@@ -1374,25 +1463,6 @@ class Painel_Campanhas
                 'email' => $user->user_email,
             ],
         ]);
-    }
-
-    public function handle_logout()
-    {
-        // Não verifica nonce pois o usuário pode já ter sessão expirada
-        // check_ajax_referer('pc_nonce', 'nonce');
-
-        // Limpa todos os cookies de autenticação do WordPress
-        wp_clear_auth_cookie();
-
-        // Faz logout do WordPress
-        wp_logout();
-
-        // Destroi a sessão PHP se existir
-        if (session_id()) {
-            session_destroy();
-        }
-
-        wp_send_json_success(['redirect' => wp_login_url()]);
     }
 
     public function handle_save_master_api_key()
@@ -3336,7 +3406,7 @@ class Painel_Campanhas
     {
         try {
             check_ajax_referer('pc_nonce', 'nonce');
-            if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+            if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
 
             $this->maybe_add_envios_cancel_columns();
 
@@ -3988,7 +4058,7 @@ class Painel_Campanhas
     public function handle_save_recurring()
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
-        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+        if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $nome_campanha = sanitize_text_field($_POST['nome_campanha'] ?? '');
@@ -4292,7 +4362,7 @@ class Painel_Campanhas
         });
 
         check_ajax_referer('campaign-manager-nonce', 'nonce');
-        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+        if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         try {
@@ -5920,7 +5990,7 @@ class Painel_Campanhas
         if (!is_user_logged_in()) {
             wp_die('Acesso negado. Faça login para continuar.');
         }
-        if (!current_user_can('edit_posts')) {
+        if (!current_user_can('read')) {
             wp_die('Permissão insuficiente.');
         }
 
@@ -6007,7 +6077,7 @@ class Painel_Campanhas
         if (!is_user_logged_in()) {
             wp_die('Acesso negado. Faça login para continuar.');
         }
-        if (!current_user_can('edit_posts')) {
+        if (!current_user_can('read')) {
             wp_die('Permissão insuficiente.');
         }
 
@@ -6266,7 +6336,7 @@ class Painel_Campanhas
     public function handle_delete_recurring()
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
-        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+        if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $id = intval($_POST['id'] ?? 0);
@@ -6383,7 +6453,7 @@ class Painel_Campanhas
     public function handle_execute_recurring_now()
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
-        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+        if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $id = intval($_POST['id'] ?? 0);
@@ -7385,12 +7455,12 @@ class Painel_Campanhas
 
     /**
      * URL base e API key do NestJS para clientes autenticados (ex.: Validador WhatsApp no SPA).
-     * Mesma origem de credenciais do microserviço; permissão edit_posts (não só administrador).
+     * Mesma origem de credenciais do microserviço; permissão read (painel operacional).
      */
     public function handle_get_nest_client_config()
     {
         $this->pc_forbid_subscriber_ajax();
-        if (!current_user_can('edit_posts')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Acesso negado');
             return;
         }
@@ -9284,7 +9354,7 @@ class Painel_Campanhas
     public function handle_create_isca()
     {
         check_ajax_referer('pc_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+        if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $nome = sanitize_text_field($_POST['nome'] ?? '');
@@ -9466,7 +9536,7 @@ class Painel_Campanhas
     public function handle_delete_isca()
     {
         check_ajax_referer('pc_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+        if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $id = intval($_POST['id'] ?? 0);
@@ -9853,7 +9923,7 @@ class Painel_Campanhas
     public function handle_get_envios_pendentes()
     {
         check_ajax_referer('pc_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+        if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
 
         try {
             global $wpdb;
@@ -9925,7 +9995,7 @@ class Painel_Campanhas
     private function handle_generic_table_query(string $table_name)
     {
         check_ajax_referer('pc_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+        if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
 
         try {
             global $wpdb;
@@ -10045,7 +10115,7 @@ class Painel_Campanhas
     public function handle_get_report_summary()
     {
         check_ajax_referer('pc_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+        if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
 
         try {
             global $wpdb;
@@ -10093,7 +10163,7 @@ class Painel_Campanhas
     public function handle_upload_campaign_media()
     {
         check_ajax_referer('pc_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Permissão negada.');
             return;
         }
@@ -10284,7 +10354,7 @@ class Painel_Campanhas
     public function handle_create_campaign_from_file()
     {
         check_ajax_referer('pc_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+        if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
         global $wpdb;
 
         $file_data = isset($_POST['file_data']) ? json_decode(stripslashes($_POST['file_data']), true) : null;
@@ -10496,7 +10566,7 @@ class Painel_Campanhas
     public function handle_get_available_bases()
     {
         check_ajax_referer('pc_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) { wp_send_json_error('Permissão negada.'); return; }
+        if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
 
         global $wpdb;
         $db_prefix = 'VW_BASE';
@@ -10573,7 +10643,7 @@ class Painel_Campanhas
     public function handle_get_line_health()
     {
         check_ajax_referer('pc_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) {
+        if (!current_user_can('read')) {
             wp_send_json_error(['message' => 'Permissão negada.']);
             return;
         }
@@ -10793,7 +10863,7 @@ class Painel_Campanhas
                 return;
             }
 
-            if (!current_user_can('edit_posts')) {
+            if (!current_user_can('read')) {
                 wp_send_json_error(['message' => 'Permissão negada.'], 403);
                 return;
             }
@@ -11059,7 +11129,7 @@ class Painel_Campanhas
     {
         check_ajax_referer('pc_nonce', 'nonce');
 
-        if (!is_user_logged_in() || !current_user_can('edit_posts')) {
+        if (!is_user_logged_in() || !current_user_can('read')) {
             wp_send_json_error(['message' => 'Permissão negada.'], 403);
             return;
         }
@@ -12420,7 +12490,7 @@ class Painel_Campanhas
      */
     public function handle_get_noah_oficial_channels()
     {
-        if (!current_user_can('edit_posts')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Acesso negado');
             return;
         }
@@ -12492,7 +12562,7 @@ class Painel_Campanhas
 
     public function handle_get_otima_templates()
     {
-        if (!current_user_can('edit_posts')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Acesso negado');
             return;
         }
@@ -12888,7 +12958,7 @@ class Painel_Campanhas
 
     public function handle_get_otima_brokers()
     {
-        if (!current_user_can('edit_posts')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Acesso negado');
             return;
         }

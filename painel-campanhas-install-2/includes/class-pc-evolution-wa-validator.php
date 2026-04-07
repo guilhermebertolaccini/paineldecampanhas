@@ -648,10 +648,6 @@ final class PC_Evolution_WA_Validator
 
     public static function ajax_save_config()
     {
-        $u = wp_get_current_user();
-        if ($u && $u->ID && in_array('subscriber', (array) $u->roles, true)) {
-            wp_send_json_error(['message' => 'Acesso negado.', 'code' => 'forbidden'], 403);
-        }
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Acesso negado.');
         }
@@ -684,11 +680,7 @@ final class PC_Evolution_WA_Validator
 
     public static function ajax_get_config()
     {
-        $u = wp_get_current_user();
-        if ($u && $u->ID && in_array('subscriber', (array) $u->roles, true)) {
-            wp_send_json_error(['message' => 'Acesso negado.', 'code' => 'forbidden'], 403);
-        }
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Acesso negado.');
         }
         check_ajax_referer('pc_nonce', 'nonce');
@@ -705,7 +697,7 @@ final class PC_Evolution_WA_Validator
 
     public static function ajax_upload()
     {
-        if (!current_user_can('edit_posts')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Permissão negada.');
         }
         check_ajax_referer('pc_wa_validator', 'nonce');
@@ -732,7 +724,7 @@ final class PC_Evolution_WA_Validator
 
     public static function ajax_step()
     {
-        if (!current_user_can('edit_posts')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Permissão negada.');
         }
         check_ajax_referer('pc_wa_validator', 'nonce');
@@ -763,7 +755,7 @@ final class PC_Evolution_WA_Validator
 
     public static function handle_download()
     {
-        if (!is_user_logged_in() || !current_user_can('edit_posts')) {
+        if (!is_user_logged_in() || !current_user_can('read')) {
             wp_die('Acesso negado', 403);
         }
 
@@ -913,8 +905,8 @@ final class PC_Evolution_WA_Validator
      */
     public static function rest_validador_metricas($request)
     {
-        if (!is_user_logged_in() || !current_user_can('manage_options')) {
-            return new WP_Error('pc_wa_val_forbidden', 'Acesso negado. Apenas administradores podem ver as métricas.', ['status' => 403]);
+        if (!is_user_logged_in() || !current_user_can('read')) {
+            return new WP_Error('pc_wa_val_forbidden', 'Acesso negado.', ['status' => 403]);
         }
 
         self::ensure_metrics_table();

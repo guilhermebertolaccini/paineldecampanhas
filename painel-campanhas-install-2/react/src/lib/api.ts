@@ -142,11 +142,6 @@ export const login = (email: string, password: string) => {
   return wpAjax('pc_login', { email, password });
 };
 
-// Logout
-export const logout = () => {
-  return wpAjax('pc_logout', {});
-};
-
 // Dashboard
 export const getDashboardStats = () => {
   return wpAjax('pc_get_dashboard_stats', {});
