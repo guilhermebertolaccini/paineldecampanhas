@@ -17,6 +17,12 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+/** Token fixo para GET /campaigns/v1/bases/{base}/stats (scripts externos). Sobrescreva em wp-config.php antes do plugin carregar. */
+if (!defined('PC_AUDIT_API_TOKEN')) {
+    define('PC_AUDIT_API_TOKEN', 'ay+mBF69qqr37+e+OG82fHNvrdLulIFj1h/KyfUa0ddMci1znBYZY9dwr+1BSySO
+Yar1cI0un/bGnWjDSNC6vw==');
+}
+
 require_once __DIR__ . '/includes/class-pc-evolution-wa-validator.php';
 require_once __DIR__ . '/includes/class-pc-validador-historico.php';
 
@@ -508,8 +514,36 @@ class Painel_Campanhas
         register_rest_route('campaigns/v1', '/bases/(?P<base_name>[a-zA-Z0-9_]+)/stats', [
             'methods' => 'GET',
             'callback' => [$this, 'rest_get_base_min_ult_atualizacao'],
-            'permission_callback' => function () {
-                return is_user_logged_in() && current_user_can('read');
+            'permission_callback' => function ($request) {
+                $expected = defined('PC_AUDIT_API_TOKEN') ? (string) PC_AUDIT_API_TOKEN : '';
+                if ($expected === '') {
+                    return new WP_Error(
+                        'audit_token_not_configured',
+                        'PC_AUDIT_API_TOKEN não está definido ou está vazio. Configure em wp-config.php.',
+                        ['status' => 503]
+                    );
+                }
+                $client_token = trim(
+                    (string) (
+                        $request->get_header('x-api-key')
+                        ?: $request->get_header('x_api_key')
+                        ?: ''
+                    )
+                );
+                if ($client_token === '') {
+                    $auth = $request->get_header('authorization');
+                    if (is_string($auth) && preg_match('/^\s*Bearer\s+(.+)$/i', $auth, $m)) {
+                        $client_token = trim($m[1]);
+                    }
+                }
+                if ($client_token !== '' && hash_equals($expected, $client_token)) {
+                    return true;
+                }
+                return new WP_Error(
+                    'rest_forbidden',
+                    'Token de API inválido ou ausente.',
+                    ['status' => 401]
+                );
             },
             'args' => [
                 'base_name' => [
