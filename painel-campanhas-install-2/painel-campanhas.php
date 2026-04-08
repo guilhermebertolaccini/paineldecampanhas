@@ -12902,8 +12902,12 @@ class Painel_Campanhas
         $token_rcs = preg_replace('/[\r\n\t]/', '', trim(preg_replace('/^Bearer\s+/i', '', $token_rcs)));
         $token_wpp = preg_replace('/[\r\n\t]/', '', trim(preg_replace('/^Bearer\s+/i', '', $token_wpp)));
 
-        // both | wpp | rcs — evita chamar HSM quando o analista só usa RCS (e vice-versa).
-        $otima_channel = sanitize_key($_POST['otima_channel'] ?? $_GET['otima_channel'] ?? 'both');
+        // both | wpp | rcs — enviado pelo React em todo request (FormData `otima_channel`).
+        $otima_channel_raw = isset($_POST['otima_channel']) ? wp_unslash((string) $_POST['otima_channel']) : '';
+        if ($otima_channel_raw === '' && isset($_GET['otima_channel'])) {
+            $otima_channel_raw = wp_unslash((string) $_GET['otima_channel']);
+        }
+        $otima_channel = sanitize_key($otima_channel_raw !== '' ? $otima_channel_raw : 'both');
         if (!in_array($otima_channel, ['both', 'wpp', 'rcs'], true)) {
             $otima_channel = 'both';
         }
@@ -13214,7 +13218,6 @@ class Painel_Campanhas
             // id_carteira neste array = wallet Ótima (provedor), nunca PK do WordPress
             $wallet_otima = (string) ($carteira['id_carteira'] ?? '');
             $carteira_nome = $carteira['nome'];
-            $snapshot_templates_count = count($templates);
 
             // --- RCS Templates (endpoint /v1/rcs/template/{wallet} — não é HSM) ---
             if (($otima_channel === 'both' || $otima_channel === 'rcs') && !empty($token_rcs)) {
@@ -13278,15 +13281,22 @@ class Painel_Campanhas
                 error_log('🔵 [Otima Templates] HSM wallet_otima=' . $wallet_otima . ' url=' . $url_wpp);
                 $wpp_res = $fetch_otima_wpp_hsm($url_wpp, $token_wpp);
 
-                if ($single_carteira_mode && !$wpp_res['ok']) {
-                    $got_rcs_this_wallet = count($templates) > $snapshot_templates_count;
-                    $need_wpp = ($otima_channel === 'wpp');
-                    if ($need_wpp || !$got_rcs_this_wallet) {
-                        $hint = isset($wpp_res['body_snippet']) ? ' Resposta: ' . $wpp_res['body_snippet'] : '';
+                // Isolamento RCS vs HSM: falha na API WhatsApp nunca derruba quem usa `both` ou `rcs`.
+                // wp_send_json_error só quando o cliente pediu EXCLUSIVAMENTE WhatsApp (`wpp`).
+                if (!$wpp_res['ok']) {
+                    $snippet = isset($wpp_res['body_snippet']) ? substr((string) $wpp_res['body_snippet'], 0, 600) : '';
+                    error_log(
+                        '[Ótima HSM] Falha ignorada para o JSON de sucesso (canal=' . $otima_channel
+                        . ') | wallet=' . $wallet_otima
+                        . ' | http=' . (string) ($wpp_res['http'] ?? 0)
+                        . ' | single_carteira=' . ($single_carteira_mode ? '1' : '0')
+                        . ' | snippet=' . $snippet
+                    );
+                    if ($single_carteira_mode && $otima_channel === 'wpp') {
+                        $hint = $snippet !== '' ? ' Resposta: ' . $snippet : '';
                         wp_send_json_error('Não foi possível sincronizar os templates HSM (WhatsApp) para esta carteira.' . $hint);
                         return;
                     }
-                    error_log('[Ótima] HSM falhou para wallet=' . $wallet_otima . ' mas há templates RCS — retornando lista sem HSM.');
                 }
 
                 $wpp_data = ($wpp_res['ok'] && is_array($wpp_res['data'])) ? $wpp_res['data'] : [];

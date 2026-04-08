@@ -64,9 +64,9 @@ export const wpAjax = async (
     }
   });
 
-  // Log do FormData para debug (apenas para vincular bases)
-  if (action === 'pc_vincular_base_carteira') {
-    console.log('🔵 [API] FormData completo:');
+  // Log do FormData para debug (vincular bases + templates Ótima)
+  if (action === 'pc_vincular_base_carteira' || action === 'pc_get_otima_templates') {
+    console.log(`🔵 [API] FormData (${action}):`);
     for (const [key, value] of formData.entries()) {
       console.log(`🔵 [API]   ${key}:`, value);
     }
@@ -411,19 +411,20 @@ export const getOtimaTemplates = (
   carteiraDbId?: string,
   otimaChannel: OtimaTemplatesChannel = 'both',
 ) => {
-  const payload: Record<string, string> = {};
+  const payload: Record<string, string> = {
+    // Sempre enviar — o PHP usa para não chamar HSM em `rcs` e para nunca falhar o AJAX por HSM em `both`.
+    otima_channel: otimaChannel,
+  };
   if (walletId) {
     payload.wallet_id = String(walletId);
   } else if (carteiraDbId) {
     payload.carteira_id = String(carteiraDbId);
   }
-  if (otimaChannel && otimaChannel !== 'both') {
-    payload.otima_channel = otimaChannel;
-  }
 
   if (typeof window !== 'undefined') {
     console.log('[DEBUG ÓTIMA] wallet_id (provedor Ótima) enviado:', walletId ?? '(omitido)');
     console.log('[DEBUG ÓTIMA] carteira_id PK local (só se sem wallet):', walletId ? '(omitido — não enviado ao PHP)' : carteiraDbId ?? '(vazio)');
+    console.log('[DEBUG ÓTIMA] otima_channel (FormData):', otimaChannel);
     console.log('[DEBUG ÓTIMA] Action AJAX:', 'pc_get_otima_templates', '(não é pc_get_messages / templates locais)');
     console.log('[DEBUG ÓTIMA] URL interna (WP AJAX) será usada no próximo log (wpAjax):', getAjaxUrl());
     console.log('[DEBUG ÓTIMA] Payload FormData (chaves):', Object.keys(payload), payload);
