@@ -34,9 +34,13 @@ export class SqlServerService implements OnModuleDestroy {
 
   private async connectInternal(): Promise<sql.ConnectionPool | null> {
     const server = this.config.get<string>('MSSQL_HOST', '');
-    const database = this.config.get<string>('MSSQL_DATABASE', '');
+    const database =
+      this.config.get<string>('MSSQL_DATABASE', '') ||
+      this.config.get<string>('MSSQL_DB', '');
     const user = this.config.get<string>('MSSQL_USER', '');
-    const password = this.config.get<string>('MSSQL_PASSWORD', '');
+    const password =
+      this.config.get<string>('MSSQL_PASSWORD', '') ||
+      this.config.get<string>('MSSQL_PASS', '');
     if (!server || !database || !user) {
       this.logger.warn('MSSQL_ENABLED=true mas MSSQL_HOST/DATABASE/USER incompletos; pool não será criado.');
       return null;

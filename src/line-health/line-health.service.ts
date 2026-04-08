@@ -5,6 +5,11 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { DigitalFunnelMssqlService } from '../sql-server/digital-funnel-mssql.service';
+import {
+  MssqlService,
+  type LineHealthSyncRow,
+} from '../sql-server/mssql.service';
+import { wordpressConfig } from '../config/wordpress.config';
 
 interface LineHealthTarget {
   provider: string;
@@ -28,6 +33,7 @@ export class LineHealthService {
     private readonly campaigns: CampaignsService,
     private readonly http: HttpService,
     private readonly digitalFunnel: DigitalFunnelMssqlService,
+    private readonly mssqlService: MssqlService,
   ) {}
 
   private parseTargets(): LineHealthTarget[] {
@@ -60,7 +66,8 @@ export class LineHealthService {
   /** Diariamente às 06:00 (minuto 0, hora 6). */
   @Cron('0 0 6 * * *')
   async runDailyLineHealth(): Promise<void> {
-    // Desativado por padrão: saúde operacional vem da ponte WP → MSSQL (PC_LINE_HEALTH_SNAPSHOT).
+    // Desativado por padrão. Com LINE_HEALTH_CRON_ENABLED=true, probes rodam no Nest e o snapshot
+    // `dbo.PC_LINE_HEALTH_SNAPSHOT` é atualizado aqui (sem depender de pdo_sqlsrv no WordPress).
     if (this.config.get<string>('LINE_HEALTH_CRON_ENABLED', 'false') !== 'true') {
       return;
     }
@@ -70,6 +77,8 @@ export class LineHealthService {
       return;
     }
     this.logger.log(`Checagem de saúde: ${targets.length} alvo(s).`);
+    const consolidated: LineHealthSyncRow[] = [];
+
     for (const t of targets) {
       const nome = t.nome_linha ?? `${t.provider}:${t.envId}`;
       try {
@@ -78,23 +87,66 @@ export class LineHealthService {
           t.envId,
         )) as Record<string, unknown>;
         const evalResult = await this.evaluateProvider(t, creds);
-        await this.digitalFunnel.insertSaudeLinhaHistorico({
+        const row: LineHealthSyncRow = {
           id_linha: t.envId,
           nome_linha: nome,
           provedor: t.provider,
           status_qualidade: evalResult.status_qualidade,
           detalhes_retorno: evalResult.detalhes_retorno,
-        });
+        };
+        await this.digitalFunnel.insertSaudeLinhaHistorico(row);
+        consolidated.push(row);
       } catch (e) {
         this.logger.warn(`Saúde linha ${nome}: ${e}`);
-        await this.digitalFunnel.insertSaudeLinhaHistorico({
+        const row: LineHealthSyncRow = {
           id_linha: t.envId,
           nome_linha: nome,
           provedor: t.provider,
           status_qualidade: 'ERRO_CREDENCIAL_OU_API',
           detalhes_retorno: this.toDetails(e),
-        });
+        };
+        await this.digitalFunnel.insertSaudeLinhaHistorico(row);
+        consolidated.push(row);
       }
+    }
+
+    const postUrl = this.config.get<string>('LINE_HEALTH_WORDPRESS_SYNC_URL', '').trim();
+    if (postUrl) {
+      try {
+        await firstValueFrom(
+          this.http.post(
+            postUrl,
+            {
+              source: 'nest_line_health_cron',
+              captured_at: new Date().toISOString(),
+              rows: consolidated,
+            },
+            {
+              headers: {
+                'Content-Type': 'application/json',
+                ...(wordpressConfig.apiKey
+                  ? { 'X-API-KEY': wordpressConfig.apiKey }
+                  : {}),
+              },
+              timeout: 45_000,
+              validateStatus: () => true,
+            },
+          ),
+        );
+      } catch (e) {
+        this.logger.warn(
+          `LINE_HEALTH POST WordPress (opcional) falhou — prosseguindo para MSSQL: ${e}`,
+        );
+      }
+    }
+
+    try {
+      await this.mssqlService.syncLineHealth(consolidated);
+    } catch (e) {
+      this.logger.error(
+        `LINE_HEALTH syncLineHealth (MSSQL PC_LINE_HEALTH_SNAPSHOT) falhou: ${e instanceof Error ? e.message : String(e)}`,
+        e instanceof Error ? e.stack : undefined,
+      );
     }
   }
 
