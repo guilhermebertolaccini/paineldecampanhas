@@ -160,6 +160,8 @@ export default function CampanhaArquivo() {
   const walletIdForOtima =
     rawWallet != null && String(rawWallet).trim() !== '' ? String(rawWallet).trim() : undefined;
 
+  const otimaTemplatesChannel = provider === "OTIMA_RCS" ? "rcs" : provider === "OTIMA_WPP" ? "wpp" : "both";
+
   const {
     data: otimaTemplatesData = [],
     isLoading: otimaTemplatesLoading,
@@ -167,8 +169,8 @@ export default function CampanhaArquivo() {
     isError: otimaTemplatesIsError,
     error: otimaTemplatesErr,
   } = useQuery({
-    queryKey: ['otima-templates', walletIdForOtima, carteira],
-    queryFn: () => getOtimaTemplates(walletIdForOtima, carteira),
+    queryKey: ['otima-templates', walletIdForOtima, carteira, otimaTemplatesChannel],
+    queryFn: () => getOtimaTemplates(walletIdForOtima, carteira, otimaTemplatesChannel),
     enabled: !!carteira && (provider === "OTIMA_WPP" || provider === "OTIMA_RCS"),
     staleTime: 60 * 1000,
     gcTime: 5 * 60 * 1000,

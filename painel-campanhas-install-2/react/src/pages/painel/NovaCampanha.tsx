@@ -279,6 +279,13 @@ export default function NovaCampanha() {
   const walletIdForOtima =
     rawWallet != null && String(rawWallet).trim() !== '' ? String(rawWallet).trim() : undefined;
 
+  const otimaTemplatesChannel =
+    formData.templateSource === 'otima_rcs'
+      ? 'rcs'
+      : formData.templateSource === 'otima_wpp'
+        ? 'wpp'
+        : 'both';
+
   const {
     data: otimaTemplatesData = [],
     isLoading: otimaTemplatesLoading,
@@ -286,8 +293,8 @@ export default function NovaCampanha() {
     isError: otimaTemplatesIsError,
     error: otimaTemplatesErr,
   } = useQuery({
-    queryKey: ['otima-templates', walletIdForOtima, formData.carteira],
-    queryFn: () => getOtimaTemplates(walletIdForOtima, formData.carteira),
+    queryKey: ['otima-templates', walletIdForOtima, formData.carteira, otimaTemplatesChannel],
+    queryFn: () => getOtimaTemplates(walletIdForOtima, formData.carteira, otimaTemplatesChannel),
     enabled: !!formData.carteira,
     staleTime: 60 * 1000,
     gcTime: 5 * 60 * 1000,
@@ -1485,7 +1492,7 @@ export default function NovaCampanha() {
                           queryClient.invalidateQueries({ queryKey: ['otima-templates'] });
                           toast({
                             title: 'Sincronizando',
-                            description: 'Buscando templates HSM na API Ótima Digital…',
+                            description: 'Buscando templates na API Ótima Digital (WhatsApp e/ou RCS)…',
                           });
                         }}
                       >

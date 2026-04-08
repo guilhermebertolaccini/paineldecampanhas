@@ -12902,13 +12902,93 @@ class Painel_Campanhas
         $token_rcs = preg_replace('/[\r\n\t]/', '', trim(preg_replace('/^Bearer\s+/i', '', $token_rcs)));
         $token_wpp = preg_replace('/[\r\n\t]/', '', trim(preg_replace('/^Bearer\s+/i', '', $token_wpp)));
 
+        // both | wpp | rcs — evita chamar HSM quando o analista só usa RCS (e vice-versa).
+        $otima_channel = sanitize_key($_POST['otima_channel'] ?? $_GET['otima_channel'] ?? 'both');
+        if (!in_array($otima_channel, ['both', 'wpp', 'rcs'], true)) {
+            $otima_channel = 'both';
+        }
+
         $templates = [];
+
+        /**
+         * Lista de templates RCS a partir do JSON da Ótima (estrutura diferente de HSM WhatsApp).
+         * Não exige template_code / namespace; aceita rich_card, template_id, code, name, etc.
+         */
+        $normalize_otima_rcs_body = function ($decoded) {
+            if (!is_array($decoded)) {
+                return [];
+            }
+            $is_seq = static function ($a) {
+                return is_array($a) && $a !== [] && array_keys($a) === range(0, count($a) - 1);
+            };
+            $looks_rcs_row = static function ($row) {
+                if (!is_array($row)) {
+                    return false;
+                }
+                if (isset($row['rich_card']) && is_array($row['rich_card'])) {
+                    return true;
+                }
+                if (isset($row['template_id']) || isset($row['code']) || isset($row['description'])) {
+                    return true;
+                }
+                if (isset($row['name']) || isset($row['title'])) {
+                    return true;
+                }
+
+                return false;
+            };
+            $pick_seq = static function ($node) use ($is_seq, $looks_rcs_row) {
+                if (!$is_seq($node) || empty($node)) {
+                    return [];
+                }
+                if ($looks_rcs_row($node[0])) {
+                    return $node;
+                }
+                if (is_array($node[0])) {
+                    return $node;
+                }
+
+                return [];
+            };
+
+            $from = $pick_seq($decoded);
+            if ($from !== []) {
+                return $from;
+            }
+            if (isset($decoded['data']) && is_array($decoded['data'])) {
+                $d = $decoded['data'];
+                $from = $pick_seq($d);
+                if ($from !== []) {
+                    return $from;
+                }
+                if (!$is_seq($d)) {
+                    foreach (['templates', 'items', 'result', 'content', 'list'] as $k) {
+                        if (isset($d[$k]) && is_array($d[$k])) {
+                            $from = $pick_seq($d[$k]);
+                            if ($from !== []) {
+                                return $from;
+                            }
+                        }
+                    }
+                }
+            }
+            foreach (['templates', 'items', 'result', 'content', 'list'] as $k) {
+                if (isset($decoded[$k]) && is_array($decoded[$k])) {
+                    $from = $pick_seq($decoded[$k]);
+                    if ($from !== []) {
+                        return $from;
+                    }
+                }
+            }
+
+            return [];
+        };
 
         // Retorno: ok, http, data (lista normalizada), url — para logs e erro em modo carteira única (HSM)
         $fetch_otima = function ($url, $token) {
             if (empty($token)) {
                 error_log('🟡 [Otima Templates] Token vazio | ' . $url);
-                return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => 'token_empty'];
+                return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => 'token_empty', 'decoded' => null];
             }
 
             error_log('🔵 [Otima Templates] GET ' . $url . ' | token_prefix=' . substr($token, 0, 8) . '…');
@@ -12938,7 +13018,7 @@ class Painel_Campanhas
 
             if (is_wp_error($response)) {
                 error_log('🔴 [Otima Templates] WP_Error ' . $response->get_error_message() . ' | ' . $url);
-                return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => $response->get_error_message()];
+                return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => $response->get_error_message(), 'decoded' => null];
             }
 
             $http = wp_remote_retrieve_response_code($response);
@@ -12946,7 +13026,7 @@ class Painel_Campanhas
 
             if ($http !== 200) {
                 error_log('🔴 [Otima Templates] HTTP ' . $http . ' | ' . $url . ' | body_snippet=' . substr($body, 0, 1200));
-                return ['ok' => false, 'http' => $http, 'data' => null, 'url' => $url, 'body_snippet' => substr($body, 0, 400)];
+                return ['ok' => false, 'http' => $http, 'data' => null, 'url' => $url, 'body_snippet' => substr($body, 0, 400), 'decoded' => null];
             }
 
             $data = json_decode($body, true);
@@ -12967,7 +13047,7 @@ class Painel_Campanhas
             }
             error_log('🟢 [Otima Templates] HTTP 200 | ' . $url . ' | itens=' . count($normalized) . ($keys_hint !== '' ? ' | keys_0=' . $keys_hint : '') . ' | raw_len=' . strlen($body));
 
-            return ['ok' => true, 'http' => 200, 'data' => $normalized, 'url' => $url];
+            return ['ok' => true, 'http' => 200, 'data' => $normalized, 'url' => $url, 'decoded' => is_array($data) ? $data : null];
         };
 
         /**
@@ -13134,12 +13214,19 @@ class Painel_Campanhas
             // id_carteira neste array = wallet Ótima (provedor), nunca PK do WordPress
             $wallet_otima = (string) ($carteira['id_carteira'] ?? '');
             $carteira_nome = $carteira['nome'];
+            $snapshot_templates_count = count($templates);
 
-            // --- RCS Templates ---
-            if (!empty($token_rcs)) {
+            // --- RCS Templates (endpoint /v1/rcs/template/{wallet} — não é HSM) ---
+            if (($otima_channel === 'both' || $otima_channel === 'rcs') && !empty($token_rcs)) {
                 $url_rcs = 'https://services.otima.digital/v1/rcs/template/' . rawurlencode($wallet_otima);
                 $rcs_res = $fetch_otima($url_rcs, $token_rcs);
                 $rcs_data = ($rcs_res['ok'] && is_array($rcs_res['data'])) ? $rcs_res['data'] : [];
+                if (empty($rcs_data) && $rcs_res['ok'] && !empty($rcs_res['decoded']) && is_array($rcs_res['decoded'])) {
+                    $rcs_data = $normalize_otima_rcs_body($rcs_res['decoded']);
+                    if (!empty($rcs_data)) {
+                        error_log('[Ótima RCS] Lista recuperada via normalize_otima_rcs_body | itens=' . count($rcs_data) . ' | wallet=' . $wallet_otima);
+                    }
+                }
 
                 if (!empty($rcs_data)) {
                     foreach ($rcs_data as $tpl) {
@@ -13185,16 +13272,21 @@ class Painel_Campanhas
                 }
             }
 
-            // --- WhatsApp HSM: GET .../hsm/{wallet_otima} (somente ID do provedor, nunca PK local) ---
-            if (!empty($token_wpp)) {
+            // --- WhatsApp HSM: GET .../template/hsm/{wallet_otima} — só quando o fluxo pede WPP (não misturar com RCS-only) ---
+            if (($otima_channel === 'both' || $otima_channel === 'wpp') && !empty($token_wpp)) {
                 $url_wpp = 'https://services.otima.digital/v1/whatsapp/template/hsm/' . rawurlencode($wallet_otima);
                 error_log('🔵 [Otima Templates] HSM wallet_otima=' . $wallet_otima . ' url=' . $url_wpp);
                 $wpp_res = $fetch_otima_wpp_hsm($url_wpp, $token_wpp);
 
                 if ($single_carteira_mode && !$wpp_res['ok']) {
-                    $hint = isset($wpp_res['body_snippet']) ? ' Resposta: ' . $wpp_res['body_snippet'] : '';
-                    wp_send_json_error('Não foi possível sincronizar os templates HSM para esta carteira.' . $hint);
-                    return;
+                    $got_rcs_this_wallet = count($templates) > $snapshot_templates_count;
+                    $need_wpp = ($otima_channel === 'wpp');
+                    if ($need_wpp || !$got_rcs_this_wallet) {
+                        $hint = isset($wpp_res['body_snippet']) ? ' Resposta: ' . $wpp_res['body_snippet'] : '';
+                        wp_send_json_error('Não foi possível sincronizar os templates HSM (WhatsApp) para esta carteira.' . $hint);
+                        return;
+                    }
+                    error_log('[Ótima] HSM falhou para wallet=' . $wallet_otima . ' mas há templates RCS — retornando lista sem HSM.');
                 }
 
                 $wpp_data = ($wpp_res['ok'] && is_array($wpp_res['data'])) ? $wpp_res['data'] : [];

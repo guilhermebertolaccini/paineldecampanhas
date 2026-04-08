@@ -397,17 +397,28 @@ export const getIscas = () => {
   return wpAjax('pc_get_iscas', {});
 };
 
+/** Escopo da busca no proxy PHP: evita chamar HSM (WhatsApp) quando só RCS importa, e vice-versa. */
+export type OtimaTemplatesChannel = 'both' | 'wpp' | 'rcs';
+
 /**
- * Templates Ótima (HSM/RCS). Regra: o ID na URL da Ótima é sempre `wallet_id` (coluna id_carteira no cadastro).
+ * Templates Ótima (HSM WhatsApp + RCS). Regra: o ID na URL da Ótima é sempre `wallet_id` (coluna id_carteira no cadastro).
  * Quando `walletId` está definido, só ele é enviado — a PK local não acompanha o request (evita confusão no proxy).
  * Sem wallet: envia `carteira_id` (PK) só para o PHP resolver `id_carteira` no banco; a API externa nunca recebe a PK.
+ * `otimaChannel`: `rcs` | `wpp` | `both` (padrão) — alinha com `pc_get_otima_templates` / `otima_channel`.
  */
-export const getOtimaTemplates = (walletId?: string, carteiraDbId?: string) => {
+export const getOtimaTemplates = (
+  walletId?: string,
+  carteiraDbId?: string,
+  otimaChannel: OtimaTemplatesChannel = 'both',
+) => {
   const payload: Record<string, string> = {};
   if (walletId) {
     payload.wallet_id = String(walletId);
   } else if (carteiraDbId) {
     payload.carteira_id = String(carteiraDbId);
+  }
+  if (otimaChannel && otimaChannel !== 'both') {
+    payload.otima_channel = otimaChannel;
   }
 
   if (typeof window !== 'undefined') {

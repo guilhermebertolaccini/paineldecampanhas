@@ -174,9 +174,12 @@ export function RecurringCampaignCreateForm() {
   const walletIdForOtima =
     rawWallet != null && String(rawWallet).trim() !== "" ? String(rawWallet).trim() : undefined;
 
+  const otimaTemplatesChannel =
+    templateSource === "otima_rcs" ? "rcs" : templateSource === "otima_wpp" ? "wpp" : "both";
+
   const { data: otimaTemplatesData = [] } = useQuery({
-    queryKey: ["otima-templates-rec", walletIdForOtima, carteira],
-    queryFn: () => getOtimaTemplates(walletIdForOtima, carteira),
+    queryKey: ["otima-templates-rec", walletIdForOtima, carteira, otimaTemplatesChannel],
+    queryFn: () => getOtimaTemplates(walletIdForOtima, carteira, otimaTemplatesChannel),
     enabled: !!carteira,
     staleTime: 60 * 1000,
   });
