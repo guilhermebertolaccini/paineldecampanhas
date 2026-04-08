@@ -40,6 +40,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
+import { useMakingCostCenters, useMakingTeams } from "@/hooks/useMakingLists";
 import {
   uploadCampaignFile,
   getMessages,
@@ -141,6 +142,8 @@ export default function CampanhaArquivo() {
   const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
   /** Envio direto: não consulta a base — só dados brutos do CSV. */
   const [semConsulta, setSemConsulta] = useState(false);
+  const [makingTeamId, setMakingTeamId] = useState("");
+  const [makingCostCenterId, setMakingCostCenterId] = useState("");
 
   // Buscar carteiras (deve vir antes do useMemo que a usa)
   const { data: carteiras = [] } = useQuery({
@@ -452,6 +455,24 @@ export default function CampanhaArquivo() {
 
   const templates = filteredTemplates;
 
+  const selectedTemplateRow = useMemo(
+    () => templates.find((t: { id?: string }) => t.id === template),
+    [templates, template],
+  );
+  const isMakingTemplateSelected = selectedTemplateRow?.source === "making_oficial";
+  const {
+    data: makingTeamsFile = [],
+    isLoading: makingTeamsFileLoading,
+    isError: makingTeamsFileError,
+    error: makingTeamsFileErr,
+  } = useMakingTeams(Boolean(isMakingTemplateSelected && provider));
+  const {
+    data: makingCostCentersFile = [],
+    isLoading: makingCostCentersFileLoading,
+    isError: makingCostCentersFileError,
+    error: makingCostCentersFileErr,
+  } = useMakingCostCenters(Boolean(isMakingTemplateSelected && provider));
+
   const otimaBrokersForTemplate = useMemo(() => {
     const list = Array.isArray(otimaBrokersData) ? otimaBrokersData : [];
     const isDiag = (b: any) => String(b.code ?? '').startsWith('error_');
@@ -621,6 +642,8 @@ export default function CampanhaArquivo() {
     setGosacConnectionId('');
     setTemplateVariables({});
     setSelectedTemplateObj(null);
+    setMakingTeamId('');
+    setMakingCostCenterId('');
   }, [carteira, provider]);
 
   const templatesLoading = localTemplatesLoading || otimaTemplatesLoading || externalTemplatesLoading || gosacTemplatesLoading || robbuTemplatesLoading || otimaBrokersLoading;
@@ -845,6 +868,19 @@ export default function CampanhaArquivo() {
       }
     }
 
+    if (!salesforceOnly && !isTechiaDiscador && selectedTemplate?.source === "making_oficial") {
+      const mkT = parseInt(String(makingTeamId || ""), 10);
+      const mkC = parseInt(String(makingCostCenterId || ""), 10);
+      if (!mkT || mkT <= 0 || !mkC || mkC <= 0) {
+        toast({
+          title: "Making Oficial",
+          description: "Selecione a Equipe e o Centro de Custo.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     if (
       !salesforceOnly &&
       !isTechiaDiscador &&
@@ -967,6 +1003,10 @@ export default function CampanhaArquivo() {
       payload.gosac_variable_components = selectedTemplate.variableComponents
         ? JSON.stringify(selectedTemplate.variableComponents)
         : '[]';
+    }
+    if (templateSource === "making_oficial") {
+      payload.making_team_id = makingTeamId;
+      payload.making_cost_center_id = makingCostCenterId;
     }
 
     createMutation.mutate(payload);
@@ -1415,6 +1455,12 @@ export default function CampanhaArquivo() {
                                       });
                                       setTemplateVariables(initMap);
                                     }
+                                    if (selectedTpl?.source === "making_oficial") {
+                                      /* mantém equipe/CC se o usuário trocar entre templates Making */
+                                    } else {
+                                      setMakingTeamId("");
+                                      setMakingCostCenterId("");
+                                    }
                                     setOpenTemplateDropdown(false);
                                   }}
                                 >
@@ -1444,6 +1490,77 @@ export default function CampanhaArquivo() {
                   </Command>
                 </PopoverContent>
               </Popover>
+
+              {isMakingTemplateSelected && (
+                <div className="space-y-4 pt-2">
+                  <div className="space-y-2">
+                    <Label>
+                      Equipe (Making) <span className="text-red-500">*</span>
+                    </Label>
+                    <Select
+                      value={makingTeamId}
+                      onValueChange={setMakingTeamId}
+                      disabled={makingTeamsFileLoading}
+                    >
+                      <SelectTrigger>
+                        <SelectValue
+                          placeholder={
+                            makingTeamsFileLoading ? "Carregando equipes…" : "Selecione a equipe"
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {makingTeamsFileError && (
+                          <div className="px-3 py-2 text-xs text-destructive">
+                            {makingTeamsFileErr instanceof Error
+                              ? makingTeamsFileErr.message
+                              : "Falha ao listar equipes."}
+                          </div>
+                        )}
+                        {(makingTeamsFile as { id: string; name: string }[]).map((row) => (
+                          <SelectItem key={`mkf-team-${row.id}`} value={String(row.id)}>
+                            {row.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>
+                      Centro de Custo (Making) <span className="text-red-500">*</span>
+                    </Label>
+                    <Select
+                      value={makingCostCenterId}
+                      onValueChange={setMakingCostCenterId}
+                      disabled={makingCostCentersFileLoading}
+                    >
+                      <SelectTrigger>
+                        <SelectValue
+                          placeholder={
+                            makingCostCentersFileLoading
+                              ? "Carregando centros de custo…"
+                              : "Selecione o centro de custo"
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {makingCostCentersFileError && (
+                          <div className="px-3 py-2 text-xs text-destructive">
+                            {makingCostCentersFileErr instanceof Error
+                              ? makingCostCentersFileErr.message
+                              : "Falha ao listar centros de custo."}
+                          </div>
+                        )}
+                        {(makingCostCentersFile as { id: string; name: string }[]).map((row) => (
+                          <SelectItem key={`mkf-cc-${row.id}`} value={String(row.id)}>
+                            {row.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
             </div>
             )}
 

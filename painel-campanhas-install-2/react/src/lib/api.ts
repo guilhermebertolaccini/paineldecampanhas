@@ -344,6 +344,10 @@ export const scheduleCampaign = (data: Record<string, any>) => {
       ? data.gosac_variable_components
       : JSON.stringify(data.gosac_variable_components || []);
   }
+  if (data.template_source === 'making_oficial') {
+    payload.making_team_id = data.making_team_id ?? '';
+    payload.making_cost_center_id = data.making_cost_center_id ?? '';
+  }
 
   return wpAjax('cm_schedule_campaign', payload, 'cmNonce');
 };
@@ -629,6 +633,10 @@ export const saveRecurring = (data: Record<string, any>) => {
   if (data.template_source === 'robbu_oficial') {
     payload.robbu_channel = data.robbu_channel ?? 3;
   }
+  if (data.template_source === 'making_oficial') {
+    payload.making_team_id = data.making_team_id ?? '';
+    payload.making_cost_center_id = data.making_cost_center_id ?? '';
+  }
   if (data.variables_map != null && typeof data.variables_map === 'object') {
     payload.variables_map = JSON.stringify(data.variables_map);
   }
@@ -750,6 +758,10 @@ export const createCpfCampaign = (data: Record<string, any>) => {
     payload.gosac_connection_id = data.gosac_connection_id ?? '';
     payload.gosac_variable_components = data.gosac_variable_components ?? '[]';
   }
+  if (templateSource === 'making_oficial') {
+    payload.making_team_id = data.making_team_id ?? '';
+    payload.making_cost_center_id = data.making_cost_center_id ?? '';
+  }
 
   if (data.variables_map && typeof data.variables_map === 'object') {
     payload.variables_map = JSON.stringify(data.variables_map);
@@ -757,6 +769,7 @@ export const createCpfCampaign = (data: Record<string, any>) => {
     templateSource === 'noah_oficial' ||
     templateSource === 'gosac_oficial' ||
     templateSource === 'robbu_oficial' ||
+    templateSource === 'making_oficial' ||
     templateSource === 'otima_wpp' ||
     templateSource === 'otima_rcs'
   ) {
@@ -1324,4 +1337,26 @@ export const getTemplatesByWallet = async (walletId: number | string): Promise<a
   if (!walletId) return [];
   const data = await wpAjax('pc_get_templates_by_wallet', { wallet_id: String(walletId) });
   return Array.isArray(data) ? data : [];
+};
+
+export type MakingListItem = { id: string; name: string };
+
+function unwrapMakingList(raw: unknown): MakingListItem[] {
+  if (Array.isArray(raw)) return raw as MakingListItem[];
+  if (raw && typeof raw === "object" && Array.isArray((raw as { data?: unknown }).data)) {
+    return (raw as { data: MakingListItem[] }).data;
+  }
+  return [];
+}
+
+/** Equipes Making — JWT global (API Manager). */
+export const getMakingTeams = async (): Promise<MakingListItem[]> => {
+  const data = await wpAjax("pc_get_making_teams", {});
+  return unwrapMakingList(data);
+};
+
+/** Centros de custo Making — JWT global. */
+export const getMakingCostCenters = async (): Promise<MakingListItem[]> => {
+  const data = await wpAjax("pc_get_making_cost_centers", {});
+  return unwrapMakingList(data);
 };

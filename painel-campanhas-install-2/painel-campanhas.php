@@ -357,6 +357,8 @@ class Painel_Campanhas
         add_action('wp_ajax_pc_get_robbu_webhook_stats', [$this, 'handle_get_robbu_webhook_stats']);
         add_action('wp_ajax_pc_get_all_connections_health', [$this, 'handle_get_all_connections_health']);
         add_action('wp_ajax_pc_get_templates_by_wallet', [$this, 'handle_get_templates_by_wallet']);
+        add_action('wp_ajax_pc_get_making_teams', [$this, 'handle_get_making_teams']);
+        add_action('wp_ajax_pc_get_making_cost_centers', [$this, 'handle_get_making_cost_centers']);
 
         // AJAX Salesforce Manual Import
         add_action('wp_ajax_pc_run_salesforce_import', [$this, 'handle_run_salesforce_import']);
@@ -1803,7 +1805,9 @@ class Painel_Campanhas
                 'robbu_username' => 'sanitize_text_field',
                 'robbu_password' => 'sanitize_text_field',
                 'robbu_invenio_token' => 'sanitize_text_field',
-                'dashboard_password' => 'sanitize_text_field'
+                'dashboard_password' => 'sanitize_text_field',
+                'making_jwt_token' => 'sanitize_text_field',
+                'making_phone_id' => 'sanitize_text_field',
             ];
 
             // Atualiza APENAS campos que foram enviados E têm valor (não vazio)
@@ -1895,6 +1899,13 @@ class Painel_Campanhas
             if (!empty($static_credentials['dashboard_password'])) {
                 update_option('ga_dashboard_password', $static_credentials['dashboard_password']);
             }
+            // Making Oficial: espelho em options dedicadas (get_option) para REST/AJAX
+            if (isset($static_credentials['making_jwt_token'])) {
+                update_option('making_jwt_token', (string) $static_credentials['making_jwt_token']);
+            }
+            if (isset($static_credentials['making_phone_id'])) {
+                update_option('making_phone_id', (string) $static_credentials['making_phone_id']);
+            }
 
             wp_send_json_success(['message' => 'Static credentials salvas com sucesso!']);
 
@@ -1957,7 +1968,9 @@ class Painel_Campanhas
             'robbu_username',
             'robbu_password',
             'robbu_invenio_token',
-            'dashboard_password'
+            'dashboard_password',
+            'making_jwt_token',
+            'making_phone_id',
         ];
 
         foreach ($default_fields as $field) {
@@ -3521,6 +3534,8 @@ class Painel_Campanhas
             if ($nome_carteira_persist === '' && !empty($carteira)) {
                 $nome_carteira_persist = $this->get_carteira_nome_by_id((int) $carteira);
             }
+            $making_team_id_cpf = intval($_POST['making_team_id'] ?? 0);
+            $making_cost_center_id_cpf = intval($_POST['making_cost_center_id'] ?? 0);
 
             $include_baits = isset($_POST['include_baits']) ? intval($_POST['include_baits']) : 0;
             $test_only = isset($_POST['test_only']) ? intval($_POST['test_only']) : 0;
@@ -3548,6 +3563,9 @@ class Painel_Campanhas
             if (($table_required && empty($table_name)) || ($temp_id_required && empty($temp_id)) || !$is_template_ok || empty($providers_config['providers'])) {
                 error_log('🔴 [handle_create_cpf_campaign] Dados incompletos: table_name=' . $table_name . ', temp_id=' . $temp_id . ', sem_consulta=' . ($sem_consulta ? '1' : '0') . ', template_source=' . $template_source . ', template_code=' . $template_code . ', template_id=' . $template_id . ', providers_count=' . (is_array($providers_config['providers'] ?? null) ? count($providers_config['providers']) : 0));
                 wp_send_json_error('Dados incompletos');
+            }
+            if ($template_source === 'making_oficial' && ($making_team_id_cpf <= 0 || $making_cost_center_id_cpf <= 0)) {
+                wp_send_json_error('Making Oficial: selecione Equipe e Centro de Custo.');
             }
 
             // Carrega template
@@ -3824,6 +3842,8 @@ class Painel_Campanhas
                             'send_meta_template' => $template_code,
                             'template_code' => $template_code,
                             'nome_campanha' => $nome_campanha_row,
+                            'making_team_id' => $making_team_id_cpf,
+                            'making_cost_center_id' => $making_cost_center_id_cpf,
                             'variables_map' => $variables_map,
                             'variables' => $making_vars,
                             'original_message' => $mensagem_final,
@@ -4206,6 +4226,10 @@ class Painel_Campanhas
         if ($template_source === 'robbu_oficial') {
             $template_meta_arr['robbu_channel'] = intval($_POST['robbu_channel'] ?? 3);
         }
+        if ($template_source === 'making_oficial') {
+            $template_meta_arr['making_team_id'] = intval($_POST['making_team_id'] ?? 0);
+            $template_meta_arr['making_cost_center_id'] = intval($_POST['making_cost_center_id'] ?? 0);
+        }
         $template_meta_json = !empty($template_meta_arr)
             ? wp_json_encode($template_meta_arr, JSON_UNESCAPED_UNICODE)
             : null;
@@ -4226,6 +4250,10 @@ class Painel_Campanhas
             wp_send_json_error('Template_id inválido para template local.');
         } elseif (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'noah', 'robbu_oficial', 'making_oficial'], true) && $template_code === '') {
             wp_send_json_error('Informe o template (código/nome) para este fornecedor.');
+        }
+        if ($template_source === 'making_oficial' && $template_code !== ''
+            && (intval($_POST['making_team_id'] ?? 0) <= 0 || intval($_POST['making_cost_center_id'] ?? 0) <= 0)) {
+            wp_send_json_error('Making Oficial: selecione Equipe e Centro de Custo.');
         }
 
         // Cria tabela se não existir
@@ -4568,11 +4596,18 @@ class Painel_Campanhas
                 'channel' => 3,
             ];
         } elseif ($template_source === 'making_oficial' && !empty($template_code)) {
+            $making_team_id = intval($_POST['making_team_id'] ?? 0);
+            $making_cost_center_id = intval($_POST['making_cost_center_id'] ?? 0);
+            if ($making_team_id <= 0 || $making_cost_center_id <= 0) {
+                wp_send_json_error('Making Oficial: selecione a Equipe e o Centro de Custo.');
+            }
             $message_content = 'Template Making Oficial: ' . $template_code;
             $template_info = [
                 'template_code' => $template_code,
                 'source' => 'making_oficial',
                 'send_meta_template' => $template_code,
+                'making_team_id' => $making_team_id,
+                'making_cost_center_id' => $making_cost_center_id,
             ];
         } else {
             wp_send_json_error('Template inválido. Informe template_id para templates locais ou template_code para templates externos (Ótima, GOSAC Oficial, NOAH Oficial, Making Oficial).');
@@ -4868,6 +4903,8 @@ class Painel_Campanhas
                         'send_meta_template' => $send_meta,
                         'template_code' => $send_meta,
                         'nome_campanha' => $nome_campanha_camp,
+                        'making_team_id' => intval($template_info['making_team_id'] ?? 0),
+                        'making_cost_center_id' => intval($template_info['making_cost_center_id'] ?? 0),
                         'variables_map' => $variables_map,
                         'variables' => $making_vars,
                         'original_message' => $mensagem_final,
@@ -7062,6 +7099,8 @@ class Painel_Campanhas
             }
             if ($template_source_row === 'making_oficial') {
                 $template_info_recurring['send_meta_template'] = $template_code_top;
+                $template_info_recurring['making_team_id'] = intval($template_meta['making_team_id'] ?? 0);
+                $template_info_recurring['making_cost_center_id'] = intval($template_meta['making_cost_center_id'] ?? 0);
             }
 
             // 6. Distribui registros entre provedores
@@ -7258,6 +7297,8 @@ class Painel_Campanhas
                             'send_meta_template' => $send_meta,
                             'template_code' => $send_meta,
                             'nome_campanha' => $nome_rec,
+                            'making_team_id' => intval($template_info_recurring['making_team_id'] ?? 0),
+                            'making_cost_center_id' => intval($template_info_recurring['making_cost_center_id'] ?? 0),
                             'variables_map' => $variables_map,
                             'variables' => $making_vars,
                             'original_message' => $mensagem_final,
@@ -8244,6 +8285,36 @@ class Painel_Campanhas
                     'Credenciais TECHIA não encontradas para env_id ' . $env_id . '. Configure no API Manager (TECHIA) ou credenciais dinâmicas.',
                     ['status' => 404]
                 );
+            }
+
+            // Making Oficial: JWT + phone_number_id globais (não por carteira). Equipe e centro de custo vêm do JSON da mensagem na fila.
+            if (strtoupper($provider) === 'MAKING_OFICIAL') {
+                $mk = $this->get_making_global_config();
+                $jwt = $mk['jwt'];
+                $phone_raw = $mk['phone_id'];
+                $phone_n = is_numeric($phone_raw) ? (int) $phone_raw : (int) preg_replace('/\D/', '', (string) $phone_raw);
+                if ($jwt === '') {
+                    return new WP_Error(
+                        'invalid_credentials',
+                        'Making Oficial: configure o JWT global (API Manager → credenciais estáticas: Making Oficial).',
+                        ['status' => 400]
+                    );
+                }
+                if ($phone_n <= 0) {
+                    return new WP_Error(
+                        'invalid_credentials',
+                        'Making Oficial: configure o Phone Number ID global (API Manager → credenciais estáticas).',
+                        ['status' => 400]
+                    );
+                }
+                error_log('✅ [REST API] MAKING_OFICIAL credenciais globais (envId=' . $env_id . ' ignorado para token/phone)');
+
+                return rest_ensure_response([
+                    'token' => $jwt,
+                    'bearer_token' => $jwt,
+                    'phone_number_id' => $phone_n,
+                    'phoneNumberId' => $phone_n,
+                ]);
             }
 
             // Providers dinâmicos (GOSAC, NOAH) - busca credenciais por envId
@@ -12246,8 +12317,165 @@ class Painel_Campanhas
     }
 
     /**
+     * JWT e phone_number_id globais da Making (acm_static_credentials ou options dedicadas).
+     *
+     * @return array{jwt: string, phone_id: string}
+     */
+    private function get_making_global_config()
+    {
+        $st = get_option('acm_static_credentials', []);
+        if (!is_array($st)) {
+            $st = [];
+        }
+        $jwt = trim((string) get_option('making_jwt_token', ''));
+        if ($jwt === '') {
+            $jwt = trim((string) ($st['making_jwt_token'] ?? ''));
+        }
+        $phone = trim((string) get_option('making_phone_id', ''));
+        if ($phone === '') {
+            $phone = trim((string) ($st['making_phone_id'] ?? ''));
+        }
+
+        return ['jwt' => $jwt, 'phone_id' => $phone];
+    }
+
+    /**
+     * Normaliza respostas da Making (list_api) para [{id, name}].
+     *
+     * @param mixed $decoded
+     * @return array<int, array{id: string, name: string}>
+     */
+    private function normalize_making_id_name_list($decoded)
+    {
+        if (!is_array($decoded)) {
+            return [];
+        }
+        $rows = [];
+        foreach (['data', 'teams', 'team', 'costs', 'cost', 'cost_centers', 'items', 'list', 'models'] as $k) {
+            if (isset($decoded[$k]) && is_array($decoded[$k])) {
+                $rows = $decoded[$k];
+                break;
+            }
+        }
+        if ($rows === [] && function_exists('wp_is_numeric_array') && wp_is_numeric_array($decoded)) {
+            $rows = $decoded;
+        } elseif ($rows === [] && $decoded !== [] && array_keys($decoded) === range(0, count($decoded) - 1)) {
+            $rows = $decoded;
+        }
+        $out = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $rid = $row['id'] ?? $row['team_id'] ?? $row['cost_center_id'] ?? $row['codigo'] ?? null;
+            if ($rid === null || $rid === '') {
+                continue;
+            }
+            $name = trim((string) ($row['name'] ?? $row['nome'] ?? $row['title'] ?? $row['description'] ?? ''));
+            if ($name === '') {
+                $name = 'ID ' . (string) $rid;
+            }
+            $out[] = [
+                'id' => (string) $rid,
+                'name' => $name,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * GET team/list_api ou cost/list_api na API Making.
+     *
+     * @param string $path ex.: team/list_api
+     * @return array|WP_Error
+     */
+    private function fetch_making_oficial_list_api($path, $bearer_raw)
+    {
+        $raw = trim((string) $bearer_raw);
+        if ($raw === '') {
+            return new WP_Error('making_token_empty', 'Token JWT da Making ausente');
+        }
+        $auth = (stripos($raw, 'Bearer ') === 0) ? $raw : ('Bearer ' . $raw);
+        $path = ltrim((string) $path, '/');
+        $url = 'https://campanhas.makingpublicidade.com.br/' . $path;
+        $response = wp_remote_get($url, [
+            'headers' => [
+                'Authorization' => $auth,
+                'Accept' => 'application/json',
+            ],
+            'timeout' => 25,
+            'sslverify' => true,
+        ]);
+        if (is_wp_error($response)) {
+            return $response;
+        }
+        $code = (int) wp_remote_retrieve_response_code($response);
+        if ($code === 401) {
+            return new WP_Error('making_unauthorized', 'Token JWT da Making inválido ou expirado');
+        }
+        if ($code < 200 || $code >= 300) {
+            $snippet = substr((string) wp_remote_retrieve_body($response), 0, 400);
+
+            return new WP_Error('making_http', 'HTTP ' . $code . ' — ' . $snippet);
+        }
+        $body = wp_remote_retrieve_body($response);
+        $decoded = json_decode($body, true);
+        $list = $this->normalize_making_id_name_list($decoded);
+        if ($list === []) {
+            error_log('🔴 [Making Oficial] ' . $path . ' resposta vazia ou formato inesperado: ' . substr((string) $body, 0, 500));
+
+            return new WP_Error('making_parse', 'Resposta inválida ou lista vazia da API Making');
+        }
+
+        return $list;
+    }
+
+    public function handle_get_making_teams()
+    {
+        $this->pc_forbid_subscriber_ajax();
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Acesso negado']);
+            return;
+        }
+        check_ajax_referer('pc_nonce', 'nonce');
+        $cfg = $this->get_making_global_config();
+        if ($cfg['jwt'] === '') {
+            wp_send_json_error(['message' => 'Configure o JWT da Making nas credenciais estáticas (Making Oficial).']);
+            return;
+        }
+        $list = $this->fetch_making_oficial_list_api('team/list_api', $cfg['jwt']);
+        if (is_wp_error($list)) {
+            wp_send_json_error(['message' => $list->get_error_message()]);
+            return;
+        }
+        wp_send_json_success($list);
+    }
+
+    public function handle_get_making_cost_centers()
+    {
+        $this->pc_forbid_subscriber_ajax();
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Acesso negado']);
+            return;
+        }
+        check_ajax_referer('pc_nonce', 'nonce');
+        $cfg = $this->get_making_global_config();
+        if ($cfg['jwt'] === '') {
+            wp_send_json_error(['message' => 'Configure o JWT da Making nas credenciais estáticas (Making Oficial).']);
+            return;
+        }
+        $list = $this->fetch_making_oficial_list_api('cost/list_api', $cfg['jwt']);
+        if (is_wp_error($list)) {
+            wp_send_json_error(['message' => $list->get_error_message()]);
+            return;
+        }
+        wp_send_json_success($list);
+    }
+
+    /**
      * Lista modelos Making (WhatsApp Oficial) — GET /models/list_api.
-     * Credenciais: JWT em acm_provider_credentials[making_oficial][id_ambient].token
+     * Usa JWT global (acm_static_credentials / making_jwt_token).
      *
      * @param string $bearer_raw Token (com ou sem prefixo Bearer)
      * @return array|WP_Error Lista de itens para o painel ou erro
@@ -12463,30 +12691,30 @@ class Painel_Campanhas
                         error_log('🔴 [Noah] getTemplatesByWallet falhou: ' . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
                     }
                 }
-            } elseif ($provider === 'making_oficial') {
-                $tok = trim((string) ($data['token'] ?? ''));
-                if ($tok === '') {
-                    continue;
-                }
-                $mk_list = $this->fetch_making_oficial_models_list($tok);
-                if (is_wp_error($mk_list)) {
-                    $ec = $mk_list->get_error_code();
-                    if ($ec === 'http_request_failed' || $ec === 'making_unauthorized' || $ec === 'making_http') {
-                        wp_send_json_error(['message' => 'Token da Making inválido ou expirado. Verifique o API Manager.']);
-                        return;
-                    }
-                    error_log('🔴 [Making Oficial] getTemplatesByWallet: ' . $mk_list->get_error_message());
-                    continue;
-                }
-                foreach ($mk_list as $tpl) {
-                    if (!is_array($tpl)) {
-                        continue;
-                    }
-                    $tpl['id_ambient'] = $id_ambient;
-                    $all_templates[] = $tpl;
-                }
             }
             // robbu_oficial: templates via pc_get_robbu_oficial_templates (não dependem da carteira)
+        }
+
+        // Making Oficial: JWT global — não depende de acm_provider_credentials[making_oficial][carteira].
+        $mk_cfg_tpl = $this->get_making_global_config();
+        if ($mk_cfg_tpl['jwt'] !== '') {
+            $mk_list_global = $this->fetch_making_oficial_models_list($mk_cfg_tpl['jwt']);
+            if (is_wp_error($mk_list_global)) {
+                $ecg = $mk_list_global->get_error_code();
+                if ($ecg === 'making_unauthorized' || $ecg === 'making_http') {
+                    wp_send_json_error(['message' => 'Token da Making inválido ou expirado. Verifique o JWT global no API Manager.']);
+                    return;
+                }
+                error_log('🔴 [Making Oficial] getTemplatesByWallet (global): ' . $mk_list_global->get_error_message());
+            } elseif (is_array($mk_list_global)) {
+                foreach ($mk_list_global as $tpl_mk) {
+                    if (!is_array($tpl_mk)) {
+                        continue;
+                    }
+                    $tpl_mk['id_ambient'] = $id_ambient;
+                    $all_templates[] = $tpl_mk;
+                }
+            }
         }
 
         wp_send_json_success($all_templates);

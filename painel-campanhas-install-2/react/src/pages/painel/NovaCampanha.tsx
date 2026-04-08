@@ -65,6 +65,7 @@ import {
   uploadCampaignMedia,
 } from "@/lib/api";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useMakingCostCenters, useMakingTeams } from "@/hooks/useMakingLists";
 
 const providers = [
   { id: "OTIMA_RCS", name: "Ótima RCS", available: true },
@@ -116,6 +117,8 @@ export default function NovaCampanha() {
     gosacTemplateId: null as number | null,
     gosacConnectionId: null as number | null,
     gosacVariableComponents: [] as { componentId: number; variable: string }[],
+    makingTeamId: "",
+    makingCostCenterId: "",
     message: "",
     midia_campanha: "",
     providers: [] as string[],
@@ -272,6 +275,20 @@ export default function NovaCampanha() {
     queryFn: getRobbuOficialTemplates,
     staleTime: 5 * 60 * 1000,
   });
+
+  const makingListsEnabled = formData.templateSource === "making_oficial";
+  const {
+    data: makingTeamsData = [],
+    isLoading: makingTeamsLoading,
+    isError: makingTeamsError,
+    error: makingTeamsErr,
+  } = useMakingTeams(makingListsEnabled);
+  const {
+    data: makingCostCentersData = [],
+    isLoading: makingCostCentersLoading,
+    isError: makingCostCentersError,
+    error: makingCostCentersErr,
+  } = useMakingCostCenters(makingListsEnabled);
 
   // Buscar templates Ótima sob demanda (apenas após selecionar carteira)
   const selectedCarteiraObj = carteiras.find((c: any) => String(c.id) === String(formData.carteira));
@@ -922,6 +939,19 @@ export default function NovaCampanha() {
       }
     }
 
+    if (!salesforceOnly && formData.templateSource === "making_oficial") {
+      const mkTeam = parseInt(String(formData.makingTeamId || ""), 10);
+      const mkCc = parseInt(String(formData.makingCostCenterId || ""), 10);
+      if (!mkTeam || mkTeam <= 0 || !mkCc || mkCc <= 0) {
+        toast({
+          title: "Making Oficial",
+          description: "Selecione a Equipe e o Centro de Custo.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     if (!salesforceOnly && (formData.templateSource === 'noah_oficial' || formData.templateSource === 'noah')) {
       const ch = parseInt(
         String(formData.noahChannelId || selectedTemplateObj?.channelId || ''),
@@ -1035,6 +1065,10 @@ export default function NovaCampanha() {
         throttling_type: formData.throttling_type || 'none',
         throttling_config: formData.throttling_config || {},
         midia_campanha: formData.midia_campanha || '',
+        making_team_id:
+          formData.templateSource === "making_oficial" ? formData.makingTeamId || "" : "",
+        making_cost_center_id:
+          formData.templateSource === "making_oficial" ? formData.makingCostCenterId || "" : "",
         ...noahScheduleExtras,
       };
       saveRecurringMutation.mutate(recurringData);
@@ -1080,6 +1114,10 @@ export default function NovaCampanha() {
         throttling_type: formData.throttling_type || 'none',
         throttling_config: formData.throttling_config || {},
         midia_campanha: formData.midia_campanha || '',
+        making_team_id:
+          formData.templateSource === "making_oficial" ? formData.makingTeamId || "" : "",
+        making_cost_center_id:
+          formData.templateSource === "making_oficial" ? formData.makingCostCenterId || "" : "",
         ...noahScheduleExtras,
       };
 
@@ -1144,6 +1182,11 @@ export default function NovaCampanha() {
           formData.templateSource === 'noah_oficial' ||
           formData.templateSource === 'robbu_oficial' ||
           formData.templateSource === 'making_oficial';
+        if (formData.templateSource === "making_oficial") {
+          const mkTeam = parseInt(String(formData.makingTeamId || ""), 10);
+          const mkCc = parseInt(String(formData.makingCostCenterId || ""), 10);
+          if (!mkTeam || mkTeam <= 0 || !mkCc || mkCc <= 0) return false;
+        }
         // GOSAC/NOAH/Robbu: templateCode (nome do template) é suficiente; message pode vir vazio da API
         if (isExternalProvider) return boolean(formData.message.trim() || formData.templateCode);
         // Local templates (incl. Salesforce custom): accept if message loaded OR template selected
@@ -1603,6 +1646,12 @@ export default function NovaCampanha() {
                                     })(),
                                     gosacConnectionId: selectedTemplate?.connectionId ?? null,
                                     gosacVariableComponents: selectedTemplate?.variableComponents ?? [],
+                                    makingTeamId:
+                                      selectedTemplate?.source === "making_oficial" ? formData.makingTeamId : "",
+                                    makingCostCenterId:
+                                      selectedTemplate?.source === "making_oficial"
+                                        ? formData.makingCostCenterId
+                                        : "",
                                   });
 
                                   // Save template object for preview + variable extraction
@@ -1794,6 +1843,81 @@ export default function NovaCampanha() {
                   <p className="text-xs text-muted-foreground">
                     Obrigatório para o payload <code className="rounded bg-muted px-0.5">channelId</code> na API NOAH{' '}
                     <code className="rounded bg-muted px-0.5">send-template</code>.
+                  </p>
+                </div>
+              )}
+
+              {formData.templateSource === "making_oficial" && (
+                <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
+                  <div className="space-y-2">
+                    <Label>
+                      Equipe (Making) <span className="text-red-500">*</span>
+                    </Label>
+                    <Select
+                      value={formData.makingTeamId || ""}
+                      onValueChange={(v) => setFormData({ ...formData, makingTeamId: v })}
+                      disabled={makingTeamsLoading}
+                    >
+                      <SelectTrigger>
+                        <SelectValue
+                          placeholder={
+                            makingTeamsLoading ? "Carregando equipes…" : "Selecione a equipe"
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {makingTeamsError && (
+                          <div className="px-3 py-2 text-xs text-destructive">
+                            {makingTeamsErr instanceof Error
+                              ? makingTeamsErr.message
+                              : "Falha ao listar equipes. Verifique o JWT global da Making."}
+                          </div>
+                        )}
+                        {(makingTeamsData as { id: string; name: string }[]).map((row) => (
+                          <SelectItem key={`mk-team-${row.id}`} value={String(row.id)}>
+                            {row.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>
+                      Centro de Custo (Making) <span className="text-red-500">*</span>
+                    </Label>
+                    <Select
+                      value={formData.makingCostCenterId || ""}
+                      onValueChange={(v) => setFormData({ ...formData, makingCostCenterId: v })}
+                      disabled={makingCostCentersLoading}
+                    >
+                      <SelectTrigger>
+                        <SelectValue
+                          placeholder={
+                            makingCostCentersLoading
+                              ? "Carregando centros de custo…"
+                              : "Selecione o centro de custo"
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {makingCostCentersError && (
+                          <div className="px-3 py-2 text-xs text-destructive">
+                            {makingCostCentersErr instanceof Error
+                              ? makingCostCentersErr.message
+                              : "Falha ao listar centros de custo."}
+                          </div>
+                        )}
+                        {(makingCostCentersData as { id: string; name: string }[]).map((row) => (
+                          <SelectItem key={`mk-cc-${row.id}`} value={String(row.id)}>
+                            {row.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    JWT e Phone Number ID são configurados globalmente no API Manager. Equipe e centro de custo são
+                    obrigatórios por campanha.
                   </p>
                 </div>
               )}

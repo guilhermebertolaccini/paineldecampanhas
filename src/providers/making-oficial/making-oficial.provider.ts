@@ -65,17 +65,9 @@ export class MakingOficialProvider extends BaseProvider {
   validateCredentials(credentials: ProviderCredentials): boolean {
     const c = credentials as MakingOfficialCredentials;
     const token = String(c.token ?? c.bearer_token ?? '').trim();
-    const cc = Number(c.cost_center_id ?? c.costCenterId);
     const pn = Number(c.phone_number_id ?? c.phoneNumberId);
-    const teams = this.normalizeTeamIds(c.team_id ?? c.teamId);
-    return !!(
-      token &&
-      Number.isFinite(cc) &&
-      cc > 0 &&
-      Number.isFinite(pn) &&
-      pn > 0 &&
-      teams.length > 0
-    );
+    // Centro de custo e equipe vêm do JSON da mensagem (campanha); credenciais WP/Nest: só JWT + phone_number_id globais.
+    return !!(token && Number.isFinite(pn) && pn > 0);
   }
 
   /**
@@ -324,7 +316,7 @@ export class MakingOficialProvider extends BaseProvider {
       return {
         success: false,
         error:
-          'Credenciais Making inválidas: token (JWT), cost_center_id, phone_number_id e team_id (array ou número) são obrigatórios.',
+          'Credenciais Making inválidas: token (JWT) e phone_number_id globais são obrigatórios (WordPress).',
       };
     }
 
@@ -337,9 +329,17 @@ export class MakingOficialProvider extends BaseProvider {
 
     const c = credentials as MakingOfficialCredentials;
     const token = String(c.token ?? c.bearer_token ?? '').trim();
-    const costCenterId = Number(c.cost_center_id ?? c.costCenterId);
     const phoneNumberId = Number(c.phone_number_id ?? c.phoneNumberId);
-    const teamIds = this.normalizeTeamIds(c.team_id ?? c.teamId);
+
+    const firstParsed = data[0] ? this.parseMakingMensagemJson(data[0].mensagem) : null;
+    const costCenterRaw =
+      firstParsed?.making_cost_center_id ??
+      firstParsed?.cost_center_id ??
+      firstParsed?.costCenterId;
+    const costCenterId = Number(costCenterRaw);
+    const teamRaw =
+      firstParsed?.making_team_id ?? firstParsed?.team_id ?? firstParsed?.teamId;
+    const teamIds = this.normalizeTeamIds(teamRaw);
 
     const sendMetaTemplate = this.extractSendMetaTemplateFromBatch(data);
     if (!sendMetaTemplate) {
@@ -347,6 +347,21 @@ export class MakingOficialProvider extends BaseProvider {
         success: false,
         error:
           'send_meta_template ausente. Inclua no JSON da mensagem (ex.: send_meta_template ou template_name).',
+      };
+    }
+
+    if (!Number.isFinite(costCenterId) || costCenterId <= 0) {
+      return {
+        success: false,
+        error:
+          'making_cost_center_id ausente ou inválido no JSON da mensagem (campo obrigatório na criação da campanha).',
+      };
+    }
+    if (teamIds.length === 0) {
+      return {
+        success: false,
+        error:
+          'making_team_id ausente ou inválido no JSON da mensagem (deve ser um ID numérico; a API exige team_id como array).',
       };
     }
 

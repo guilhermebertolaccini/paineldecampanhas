@@ -27,6 +27,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
+import { useMakingCostCenters, useMakingTeams } from "@/hooks/useMakingLists";
 import {
   getAvailableBases,
   getFilters,
@@ -103,6 +104,8 @@ export function RecurringCampaignCreateForm() {
   const [selectedBaitIds, setSelectedBaitIds] = useState<number[]>([]);
   const [throttlingType, setThrottlingType] = useState<"none" | "linear" | "split">("none");
   const [throttlingConfig, setThrottlingConfig] = useState<Record<string, unknown>>({});
+  const [makingTeamId, setMakingTeamId] = useState("");
+  const [makingCostCenterId, setMakingCostCenterId] = useState("");
 
   const { data: carteiras = [] } = useQuery({ queryKey: ["carteiras"], queryFn: getCarteiras });
   const { data: basesCarteira = [] } = useQuery({
@@ -188,6 +191,15 @@ export function RecurringCampaignCreateForm() {
     queryFn: getOtimaBrokers,
     staleTime: 5 * 60 * 1000,
   });
+
+  const makingRecEnabled = templateSource === "making_oficial";
+  const { data: makingTeamsRec = [], isLoading: makingTeamsRecLoading, isError: makingTeamsRecErr } =
+    useMakingTeams(makingRecEnabled);
+  const {
+    data: makingCostCentersRec = [],
+    isLoading: makingCostCentersRecLoading,
+    isError: makingCostCentersRecErr,
+  } = useMakingCostCenters(makingRecEnabled);
 
   const { data: availableFilters = [], isLoading: filtersLoading } = useQuery({
     queryKey: ["filters", base],
@@ -419,6 +431,13 @@ export function RecurringCampaignCreateForm() {
         if (templateSource === "gosac_oficial" && (!gosacConnectionId || gosacConnectionId <= 0)) {
           throw new Error("Selecione a ilha GOSAC Oficial.");
         }
+        if (templateSource === "making_oficial") {
+          const mt = parseInt(String(makingTeamId || ""), 10);
+          const mc = parseInt(String(makingCostCenterId || ""), 10);
+          if (!mt || mt <= 0 || !mc || mc <= 0) {
+            throw new Error("Making Oficial: selecione Equipe e Centro de Custo.");
+          }
+        }
       }
 
       const pct: Record<string, number> = {};
@@ -467,6 +486,8 @@ export function RecurringCampaignCreateForm() {
         gosac_connection_id: gosacConnectionId,
         gosac_variable_components: JSON.stringify(gosacVariableComponents || []),
         robbu_channel: templateSource === "robbu_oficial" ? 3 : null,
+        making_team_id: templateSource === "making_oficial" ? makingTeamId : "",
+        making_cost_center_id: templateSource === "making_oficial" ? makingCostCenterId : "",
         variables_map: Object.keys(templateVariables).length > 0 ? templateVariables : null,
         providers_config: providersConfig,
         filters: formattedFilters,
@@ -512,6 +533,12 @@ export function RecurringCampaignCreateForm() {
     setGosacTemplateId(typeof tid === "number" && tid > 0 ? tid : parseInt(String(tid), 10) || null);
     setGosacConnectionId((sel.connectionId as number) ?? null);
     setGosacVariableComponents((sel.variableComponents as { componentId: number; variable: string }[]) || []);
+    if (String(sel.source || "") === "making_oficial") {
+      /* mantém seleção Making ao trocar entre templates Making */
+    } else {
+      setMakingTeamId("");
+      setMakingCostCenterId("");
+    }
 
     const otimaWppMap = buildInitialVariableMappingFromOtimaWpp(sel);
     const noahOfficialMap = buildInitialVariableMappingFromNoahOfficial(sel);
@@ -644,6 +671,51 @@ export function RecurringCampaignCreateForm() {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+            )}
+
+            {templateSource === "making_oficial" && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Equipe (Making) *</Label>
+                  <Select value={makingTeamId} onValueChange={setMakingTeamId} disabled={makingTeamsRecLoading}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={makingTeamsRecLoading ? "Carregando…" : "Selecione"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {makingTeamsRecErr && (
+                        <div className="px-3 py-2 text-xs text-destructive">Falha ao carregar equipes.</div>
+                      )}
+                      {(makingTeamsRec as { id: string; name: string }[]).map((r) => (
+                        <SelectItem key={r.id} value={String(r.id)}>
+                          {r.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Centro de Custo (Making) *</Label>
+                  <Select
+                    value={makingCostCenterId}
+                    onValueChange={setMakingCostCenterId}
+                    disabled={makingCostCentersRecLoading}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={makingCostCentersRecLoading ? "Carregando…" : "Selecione"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {makingCostCentersRecErr && (
+                        <div className="px-3 py-2 text-xs text-destructive">Falha ao carregar centros de custo.</div>
+                      )}
+                      {(makingCostCentersRec as { id: string; name: string }[]).map((r) => (
+                        <SelectItem key={r.id} value={String(r.id)}>
+                          {r.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             )}
 
