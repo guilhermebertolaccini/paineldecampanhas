@@ -128,6 +128,22 @@ export const wpAjax = async (
       return [];
     }
 
+    if (action === 'pc_get_otima_templates') {
+      const data = result.data as Record<string, unknown> | unknown[] | null;
+      if (data && typeof data === 'object' && !Array.isArray(data) && Array.isArray((data as Record<string, unknown>).templates)) {
+        const d = data as Record<string, unknown>;
+        if (d.debug_otima != null) {
+          console.group('🔍 [DEBUG ÓTIMA RAW]');
+          console.log(d.debug_otima);
+          console.groupEnd();
+        }
+        return d.templates;
+      }
+      if (Array.isArray(data)) {
+        return data;
+      }
+    }
+
     return result.data;
   } catch (error) {
     console.error('Erro na requisição AJAX:', error);
@@ -419,6 +435,19 @@ export const getOtimaTemplates = (
     payload.wallet_id = String(walletId);
   } else if (carteiraDbId) {
     payload.carteira_id = String(carteiraDbId);
+  }
+
+  try {
+    const h = typeof window !== 'undefined' ? window.location.hash || '' : '';
+    const qi = h.indexOf('?');
+    if (qi !== -1 && new URLSearchParams(h.slice(qi + 1)).get('debugOtima') === '1') {
+      payload.verbose_otima_debug = '1';
+    }
+  } catch {
+    /* ignore */
+  }
+  if (import.meta.env.DEV) {
+    payload.verbose_otima_debug = '1';
   }
 
   if (typeof window !== 'undefined') {

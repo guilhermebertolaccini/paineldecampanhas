@@ -12885,6 +12885,8 @@ class Painel_Campanhas
 
         check_ajax_referer('pc_nonce', 'nonce');
 
+        $want_verbose_otima = isset($_POST['verbose_otima_debug']) && (string) wp_unslash($_POST['verbose_otima_debug']) === '1';
+
         global $wpdb;
         $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
 
@@ -12938,7 +12940,17 @@ class Painel_Campanhas
         }
 
         if (empty($carteiras)) {
-            wp_send_json_success([]);
+            $empty_payload = ['templates' => []];
+            if ($want_verbose_otima) {
+                $empty_payload['debug_otima'] = [
+                    [
+                        'note' => 'Nenhuma carteira ativa para consultar na Ótima.',
+                        'wallet_id_post' => $wallet_from_request,
+                        'carteira_id_pk_post' => $carteira_db_pk,
+                    ],
+                ];
+            }
+            wp_send_json_success($empty_payload);
             return;
         }
 
@@ -12962,6 +12974,23 @@ class Painel_Campanhas
         }
 
         $templates = [];
+        $debug_otima_log = [];
+
+        $mask_otima_token = static function ($t) {
+            $t = (string) $t;
+            if ($t === '') {
+                return '(vazio)';
+            }
+
+            return strlen($t) <= 5 ? '***' : substr($t, 0, 5) . '***';
+        };
+
+        $append_otima_debug = function (array $entry) use (&$debug_otima_log, $want_verbose_otima) {
+            if (!$want_verbose_otima) {
+                return;
+            }
+            $debug_otima_log[] = $entry;
+        };
 
         /**
          * Lista de templates RCS a partir do JSON da Ótima (estrutura diferente de HSM WhatsApp).
@@ -13058,14 +13087,49 @@ class Painel_Campanhas
             return [];
         };
 
-        // Retorno: ok, http, data (lista normalizada), url — para logs e erro em modo carteira única (HSM)
-        $fetch_otima = function ($url, $token) {
-            if (empty($token)) {
-                error_log('🟡 [Otima Templates] Token vazio | ' . $url);
+        /**
+         * GET na API Ótima: token escolhido SOMENTE pelo path da URL (RCS ≠ WhatsApp).
+         * Não aceita token passado pelo chamador — evita autenticar RCS com otima_wpp_token por engano.
+         */
+        $fetch_otima = function ($url) use ($token_rcs, $token_wpp, $append_otima_debug, $mask_otima_token) {
+            $url = (string) $url;
+            $path = (string) (parse_url($url, PHP_URL_PATH) ?? '');
+            $is_rcs = (strpos($path, '/v1/rcs/') !== false);
+            $is_wpp = (strpos($path, '/v1/whatsapp/') !== false);
+            if (!$is_rcs && !$is_wpp) {
+                error_log('🔴 [Otima Templates] URL fora do padrão RCS/WPP: ' . $url);
+                $append_otima_debug([
+                    'url_chamada' => $url,
+                    'path_parseado' => $path,
+                    'api_kind' => 'unknown',
+                    'token_mascarado' => '(não aplicado)',
+                    'http_status' => 0,
+                    'raw_response_body' => '',
+                    'erro' => 'url_nao_rcs_nem_whatsapp',
+                ]);
+
+                return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => 'bad_url', 'decoded' => null];
+            }
+
+            $token = $is_rcs ? $token_rcs : $token_wpp;
+            $api_kind = $is_rcs ? 'rcs' : 'whatsapp';
+
+            if ($token === '') {
+                error_log('🟡 [Otima Templates] Token ' . $api_kind . ' vazio | ' . $url);
+                $append_otima_debug([
+                    'url_chamada' => $url,
+                    'path_parseado' => $path,
+                    'api_kind' => $api_kind,
+                    'token_mascarado' => $mask_otima_token($token),
+                    'http_status' => 0,
+                    'raw_response_body' => '',
+                    'erro' => 'token_empty_' . $api_kind,
+                ]);
+
                 return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => 'token_empty', 'decoded' => null];
             }
 
-            error_log('🔵 [Otima Templates] GET ' . $url . ' | token_prefix=' . substr($token, 0, 8) . '…');
+            error_log('🔵 [Otima Templates] GET ' . $url . ' | api=' . $api_kind . ' | token_prefix=' . substr($token, 0, 8) . '…');
 
             $response = wp_remote_get($url, [
                 'headers' => [
@@ -13091,21 +13155,45 @@ class Painel_Campanhas
             }
 
             if (is_wp_error($response)) {
-                error_log('🔴 [Otima Templates] WP_Error ' . $response->get_error_message() . ' | ' . $url);
-                return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => $response->get_error_message(), 'decoded' => null];
+                $err = $response->get_error_message();
+                error_log('🔴 [Otima Templates] WP_Error ' . $err . ' | ' . $url);
+                $append_otima_debug([
+                    'url_chamada' => $url,
+                    'path_parseado' => $path,
+                    'api_kind' => $api_kind,
+                    'token_mascarado' => $mask_otima_token($token),
+                    'http_status' => 0,
+                    'raw_response_body' => '',
+                    'wp_error' => $err,
+                ]);
+
+                return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => $err, 'decoded' => null];
             }
 
-            $http = wp_remote_retrieve_response_code($response);
+            $http = (int) wp_remote_retrieve_response_code($response);
             $body = wp_remote_retrieve_body($response);
+            $body_debug = $body;
+            if (strlen($body_debug) > 12000) {
+                $body_debug = substr($body_debug, 0, 12000) . '...[truncado]';
+            }
+
+            $append_otima_debug([
+                'url_chamada' => $url,
+                'path_parseado' => $path,
+                'api_kind' => $api_kind,
+                'token_mascarado' => $mask_otima_token($token),
+                'http_status' => $http,
+                'raw_response_body' => $body_debug,
+            ]);
 
             if ($http !== 200) {
                 error_log('🔴 [Otima Templates] HTTP ' . $http . ' | ' . $url . ' | body_snippet=' . substr($body, 0, 1200));
+
                 return ['ok' => false, 'http' => $http, 'data' => null, 'url' => $url, 'body_snippet' => substr($body, 0, 400), 'decoded' => null];
             }
 
             $data = json_decode($body, true);
             $normalized = [];
-            // RCS (e alguns endpoints): corpo JSON é array na raiz — priorizar antes de chaves tipo `data`.
             if (is_array($data) && $data !== [] && function_exists('wp_is_numeric_array') && wp_is_numeric_array($data)) {
                 $normalized = $data;
             } elseif (is_array($data) && $data !== [] && array_keys($data) === range(0, count($data) - 1)) {
@@ -13230,11 +13318,38 @@ class Painel_Campanhas
             return [];
         };
 
-        /** Proxy ao vivo: sem cache em banco; só GET na API Ótima. */
-        $fetch_otima_wpp_hsm = function ($url, $token) use ($normalize_otima_wpp_hsm_body) {
+        /** Proxy ao vivo HSM WhatsApp: usa exclusivamente o token WPP passado (já é otima_wpp_token no chamador). */
+        $fetch_otima_wpp_hsm = function ($url, $token) use ($normalize_otima_wpp_hsm_body, $append_otima_debug, $mask_otima_token) {
+            $url = (string) $url;
+            $path = (string) (parse_url($url, PHP_URL_PATH) ?? '');
+            if (strpos($path, '/v1/whatsapp/') === false) {
+                error_log('[Ótima HSM proxy] URL não é WhatsApp Ótima: ' . $url);
+                $append_otima_debug([
+                    'url_chamada' => $url,
+                    'path_parseado' => $path,
+                    'api_kind' => 'whatsapp_hsm',
+                    'token_mascarado' => '(não enviado)',
+                    'http_status' => 0,
+                    'raw_response_body' => '',
+                    'erro' => 'url_nao_whatsapp',
+                ]);
+
+                return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => 'bad_url'];
+            }
+
             $token_clean = preg_replace('/[\r\n\t]/', '', trim($token));
             if ($token_clean === '') {
                 error_log('[Ótima HSM proxy] Token WPP vazio — request não enviado | ' . $url);
+                $append_otima_debug([
+                    'url_chamada' => $url,
+                    'path_parseado' => $path,
+                    'api_kind' => 'whatsapp_hsm',
+                    'token_mascarado' => $mask_otima_token($token_clean),
+                    'http_status' => 0,
+                    'raw_response_body' => '',
+                    'erro' => 'token_wpp_vazio',
+                ]);
+
                 return ['ok' => false, 'http' => 0, 'data' => null, 'url' => $url, 'err' => 'token_empty'];
             }
 
@@ -13266,8 +13381,22 @@ class Painel_Campanhas
                 if ($last_http === 200) {
                     $last_body = trim($last_body);
                     $decoded = json_decode($last_body, true);
+                    $body_dbg = $last_body;
+                    if (strlen($body_dbg) > 12000) {
+                        $body_dbg = substr($body_dbg, 0, 12000) . '...[truncado]';
+                    }
                     if (!is_array($decoded)) {
                         error_log('[Ótima HSM proxy] JSON inválido ou não-array após decode | len_body=' . strlen($last_body));
+                        $append_otima_debug([
+                            'url_chamada' => $url,
+                            'path_parseado' => $path,
+                            'api_kind' => 'whatsapp_hsm',
+                            'token_mascarado' => $mask_otima_token($token_clean),
+                            'http_status' => 200,
+                            'raw_response_body' => $body_dbg,
+                            'erro' => 'json_invalido_pos_200',
+                        ]);
+
                         return ['ok' => false, 'http' => 200, 'data' => null, 'url' => $url, 'body_snippet' => substr($last_body, 0, 400)];
                     }
 
@@ -13278,11 +13407,33 @@ class Painel_Campanhas
                     }
                     error_log('[Ótima HSM proxy] HTTP 200 — lista normalizada: itens=' . count($normalized) . ($keys_hint !== '' ? ' | keys_0=' . $keys_hint : ''));
 
+                    $append_otima_debug([
+                        'url_chamada' => $url,
+                        'path_parseado' => $path,
+                        'api_kind' => 'whatsapp_hsm',
+                        'token_mascarado' => $mask_otima_token($token_clean),
+                        'http_status' => 200,
+                        'raw_response_body' => $body_dbg,
+                    ]);
+
                     return ['ok' => true, 'http' => 200, 'data' => $normalized, 'url' => $url];
                 }
             }
 
             error_log('[Ótima HSM proxy] Falha após tentativas de Authorization | último HTTP=' . $last_http . ' | ' . $url . ' | snippet=' . substr($last_body, 0, 600));
+
+            $fail_body = (string) $last_body;
+            if (strlen($fail_body) > 12000) {
+                $fail_body = substr($fail_body, 0, 12000) . '...[truncado]';
+            }
+            $append_otima_debug([
+                'url_chamada' => $url,
+                'path_parseado' => $path,
+                'api_kind' => 'whatsapp_hsm',
+                'token_mascarado' => $mask_otima_token($token_clean),
+                'http_status' => $last_http,
+                'raw_response_body' => $fail_body,
+            ]);
 
             return ['ok' => false, 'http' => $last_http, 'data' => null, 'url' => $url, 'body_snippet' => substr($last_body, 0, 400)];
         };
@@ -13295,7 +13446,7 @@ class Painel_Campanhas
             // --- RCS Templates (endpoint /v1/rcs/template/{wallet} — não é HSM) ---
             if (($otima_channel === 'both' || $otima_channel === 'rcs') && !empty($token_rcs)) {
                 $url_rcs = 'https://services.otima.digital/v1/rcs/template/' . rawurlencode($wallet_otima);
-                $rcs_res = $fetch_otima($url_rcs, $token_rcs);
+                $rcs_res = $fetch_otima($url_rcs);
                 $rcs_data = ($rcs_res['ok'] && is_array($rcs_res['data'])) ? $rcs_res['data'] : [];
                 if (empty($rcs_data) && $rcs_res['ok'] && !empty($rcs_res['decoded']) && is_array($rcs_res['decoded'])) {
                     $rcs_data = $normalize_otima_rcs_body($rcs_res['decoded']);
@@ -13411,7 +13562,11 @@ class Painel_Campanhas
         }
         error_log('[Ótima HSM proxy] wp_send_json_success | total_itens=' . count($templates) . ' | template_code WPP (amostra 50): ' . implode(', ', array_slice($wpp_codes_debug, 0, 50)));
 
-        wp_send_json_success($templates);
+        $payload = ['templates' => $templates];
+        if ($want_verbose_otima) {
+            $payload['debug_otima'] = $debug_otima_log;
+        }
+        wp_send_json_success($payload);
     }
 
     public function handle_get_otima_brokers()
