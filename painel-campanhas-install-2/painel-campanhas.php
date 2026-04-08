@@ -12993,101 +12993,6 @@ class Painel_Campanhas
         };
 
         /**
-         * Lista de templates RCS a partir do JSON da Ótima (estrutura diferente de HSM WhatsApp).
-         * A API costuma devolver o array de templates na raiz (sem `data` / `templates`).
-         */
-        $normalize_otima_rcs_body = function ($decoded) {
-            if (!is_array($decoded)) {
-                return [];
-            }
-            $is_numeric_list = static function (array $a): bool {
-                if ($a === []) {
-                    return true;
-                }
-                if (function_exists('wp_is_numeric_array')) {
-                    return wp_is_numeric_array($a);
-                }
-
-                return array_keys($a) === range(0, count($a) - 1);
-            };
-            // 0) Raiz = array sequencial de objetos (payload real: [ { "code", "media_type", "rich_card" }, ... ]).
-            if ($is_numeric_list($decoded)) {
-                $out = [];
-                foreach ($decoded as $row) {
-                    if (is_array($row)) {
-                        $out[] = $row;
-                    }
-                }
-
-                return $out;
-            }
-            $is_seq = static function ($a) {
-                return is_array($a) && $a !== [] && array_keys($a) === range(0, count($a) - 1);
-            };
-            $looks_rcs_row = static function ($row) {
-                if (!is_array($row)) {
-                    return false;
-                }
-                if (isset($row['rich_card']) && is_array($row['rich_card'])) {
-                    return true;
-                }
-                if (isset($row['template_id']) || isset($row['code']) || isset($row['description'])) {
-                    return true;
-                }
-                if (isset($row['name']) || isset($row['title'])) {
-                    return true;
-                }
-
-                return false;
-            };
-            $pick_seq = static function ($node) use ($is_seq, $looks_rcs_row) {
-                if (!$is_seq($node) || empty($node)) {
-                    return [];
-                }
-                if ($looks_rcs_row($node[0])) {
-                    return $node;
-                }
-                if (is_array($node[0])) {
-                    return $node;
-                }
-
-                return [];
-            };
-
-            $from = $pick_seq($decoded);
-            if ($from !== []) {
-                return $from;
-            }
-            if (isset($decoded['data']) && is_array($decoded['data'])) {
-                $d = $decoded['data'];
-                $from = $pick_seq($d);
-                if ($from !== []) {
-                    return $from;
-                }
-                if (!$is_seq($d)) {
-                    foreach (['templates', 'items', 'result', 'content', 'list'] as $k) {
-                        if (isset($d[$k]) && is_array($d[$k])) {
-                            $from = $pick_seq($d[$k]);
-                            if ($from !== []) {
-                                return $from;
-                            }
-                        }
-                    }
-                }
-            }
-            foreach (['templates', 'items', 'result', 'content', 'list'] as $k) {
-                if (isset($decoded[$k]) && is_array($decoded[$k])) {
-                    $from = $pick_seq($decoded[$k]);
-                    if ($from !== []) {
-                        return $from;
-                    }
-                }
-            }
-
-            return [];
-        };
-
-        /**
          * GET na API Ótima: token escolhido SOMENTE pelo path da URL (RCS ≠ WhatsApp).
          * Não aceita token passado pelo chamador — evita autenticar RCS com otima_wpp_token por engano.
          */
@@ -13131,26 +13036,39 @@ class Painel_Campanhas
 
             error_log('🔵 [Otima Templates] GET ' . $url . ' | api=' . $api_kind . ' | token_prefix=' . substr($token, 0, 8) . '…');
 
-            $response = wp_remote_get($url, [
-                'headers' => [
-                    'Authorization' => 'Bearer ' . $token,
-                    'Content-Type' => 'application/json',
-                    'Accept' => 'application/json',
-                ],
-                'timeout' => 15,
-            ]);
+            // RCS: a documentação/cURL da Ótima usa o token PURO no header Authorization (sem "Bearer ").
+            // WhatsApp: mantém Bearer + fallback sem prefixo em 400/401.
+            if ($is_rcs) {
+                $response = wp_remote_get($url, [
+                    'headers' => [
+                        'Authorization' => $token,
+                        'Content-Type' => 'application/json',
+                        'Accept' => 'application/json',
+                    ],
+                    'timeout' => 15,
+                ]);
+            } else {
+                $response = wp_remote_get($url, [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $token,
+                        'Content-Type' => 'application/json',
+                        'Accept' => 'application/json',
+                    ],
+                    'timeout' => 15,
+                ]);
 
-            if (!is_wp_error($response)) {
-                $code = wp_remote_retrieve_response_code($response);
-                if ($code === 400 || $code === 401) {
-                    $response = wp_remote_get($url, [
-                        'headers' => [
-                            'Authorization' => $token,
-                            'Content-Type' => 'application/json',
-                            'Accept' => 'application/json',
-                        ],
-                        'timeout' => 15,
-                    ]);
+                if (!is_wp_error($response)) {
+                    $code = wp_remote_retrieve_response_code($response);
+                    if ($code === 400 || $code === 401) {
+                        $response = wp_remote_get($url, [
+                            'headers' => [
+                                'Authorization' => $token,
+                                'Content-Type' => 'application/json',
+                                'Accept' => 'application/json',
+                            ],
+                            'timeout' => 15,
+                        ]);
+                    }
                 }
             }
 
@@ -13192,27 +13110,39 @@ class Painel_Campanhas
                 return ['ok' => false, 'http' => $http, 'data' => null, 'url' => $url, 'body_snippet' => substr($body, 0, 400), 'decoded' => null];
             }
 
-            $data = json_decode($body, true);
-            $normalized = [];
-            if (is_array($data) && $data !== [] && function_exists('wp_is_numeric_array') && wp_is_numeric_array($data)) {
-                $normalized = $data;
-            } elseif (is_array($data) && $data !== [] && array_keys($data) === range(0, count($data) - 1)) {
-                $normalized = $data;
-            } elseif (isset($data['data']) && is_array($data['data'])) {
-                $normalized = $data['data'];
-            } elseif (isset($data['templates']) && is_array($data['templates'])) {
-                $normalized = $data['templates'];
-            } elseif (isset($data['hsm']) && is_array($data['hsm'])) {
-                $normalized = $data['hsm'];
+            $raw_body = $body;
+            $decoded = json_decode($raw_body, true);
+
+            if ($is_rcs) {
+                // Resposta real: array JSON na raiz [ { "code": "...", "rich_card": {...} }, ... ] — não há envelope "data".
+                if (is_array($decoded) && isset($decoded[0]['code'])) {
+                    $normalized = $decoded;
+                } else {
+                    error_log('[OTIMA RCS RAW ERROR] ' . print_r($raw_body, true));
+                    $normalized = [];
+                }
+            } else {
+                $normalized = [];
+                if (is_array($decoded) && $decoded !== [] && function_exists('wp_is_numeric_array') && wp_is_numeric_array($decoded)) {
+                    $normalized = $decoded;
+                } elseif (is_array($decoded) && $decoded !== [] && array_keys($decoded) === range(0, count($decoded) - 1)) {
+                    $normalized = $decoded;
+                } elseif (isset($decoded['data']) && is_array($decoded['data'])) {
+                    $normalized = $decoded['data'];
+                } elseif (isset($decoded['templates']) && is_array($decoded['templates'])) {
+                    $normalized = $decoded['templates'];
+                } elseif (isset($decoded['hsm']) && is_array($decoded['hsm'])) {
+                    $normalized = $decoded['hsm'];
+                }
             }
 
             $keys_hint = '';
             if (isset($normalized[0]) && is_array($normalized[0])) {
                 $keys_hint = implode(',', array_slice(array_keys($normalized[0]), 0, 12));
             }
-            error_log('🟢 [Otima Templates] HTTP 200 | ' . $url . ' | itens=' . count($normalized) . ($keys_hint !== '' ? ' | keys_0=' . $keys_hint : '') . ' | raw_len=' . strlen($body));
+            error_log('🟢 [Otima Templates] HTTP 200 | ' . $url . ' | itens=' . count($normalized) . ($keys_hint !== '' ? ' | keys_0=' . $keys_hint : '') . ' | raw_len=' . strlen($raw_body));
 
-            return ['ok' => true, 'http' => 200, 'data' => $normalized, 'url' => $url, 'decoded' => is_array($data) ? $data : null];
+            return ['ok' => true, 'http' => 200, 'data' => $normalized, 'url' => $url, 'decoded' => is_array($decoded) ? $decoded : null];
         };
 
         /**
@@ -13448,68 +13378,52 @@ class Painel_Campanhas
                 $url_rcs = 'https://services.otima.digital/v1/rcs/template/' . rawurlencode($wallet_otima);
                 $rcs_res = $fetch_otima($url_rcs);
                 $rcs_data = ($rcs_res['ok'] && is_array($rcs_res['data'])) ? $rcs_res['data'] : [];
-                if (empty($rcs_data) && $rcs_res['ok'] && !empty($rcs_res['decoded']) && is_array($rcs_res['decoded'])) {
-                    $rcs_data = $normalize_otima_rcs_body($rcs_res['decoded']);
-                    if (!empty($rcs_data)) {
-                        error_log('[Ótima RCS] Lista recuperada via normalize_otima_rcs_body | itens=' . count($rcs_data) . ' | wallet=' . $wallet_otima);
-                    }
-                }
 
                 if (!empty($rcs_data)) {
-                    foreach ($rcs_data as $tpl) {
-                        if (!is_array($tpl)) {
+                    foreach ($rcs_data as $item) {
+                        if (!is_array($item) || !isset($item['code'])) {
                             continue;
                         }
-                        $code = isset($tpl['code']) ? trim((string) $tpl['code']) : '';
-                        if ($code === '' && isset($tpl['template_id'])) {
-                            $code = trim((string) $tpl['template_id']);
-                        }
+                        $code = (string) $item['code'];
                         if ($code === '') {
                             continue;
                         }
-
-                        $desc_raw = '';
-                        if (isset($tpl['rich_card']) && is_array($tpl['rich_card']) && isset($tpl['rich_card']['description'])) {
-                            $d = $tpl['rich_card']['description'];
-                            $desc_raw = is_string($d) ? trim($d) : '';
+                        $desc = '';
+                        if (isset($item['rich_card']['description']) && is_string($item['rich_card']['description'])) {
+                            $desc = wp_trim_words(trim($item['rich_card']['description']), 5, '...');
                         }
-                        $tpl_name = 'RCS ' . $code;
-                        if ($desc_raw !== '') {
-                            $tpl_name .= ' - ' . wp_trim_words($desc_raw, 5, '...');
-                        }
+                        $name = 'RCS ' . $code . ($desc !== '' ? ' - ' . $desc : '');
 
                         $content = '';
-                        if (isset($tpl['rich_card']) && is_array($tpl['rich_card'])) {
-                            if (!empty($tpl['rich_card']['title'])) {
-                                $content .= $tpl['rich_card']['title'] . "\n";
+                        if (isset($item['rich_card']) && is_array($item['rich_card'])) {
+                            if (!empty($item['rich_card']['title'])) {
+                                $content .= $item['rich_card']['title'] . "\n";
                             }
-                            if (!empty($tpl['rich_card']['description'])) {
-                                $content .= $tpl['rich_card']['description'];
+                            if (!empty($item['rich_card']['description'])) {
+                                $content .= $item['rich_card']['description'];
                             }
-                        } elseif (isset($tpl['text'])) {
-                            $content = is_string($tpl['text']) ? $tpl['text'] : '';
+                        } elseif (isset($item['text']) && is_string($item['text'])) {
+                            $content = $item['text'];
                         }
-
                         $image_url = null;
-                        if (isset($tpl['rich_card']) && is_array($tpl['rich_card'])) {
-                            $image_url = $tpl['rich_card']['image_url'] ?? null;
+                        if (isset($item['rich_card']) && is_array($item['rich_card'])) {
+                            $image_url = $item['rich_card']['image_url'] ?? null;
                         }
 
-                        // id / send_meta_template = code (contrato disparo RCS Ótima + expectativa do React).
                         $templates[] = [
                             'id' => $code,
-                            'name' => $tpl_name,
+                            'name' => $name,
                             'send_meta_template' => $code,
+                            'template_code' => $code,
                             'content' => $content,
                             'date' => date('Y-m-d H:i:s'),
                             'source' => 'otima_rcs',
-                            'template_code' => $code,
                             'wallet_id' => $wallet_otima,
                             'wallet_name' => $carteira_nome,
-                            'broker_code' => $tpl['broker_code'] ?? $tpl['brokerCode'] ?? '',
+                            'broker_code' => $item['broker_code'] ?? $item['brokerCode'] ?? '',
                             'customer_code' => $wallet_otima,
                             'image_url' => $image_url,
-                            'raw_data' => $tpl,
+                            'raw_data' => $item,
                         ];
                     }
                 }
