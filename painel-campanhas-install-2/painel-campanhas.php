@@ -12373,9 +12373,10 @@ class Painel_Campanhas
      * Normaliza respostas da Making (list_api) para [{id, name}].
      *
      * @param mixed $decoded
+     * @param string|null $list_kind 'team' | 'cost' | null (genérico)
      * @return array<int, array{id: string, name: string}>
      */
-    private function normalize_making_id_name_list($decoded)
+    private function normalize_making_id_name_list($decoded, $list_kind = null)
     {
         if (!is_array($decoded)) {
             return [];
@@ -12401,12 +12402,31 @@ class Painel_Campanhas
             if ($rid === null || $rid === '') {
                 continue;
             }
-            $name = trim((string) ($row['name'] ?? $row['nome'] ?? $row['title'] ?? $row['description'] ?? ''));
-            if ($name === '') {
-                $name = 'ID ' . (string) $rid;
+            $rid_str = (string) $rid;
+
+            if ($list_kind === 'cost') {
+                if (isset($row['company_name']) && trim((string) $row['company_name']) !== '') {
+                    $name = trim((string) $row['company_name']) . ' (ID: ' . $rid_str . ')';
+                } elseif (isset($row['name']) && trim((string) $row['name']) !== '') {
+                    $name = trim((string) $row['name']);
+                } else {
+                    $name = 'CC ' . $rid_str;
+                }
+            } elseif ($list_kind === 'team') {
+                if (isset($row['team_name']) && trim((string) $row['team_name']) !== '') {
+                    $name = trim((string) $row['team_name']) . ' (ID: ' . $rid_str . ')';
+                } else {
+                    $name = 'Equipe ' . $rid_str;
+                }
+            } else {
+                $name = trim((string) ($row['name'] ?? $row['nome'] ?? $row['title'] ?? $row['description'] ?? ''));
+                if ($name === '') {
+                    $name = 'ID ' . $rid_str;
+                }
             }
+
             $out[] = [
-                'id' => (string) $rid,
+                'id' => $rid_str,
                 'name' => $name,
             ];
         }
@@ -12418,9 +12438,10 @@ class Painel_Campanhas
      * GET team/list_api ou cost/list_api na API Making.
      *
      * @param string $path ex.: team/list_api
+     * @param string|null $list_kind 'team' | 'cost' — rótulos amigáveis (team_name / company_name)
      * @return array|WP_Error
      */
-    private function fetch_making_oficial_list_api($path, $bearer_raw)
+    private function fetch_making_oficial_list_api($path, $bearer_raw, $list_kind = null)
     {
         $raw = trim((string) $bearer_raw);
         if ($raw === '') {
@@ -12451,7 +12472,7 @@ class Painel_Campanhas
         }
         $body = wp_remote_retrieve_body($response);
         $decoded = json_decode($body, true);
-        $list = $this->normalize_making_id_name_list($decoded);
+        $list = $this->normalize_making_id_name_list($decoded, $list_kind);
         if ($list === []) {
             error_log('🔴 [Making Oficial] ' . $path . ' resposta vazia ou formato inesperado: ' . substr((string) $body, 0, 500));
 
@@ -12474,7 +12495,7 @@ class Painel_Campanhas
             wp_send_json_error(['message' => 'Configure o JWT da Making nas credenciais estáticas (Making Oficial).']);
             return;
         }
-        $list = $this->fetch_making_oficial_list_api('team/list_api', $cfg['jwt']);
+        $list = $this->fetch_making_oficial_list_api('team/list_api', $cfg['jwt'], 'team');
         if (is_wp_error($list)) {
             wp_send_json_error(['message' => $list->get_error_message()]);
             return;
@@ -12495,7 +12516,7 @@ class Painel_Campanhas
             wp_send_json_error(['message' => 'Configure o JWT da Making nas credenciais estáticas (Making Oficial).']);
             return;
         }
-        $list = $this->fetch_making_oficial_list_api('cost/list_api', $cfg['jwt']);
+        $list = $this->fetch_making_oficial_list_api('cost/list_api', $cfg['jwt'], 'cost');
         if (is_wp_error($list)) {
             wp_send_json_error(['message' => $list->get_error_message()]);
             return;
