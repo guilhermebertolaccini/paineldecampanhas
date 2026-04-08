@@ -13,15 +13,11 @@
  *   define('PC_MSSQL_USER', 'user_digital');
  *   define('PC_MSSQL_PASSWORD', getenv('PC_MSSQL_PASSWORD')); // ou string local fora do git
  *
- * Views no .27 via linked server (catálogo INFORMATION_SCHEMA no remoto, a partir do .26):
- *   define('PC_MSSQL_VIEWS_INFO_SCHEMA_CATALOG', '[SRV27].[DB_DIGITAL]');
- *   (alias aceito: PC_MSSQL_VIEWS_INFO_SCHEMA_PREFIX)
- *
- * Alternativa: conexão direta ao host das views:
+ * Opcional (avançado): segundo host só para metadados/views ou prefixos four-part — apenas via wp-config.php:
  *   define('PC_MSSQL_VIEWS_HOST', '10.103.2.27');
- *
- * Leitura de dados com four-part name (FROM):
+ *   define('PC_MSSQL_VIEWS_INFO_SCHEMA_CATALOG', '[SRV27].[DB_DIGITAL]'); // ou PC_MSSQL_VIEWS_INFO_SCHEMA_PREFIX
  *   define('PC_MSSQL_LINKED_FOUR_PART_PREFIX', '[SRV27].[DB_DIGITAL].[dbo]');
+ * Opções `pc_mssql_views_*` / linked no banco não são mais gravadas pelo painel (push PDO direto).
  *
  * Requisito PHP: extensão pdo_sqlsrv (ambiente Windows típico). pdo_dblib não é usado aqui.
  */
@@ -121,9 +117,10 @@ class PC_SqlServer_Connector
     private static function linked_four_part_prefix(): string
     {
         if (defined('PC_MSSQL_LINKED_FOUR_PART_PREFIX')) {
-            return (string) PC_MSSQL_LINKED_FOUR_PART_PREFIX;
+            return trim((string) PC_MSSQL_LINKED_FOUR_PART_PREFIX);
         }
-        return (string) get_option('pc_mssql_linked_four_part_prefix', '');
+
+        return '';
     }
 
     /**
@@ -138,11 +135,8 @@ class PC_SqlServer_Connector
         if (defined('PC_MSSQL_VIEWS_INFO_SCHEMA_PREFIX')) {
             return trim((string) PC_MSSQL_VIEWS_INFO_SCHEMA_PREFIX);
         }
-        $opt = trim((string) get_option('pc_mssql_views_info_schema_catalog', ''));
-        if ($opt !== '') {
-            return $opt;
-        }
-        return trim((string) get_option('pc_mssql_views_info_schema_prefix', ''));
+
+        return '';
     }
 
     /**

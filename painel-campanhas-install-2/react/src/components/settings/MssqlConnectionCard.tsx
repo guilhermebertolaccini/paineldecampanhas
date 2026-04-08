@@ -37,8 +37,6 @@ export function MssqlConnectionCard() {
     database: "",
     user: "",
     password: "",
-    viewsCatalog: "",
-    linkedPrefix: "",
   });
 
   const { data: mssqlSettings, isLoading: mssqlSettingsLoading } = useQuery({
@@ -58,8 +56,6 @@ export function MssqlConnectionCard() {
       database: s.pc_mssql_database || "",
       user: s.pc_mssql_user || "",
       password: "",
-      viewsCatalog: s.pc_mssql_views_info_schema_catalog || "",
-      linkedPrefix: s.pc_mssql_linked_four_part_prefix || "",
     }));
   }, [mssqlSettings]);
 
@@ -72,8 +68,6 @@ export function MssqlConnectionCard() {
         pc_mssql_database: mssqlForm.database,
         pc_mssql_user: mssqlForm.user,
         pc_mssql_password: mssqlForm.password,
-        pc_mssql_views_info_schema_catalog: mssqlForm.viewsCatalog,
-        pc_mssql_linked_four_part_prefix: mssqlForm.linkedPrefix,
       }),
     onSuccess: (res) => {
       toast({
@@ -118,6 +112,13 @@ export function MssqlConnectionCard() {
   const mssqlWpOverrides = mssqlSettings?.wp_config_override;
   const hasAnyMssqlWpOverride =
     mssqlWpOverrides && Object.values(mssqlWpOverrides).some(Boolean);
+
+  const wo = mssqlWpOverrides;
+  const hasBasicConnectionFields =
+    (Boolean(wo?.host) || mssqlForm.host.trim() !== "") &&
+    (Boolean(wo?.database) || mssqlForm.database.trim() !== "") &&
+    (Boolean(wo?.user) || mssqlForm.user.trim() !== "") &&
+    (Boolean(wo?.password) || mssqlForm.password.trim() !== "" || Boolean(mssqlSettings?.has_saved_password));
 
   if (!userCanManageOptions()) {
     return null;
@@ -230,32 +231,6 @@ export function MssqlConnectionCard() {
                   </p>
                 )}
               </div>
-              <div className="space-y-2 sm:col-span-2">
-                <Label htmlFor="pc-mssql-views-catalog">Prefixo catálogo (Info Schema / linked server)</Label>
-                <Input
-                  id="pc-mssql-views-catalog"
-                  autoComplete="off"
-                  value={mssqlForm.viewsCatalog}
-                  onChange={(e) => setMssqlForm((f) => ({ ...f, viewsCatalog: e.target.value }))}
-                  placeholder="[SRV27].[DB_DIGITAL]"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Opcional: lista <code className="text-xs">VW_BASE%</code> no servidor remoto via four-part name.
-                </p>
-              </div>
-              <div className="space-y-2 sm:col-span-2">
-                <Label htmlFor="pc-mssql-linked-prefix">Prefixo four-part (leitura de dados)</Label>
-                <Input
-                  id="pc-mssql-linked-prefix"
-                  autoComplete="off"
-                  value={mssqlForm.linkedPrefix}
-                  onChange={(e) => setMssqlForm((f) => ({ ...f, linkedPrefix: e.target.value }))}
-                  placeholder="[SRV27].[DB_DIGITAL].[dbo]"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Usado em <code className="text-xs">SELECT</code> sobre views remotas.
-                </p>
-              </div>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <Button
@@ -271,11 +246,13 @@ export function MssqlConnectionCard() {
                 type="button"
                 variant="outline"
                 onClick={() => syncNowMutation.mutate()}
-                disabled={syncNowMutation.isPending || !mssqlForm.enabled}
+                disabled={syncNowMutation.isPending || !hasBasicConnectionFields}
                 title={
-                  !mssqlForm.enabled
-                    ? "Ative a integração MSSQL acima para sincronizar."
-                    : "Cria as tabelas de espelho no SQL Server se não existirem e copia os dados do WordPress."
+                  !hasBasicConnectionFields
+                    ? "Preencha host, banco, usuário e senha (ou use constantes PC_MSSQL_* no wp-config.php)."
+                    : !mssqlForm.enabled
+                      ? "A integração está desligada: o servidor pode recusar até você ativar e salvar."
+                      : "Cria as tabelas de espelho no SQL Server se não existirem e copia os dados do WordPress."
                 }
               >
                 {syncNowMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

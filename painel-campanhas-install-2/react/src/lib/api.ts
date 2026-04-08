@@ -207,8 +207,6 @@ export type MssqlSettingsResponse = {
   pc_mssql_user: string;
   pc_mssql_password_masked: string;
   has_saved_password: boolean;
-  pc_mssql_views_info_schema_catalog: string;
-  pc_mssql_linked_four_part_prefix: string;
   wp_config_override?: MssqlWpConfigOverride;
 };
 

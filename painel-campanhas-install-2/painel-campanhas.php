@@ -10972,8 +10972,6 @@ class Painel_Campanhas
             'pc_mssql_user' => (string) get_option('pc_mssql_user', ''),
             'pc_mssql_password_masked' => $has_pwd ? '********' : '',
             'has_saved_password' => $has_pwd,
-            'pc_mssql_views_info_schema_catalog' => (string) get_option('pc_mssql_views_info_schema_catalog', ''),
-            'pc_mssql_linked_four_part_prefix' => (string) get_option('pc_mssql_linked_four_part_prefix', ''),
             'wp_config_override' => [
                 'enabled' => defined('PC_MSSQL_ENABLED'),
                 'host' => defined('PC_MSSQL_HOST'),
@@ -11018,20 +11016,6 @@ class Painel_Campanhas
             $port = substr($port, 0, 5);
         }
         update_option('pc_mssql_port', $port);
-
-        $cat = trim((string) wp_unslash($_POST['pc_mssql_views_info_schema_catalog'] ?? ''));
-        if ($cat !== '' && !preg_match('/^(\[[A-Za-z0-9_]+\])(\.\[[A-Za-z0-9_]+\])+$/', $cat)) {
-            wp_send_json_error(['message' => 'Prefixo do catálogo (Info Schema) inválido. Use o formato [SERVIDOR].[BANCO].']);
-            return;
-        }
-        update_option('pc_mssql_views_info_schema_catalog', $cat);
-
-        $linkp = trim((string) wp_unslash($_POST['pc_mssql_linked_four_part_prefix'] ?? ''));
-        if ($linkp !== '' && !preg_match('/^(\[[A-Za-z0-9_]+\])(\.\[[A-Za-z0-9_]+\])+$/', $linkp)) {
-            wp_send_json_error(['message' => 'Prefixo four-part para leitura inválido. Ex.: [SRV27].[DB_DIGITAL].[dbo]']);
-            return;
-        }
-        update_option('pc_mssql_linked_four_part_prefix', $linkp);
 
         $pwd_in = isset($_POST['pc_mssql_password']) ? (string) wp_unslash($_POST['pc_mssql_password']) : '';
         $pwd_in = trim($pwd_in);
