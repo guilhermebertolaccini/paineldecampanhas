@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import * as sql from 'mssql';
 import { SqlServerService } from './sql-server.service';
 
@@ -11,6 +11,15 @@ export type LineHealthSyncRow = {
   detalhes_retorno: string | null;
 };
 
+export type SyncLineHealthOptions = {
+  /** Se true, falha de conexão/MERGE propaga (ex.: force-sync). */
+  strict?: boolean;
+  /** Valor em metricas_json.source (ex.: nest_line_health_manual). */
+  metricsSource?: string;
+  /** Logs [LineHealthSync] detalhados no terminal (force-sync). */
+  verbose?: boolean;
+};
+
 /**
  * Snapshot operacional no SQL Server — mesmo contrato da ponte PHP (`PC_Wp_Mssql_Bridge`).
  * Usa o pool compartilhado de {@link SqlServerService} (variáveis MSSQL_* no .env).
@@ -18,8 +27,7 @@ export type LineHealthSyncRow = {
 @Injectable()
 export class MssqlService {
   private readonly logger = new Logger(MssqlService.name);
-
-  private static readonly SNAPSHOT_TABLE = 'PC_LINE_HEALTH_SNAPSHOT';
+  private readonly lineHealthSyncLog = new Logger('LineHealthSync');
 
   /** DDL idempotente alinhado ao PHP (PK line_key, updated_at default). */
   private static readonly ENSURE_SNAPSHOT_DDL = `
@@ -42,24 +50,83 @@ END
 
   /**
    * Garante `dbo.PC_LINE_HEALTH_SNAPSHOT` e faz MERGE por linha (upsert + updated_at).
-   * `metricas_json` inclui status do probe, detalhes e `captured_at` ISO.
+   * @returns Quantidade de linhas efetivamente enviadas ao MERGE (com id_linha e provedor válidos).
    */
-  async syncLineHealth(healthData: LineHealthSyncRow[]): Promise<void> {
+  async syncLineHealth(
+    healthData: LineHealthSyncRow[],
+    options?: SyncLineHealthOptions,
+  ): Promise<number> {
+    const strict = options?.strict === true;
+    const verbose = options?.verbose === true;
+    const metricsSource =
+      options?.metricsSource ?? 'nest_line_health_cron';
+
+    const vlog = (m: string) => {
+      if (verbose) {
+        this.lineHealthSyncLog.log(m);
+      }
+    };
+
     if (!this.sqlServer.isEnabled()) {
-      this.logger.debug('MSSQL desabilitado (MSSQL_ENABLED≠true); syncLineHealth ignorado.');
-      return;
+      const msg =
+        'MSSQL desabilitado (MSSQL_ENABLED≠true); syncLineHealth não executado.';
+      this.lineHealthSyncLog.warn(msg);
+      if (strict) {
+        throw new ServiceUnavailableException(msg);
+      }
+      return 0;
     }
     if (!healthData.length) {
-      return;
+      vlog('Nenhum registro consolidado para enviar ao snapshot.');
+      return 0;
     }
 
-    const pool = await this.sqlServer.getPool();
+    vlog('Conectando ao MSSQL (.26) / pool compartilhado...');
+
+    let pool: sql.ConnectionPool | null;
+    try {
+      pool = await this.sqlServer.getPool();
+    } catch (e) {
+      this.logMssqlDriverError('getPool', e);
+      if (strict) {
+        throw new ServiceUnavailableException(
+          `Falha ao obter pool MSSQL: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      return 0;
+    }
+
     if (!pool) {
-      this.logger.warn('Pool MSSQL indisponível; syncLineHealth abortado.');
-      return;
+      const msg =
+        'Pool MSSQL indisponível (credenciais/host ou driver); syncLineHealth abortado.';
+      this.lineHealthSyncLog.error(msg);
+      if (strict) {
+        throw new ServiceUnavailableException(msg);
+      }
+      return 0;
     }
 
-    await pool.request().query(MssqlService.ENSURE_SNAPSHOT_DDL);
+    const toMerge = healthData.filter(
+      (row) =>
+        String(row.id_linha ?? '').trim() !== '' &&
+        String(row.provedor ?? '').trim() !== '',
+    );
+
+    vlog(
+      `Injetando ${toMerge.length} registro(s) na tabela PC_LINE_HEALTH_SNAPSHOT (MERGE por line_key)...`,
+    );
+
+    try {
+      await pool.request().query(MssqlService.ENSURE_SNAPSHOT_DDL);
+    } catch (e) {
+      this.logMssqlDriverError('ENSURE_SNAPSHOT_DDL', e);
+      if (strict) {
+        throw new ServiceUnavailableException(
+          `DDL PC_LINE_HEALTH_SNAPSHOT falhou: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      return 0;
+    }
 
     const mergeSql = `
 MERGE dbo.PC_LINE_HEALTH_SNAPSHOT AS T
@@ -80,18 +147,16 @@ WHEN NOT MATCHED THEN
 `;
 
     const capturedAt = new Date().toISOString();
+    let merged = 0;
 
-    for (const row of healthData) {
+    for (const row of toMerge) {
       const idLinha = String(row.id_linha ?? '').trim();
       const provedor = String(row.provedor ?? '').trim();
-      if (!idLinha || !provedor) {
-        continue;
-      }
       const lineKey = MssqlService.buildLineKey(provedor, idLinha);
       const nomeLinha = String(row.nome_linha ?? '').trim().slice(0, 512);
       const tier = MssqlService.tierFromProbeStatus(String(row.status_qualidade ?? ''));
       const metrics = {
-        source: 'nest_line_health_cron',
+        source: metricsSource,
         captured_at: capturedAt,
         status_qualidade: row.status_qualidade,
         detalhes_retorno: row.detalhes_retorno,
@@ -103,15 +168,47 @@ WHEN NOT MATCHED THEN
         metricsJson = '{}';
       }
 
-      const req = pool.request();
-      req.input('line_key', sql.NVarChar(200), lineKey);
-      req.input('nome_linha', sql.NVarChar(512), nomeLinha || null);
-      req.input('provedor', sql.NVarChar(128), provedor.slice(0, 128));
-      req.input('idgis_ambiente', sql.NVarChar(64), idLinha.slice(0, 64));
-      req.input('saude_tier', sql.NVarChar(32), tier.slice(0, 32));
-      req.input('metricas_json', sql.NVarChar(sql.MAX), metricsJson);
-      await req.query(mergeSql);
+      try {
+        const req = pool.request();
+        req.input('line_key', sql.NVarChar(200), lineKey);
+        req.input('nome_linha', sql.NVarChar(512), nomeLinha || null);
+        req.input('provedor', sql.NVarChar(128), provedor.slice(0, 128));
+        req.input('idgis_ambiente', sql.NVarChar(64), idLinha.slice(0, 64));
+        req.input('saude_tier', sql.NVarChar(32), tier.slice(0, 32));
+        req.input('metricas_json', sql.NVarChar(sql.MAX), metricsJson);
+        await req.query(mergeSql);
+        merged += 1;
+      } catch (e) {
+        this.logMssqlDriverError(`MERGE line_key=${lineKey}`, e);
+        if (strict) {
+          throw new ServiceUnavailableException(
+            `MERGE PC_LINE_HEALTH_SNAPSHOT falhou (${lineKey}): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
     }
+
+    vlog(
+      `MERGE concluído: ${merged}/${toMerge.length} linha(s) processada(s).`,
+    );
+    return merged;
+  }
+
+  private logMssqlDriverError(phase: string, err: unknown): void {
+    if (err && typeof err === 'object' && 'originalError' in err) {
+      this.lineHealthSyncLog.error(
+        `[MSSQL driver] ${phase}: ${JSON.stringify(err, Object.getOwnPropertyNames(err as object))}`,
+      );
+      return;
+    }
+    if (err instanceof Error) {
+      this.lineHealthSyncLog.error(
+        `[MSSQL driver] ${phase}: ${err.message}`,
+        err.stack,
+      );
+      return;
+    }
+    this.lineHealthSyncLog.error(`[MSSQL driver] ${phase}: ${String(err)}`);
   }
 
   private static buildLineKey(provedor: string, idLinha: string): string {
