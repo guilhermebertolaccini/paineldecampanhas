@@ -5570,22 +5570,71 @@ class Painel_Campanhas
             return [];
         }
 
-        // Filtrar apenas templates ativos (se houver campo status)
-        $active_templates = array_filter($data, function ($template) {
-            // Se não tiver campo status, assume que está ativo
+        $items = [];
+        if (function_exists('wp_is_numeric_array') && wp_is_numeric_array($data)) {
+            $items = $data;
+        } elseif ($data !== [] && array_keys($data) === range(0, count($data) - 1)) {
+            $items = $data;
+        } elseif (isset($data['data']) && is_array($data['data'])) {
+            $items = $data['data'];
+        }
+
+        $active_templates = array_filter(is_array($items) ? $items : [], static function ($template) {
+            if (!is_array($template)) {
+                return false;
+            }
+
             return !isset($template['status']) || $template['status'] === 'A' || $template['status'] === 'ACTIVE';
         });
 
-        return array_map(function ($template) {
-            return [
-                'id' => 'otima_rcs_' . ($template['template_id'] ?? $template['id'] ?? uniqid()),
-                'title' => ($template['name'] ?? $template['template_name'] ?? 'Template sem nome') . ' (Ótima RCS)',
-                'content' => $template['content'] ?? $template['message_text'] ?? '',
+        $out = [];
+        foreach ($active_templates as $template) {
+            if (!is_array($template)) {
+                continue;
+            }
+            $code = isset($template['code']) ? trim((string) $template['code']) : '';
+            if ($code === '' && isset($template['template_id'])) {
+                $code = trim((string) $template['template_id']);
+            }
+            if ($code === '') {
+                continue;
+            }
+            $desc_raw = '';
+            if (isset($template['rich_card']) && is_array($template['rich_card']) && isset($template['rich_card']['description'])) {
+                $d = $template['rich_card']['description'];
+                $desc_raw = is_string($d) ? trim($d) : '';
+            }
+            $name = 'RCS ' . $code;
+            if ($desc_raw !== '') {
+                $name .= ' - ' . wp_trim_words($desc_raw, 5, '...');
+            }
+            $content = '';
+            if (isset($template['rich_card']) && is_array($template['rich_card'])) {
+                if (!empty($template['rich_card']['title'])) {
+                    $content .= $template['rich_card']['title'] . "\n";
+                }
+                if (!empty($template['rich_card']['description'])) {
+                    $content .= $template['rich_card']['description'];
+                }
+            } elseif (isset($template['text']) && is_string($template['text'])) {
+                $content = $template['text'];
+            }
+
+            $out[] = [
+                'id' => $code,
+                'name' => $name,
+                'title' => $name,
+                'send_meta_template' => $code,
+                'content' => $content,
                 'date' => date('Y-m-d H:i:s'),
                 'source' => 'otima_rcs',
-                'template_id' => $template['template_id'] ?? $template['id'] ?? '',
+                'template_code' => $code,
+                'template_id' => $code,
+                'raw_data' => $template,
             ];
-        }, $active_templates);
+        }
+
+        return $out;
     }
 
     public function handle_get_message()
@@ -12916,11 +12965,32 @@ class Painel_Campanhas
 
         /**
          * Lista de templates RCS a partir do JSON da Ótima (estrutura diferente de HSM WhatsApp).
-         * Não exige template_code / namespace; aceita rich_card, template_id, code, name, etc.
+         * A API costuma devolver o array de templates na raiz (sem `data` / `templates`).
          */
         $normalize_otima_rcs_body = function ($decoded) {
             if (!is_array($decoded)) {
                 return [];
+            }
+            $is_numeric_list = static function (array $a): bool {
+                if ($a === []) {
+                    return true;
+                }
+                if (function_exists('wp_is_numeric_array')) {
+                    return wp_is_numeric_array($a);
+                }
+
+                return array_keys($a) === range(0, count($a) - 1);
+            };
+            // 0) Raiz = array sequencial de objetos (payload real: [ { "code", "media_type", "rich_card" }, ... ]).
+            if ($is_numeric_list($decoded)) {
+                $out = [];
+                foreach ($decoded as $row) {
+                    if (is_array($row)) {
+                        $out[] = $row;
+                    }
+                }
+
+                return $out;
             }
             $is_seq = static function ($a) {
                 return is_array($a) && $a !== [] && array_keys($a) === range(0, count($a) - 1);
@@ -13035,14 +13105,17 @@ class Painel_Campanhas
 
             $data = json_decode($body, true);
             $normalized = [];
-            if (isset($data['data']) && is_array($data['data'])) {
+            // RCS (e alguns endpoints): corpo JSON é array na raiz — priorizar antes de chaves tipo `data`.
+            if (is_array($data) && $data !== [] && function_exists('wp_is_numeric_array') && wp_is_numeric_array($data)) {
+                $normalized = $data;
+            } elseif (is_array($data) && $data !== [] && array_keys($data) === range(0, count($data) - 1)) {
+                $normalized = $data;
+            } elseif (isset($data['data']) && is_array($data['data'])) {
                 $normalized = $data['data'];
             } elseif (isset($data['templates']) && is_array($data['templates'])) {
                 $normalized = $data['templates'];
             } elseif (isset($data['hsm']) && is_array($data['hsm'])) {
                 $normalized = $data['hsm'];
-            } elseif (is_array($data) && $data !== [] && array_keys($data) === range(0, count($data) - 1)) {
-                $normalized = $data;
             }
 
             $keys_hint = '';
@@ -13233,43 +13306,59 @@ class Painel_Campanhas
 
                 if (!empty($rcs_data)) {
                     foreach ($rcs_data as $tpl) {
-                        // FILTRO REMOVIDO: A Ótima nem sempre retorna o ID da carteira no campo 'code' exato.
-                        // Permitindo que o template carregue normalmente.
-                        // Nome do template: Prioriza 'description', depois 'title' do rich card
-                        $tpl_name = $tpl['description'] ?? '';
-                        if (empty($tpl_name) && isset($tpl['rich_card']['title'])) {
-                            $tpl_name = $tpl['rich_card']['title'];
+                        if (!is_array($tpl)) {
+                            continue;
                         }
-                        if (empty($tpl_name)) {
-                            $tpl_name = 'Template RCS ' . ($tpl['template_id'] ?? '');
+                        $code = isset($tpl['code']) ? trim((string) $tpl['code']) : '';
+                        if ($code === '' && isset($tpl['template_id'])) {
+                            $code = trim((string) $tpl['template_id']);
+                        }
+                        if ($code === '') {
+                            continue;
                         }
 
-                        // Estrutura RCS
+                        $desc_raw = '';
+                        if (isset($tpl['rich_card']) && is_array($tpl['rich_card']) && isset($tpl['rich_card']['description'])) {
+                            $d = $tpl['rich_card']['description'];
+                            $desc_raw = is_string($d) ? trim($d) : '';
+                        }
+                        $tpl_name = 'RCS ' . $code;
+                        if ($desc_raw !== '') {
+                            $tpl_name .= ' - ' . wp_trim_words($desc_raw, 5, '...');
+                        }
+
                         $content = '';
                         if (isset($tpl['rich_card']) && is_array($tpl['rich_card'])) {
-                            if (!empty($tpl['rich_card']['title']))
+                            if (!empty($tpl['rich_card']['title'])) {
                                 $content .= $tpl['rich_card']['title'] . "\n";
-                            if (!empty($tpl['rich_card']['description']))
+                            }
+                            if (!empty($tpl['rich_card']['description'])) {
                                 $content .= $tpl['rich_card']['description'];
+                            }
                         } elseif (isset($tpl['text'])) {
-                            $content = $tpl['text'];
+                            $content = is_string($tpl['text']) ? $tpl['text'] : '';
                         }
 
-                        $image_url = $tpl['rich_card']['image_url'] ?? null;
+                        $image_url = null;
+                        if (isset($tpl['rich_card']) && is_array($tpl['rich_card'])) {
+                            $image_url = $tpl['rich_card']['image_url'] ?? null;
+                        }
 
+                        // id / send_meta_template = code (contrato disparo RCS Ótima + expectativa do React).
                         $templates[] = [
-                            'id' => 'rcs_' . ($tpl['template_id'] ?? uniqid()),
+                            'id' => $code,
                             'name' => $tpl_name,
+                            'send_meta_template' => $code,
                             'content' => $content,
                             'date' => date('Y-m-d H:i:s'),
                             'source' => 'otima_rcs',
-                            'template_code' => $tpl['code'] ?? $tpl['template_id'] ?? '', // No RCS usamos o 'code' (apelido) para envio via Bulk API
+                            'template_code' => $code,
                             'wallet_id' => $wallet_otima,
                             'wallet_name' => $carteira_nome,
                             'broker_code' => $tpl['broker_code'] ?? $tpl['brokerCode'] ?? '',
                             'customer_code' => $wallet_otima,
                             'image_url' => $image_url,
-                            'raw_data' => $tpl
+                            'raw_data' => $tpl,
                         ];
                     }
                 }
