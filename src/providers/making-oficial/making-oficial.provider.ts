@@ -66,7 +66,7 @@ export class MakingOficialProvider extends BaseProvider {
     const c = credentials as MakingOfficialCredentials;
     const token = String(c.token ?? c.bearer_token ?? '').trim();
     const pn = Number(c.phone_number_id ?? c.phoneNumberId);
-    // Centro de custo e equipe vêm do JSON da mensagem (campanha); credenciais WP/Nest: só JWT + phone_number_id globais.
+    // Centro de custo e equipe vêm do JSON da mensagem (campanha); credenciais WP/Nest: JWT global + phone_number_id por carteira.
     return !!(token && Number.isFinite(pn) && pn > 0);
   }
 

@@ -16,6 +16,10 @@ $page_title = 'API Manager';
 $master_api_key = get_option('acm_master_api_key', '');
 $provider_credentials = get_option('acm_provider_credentials', []);
 $static_credentials = get_option('acm_static_credentials', []);
+$making_jwt_static = trim((string) ($static_credentials['making_jwt_token'] ?? ''));
+if ($making_jwt_static === '') {
+    $making_jwt_static = trim((string) get_option('making_jwt_token', ''));
+}
 $microservice_config = get_option('acm_microservice_config', [
     'url' => '',
     'api_key' => ''
@@ -294,7 +298,7 @@ ob_start();
                         <i class="fas fa-info-circle mr-2"></i>
                         API: https://services.otima.digital/v1/rcs/bulk/message/template
                     </p>
-                    <div class="grid grid-cols-1 gap-4">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Token de
                                 Autenticação *</label>
@@ -303,8 +307,29 @@ ob_start();
                                 class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
                                 placeholder="Bearer token para autenticação">
                         </div>
-                                placeholder="Código Customer/ID">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Customer Code</label>
+                            <input type="text" name="otima_rcs_customer_code"
+                                value="<?php echo esc_attr($static_credentials['otima_rcs_customer_code'] ?? ''); ?>"
+                                class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                                placeholder="Código Customer / ID">
                         </div>
+                    </div>
+                </div>
+
+                <!-- Making Oficial: JWT global (phone_number_id por carteira nas credenciais dinâmicas) -->
+                <div class="border-b border-gray-200 dark:border-gray-700 pb-4">
+                    <h4 class="font-semibold text-gray-900 dark:text-white mb-2">Making Oficial (WhatsApp)</h4>
+                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                        Apenas o JWT nesta seção. O <strong>Phone Number ID</strong> da linha é cadastrado em <strong>Criar Nova Credencial</strong>
+                        → Making Oficial, com Environment ID = <code class="text-xs">id_carteira</code> da carteira.
+                    </p>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">JWT (Making)</label>
+                        <input type="password" name="making_jwt_token" autocomplete="off"
+                            value="<?php echo esc_attr($making_jwt_static); ?>"
+                            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                            placeholder="Token Bearer (global para todas as carteiras)">
                     </div>
                 </div>
 
@@ -387,20 +412,27 @@ ob_start();
                                             <p><strong>Broker Code:</strong> <?php echo esc_html($data['broker_code'] ?? ''); ?></p>
                                             <p><strong>Customer Code:</strong> <?php echo esc_html($data['customer_code'] ?? ''); ?></p>
                                         <?php elseif ($provider_name === 'making_oficial'): ?>
-                                            <?php
-                                            $tok = (string) ($data['token'] ?? '');
-                                            $team_disp = $data['team_id'] ?? '';
-                                            if (is_array($team_disp)) {
-                                                $team_disp = implode(', ', array_map('strval', $team_disp));
-                                            }
-                                            ?>
-                                            <p><strong>cost_center_id:</strong> <?php echo esc_html((string) ($data['cost_center_id'] ?? '')); ?></p>
-                                            <p><strong>phone_number_id:</strong> <?php echo esc_html((string) ($data['phone_number_id'] ?? '')); ?></p>
-                                            <p><strong>team_id:</strong> <?php echo esc_html((string) $team_disp); ?></p>
+                                            <p><strong>phone_number_id:</strong> <?php echo esc_html((string) ($data['phone_number_id'] ?? $data['phoneNumberId'] ?? '—')); ?></p>
                                             <?php if (!empty($data['url'])): ?>
                                                 <p><strong>URL (opcional):</strong> <code class="text-xs break-all"><?php echo esc_html((string) $data['url']); ?></code></p>
                                             <?php endif; ?>
-                                            <p><strong>Token:</strong> <code class="text-xs"><?php echo esc_html($tok !== '' ? (substr($tok, 0, 30) . '…') : '—'); ?></code></p>
+                                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">JWT global em Static Provider Credentials → Making. Equipe e centro de custo vêm da campanha.</p>
+                                            <?php
+                                            $legacy_making = !empty($data['token']) || !empty($data['cost_center_id']) || !empty($data['team_id']);
+                                            if ($legacy_making) :
+                                                $team_disp = $data['team_id'] ?? '';
+                                                if (is_array($team_disp)) {
+                                                    $team_disp = implode(', ', array_map('strval', $team_disp));
+                                                }
+                                                ?>
+                                                <p class="text-xs text-amber-700 dark:text-amber-400 mt-2"><strong>Registro legado:</strong> contém token/equipe/CC em armazenamento antigo — salve de novo pela edição para manter só phone_number_id + URL.</p>
+                                                <?php if (!empty($data['cost_center_id'])): ?>
+                                                    <p class="text-xs"><strong>cost_center_id (legado):</strong> <?php echo esc_html((string) $data['cost_center_id']); ?></p>
+                                                <?php endif; ?>
+                                                <?php if ($team_disp !== '' && $team_disp !== null): ?>
+                                                    <p class="text-xs"><strong>team_id (legado):</strong> <?php echo esc_html((string) $team_disp); ?></p>
+                                                <?php endif; ?>
+                                            <?php endif; ?>
                                         <?php else: ?>
                                             <p><strong>URL:</strong> <code
                                                     class="text-xs break-all"><?php echo esc_html($data['url'] ?? ''); ?></code></p>
@@ -455,8 +487,7 @@ ob_start();
                     </label>
                     <input type="text" id="create-env-id" name="env_id" required placeholder="Ex: 3641"
                         class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
-                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">O valor idgis_ambiente usado nas campanhas
-                    </p>
+                    <p id="create-env-id-hint" class="text-xs text-gray-500 dark:text-gray-400 mt-1">O valor idgis_ambiente usado nas campanhas</p>
                 </div>
 
                 <!-- Campos para URL/Token (GOSAC, Noah, CDA) -->
@@ -496,34 +527,16 @@ ob_start();
                     </div>
                 </div>
 
-                <!-- Making Oficial (JWT + IDs — mesmo formato do painel React) -->
+                <!-- Making Oficial: por carteira — só phone_number_id (+ URL opcional); JWT em Static Credentials -->
                 <div id="making-fields" class="hidden space-y-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                            Token JWT <span class="text-red-500">*</span>
-                        </label>
-                        <input type="text" id="create-making-token" name="making_token"
-                            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                            cost_center_id <span class="text-red-500">*</span>
-                        </label>
-                        <input type="number" id="create-making-cc" name="making_cost_center_id" min="1" placeholder="Ex: 123"
-                            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
-                    </div>
+                    <p class="text-sm text-gray-600 dark:text-gray-400">
+                        O JWT fica em <strong>Static Provider Credentials</strong> → Making. Aqui você define a linha WhatsApp desta carteira.
+                    </p>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                             phone_number_id <span class="text-red-500">*</span>
                         </label>
                         <input type="number" id="create-making-pn" name="making_phone_number_id" min="1" placeholder="Ex: 456"
-                            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                            team_id(s) <span class="text-red-500">*</span>
-                        </label>
-                        <input type="text" id="create-making-team" name="making_team_id" placeholder="Um ou vários: 10 ou 10, 11"
                             class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
                     </div>
                     <div>
@@ -636,6 +649,12 @@ ob_start();
         $('#create-provider').on('change', function () {
             const provider = $(this).val();
             $('#url-token-fields, #salesforce-fields, #rcs-fields, #making-fields').addClass('hidden');
+
+            if (provider === 'making_oficial') {
+                $('#create-env-id-hint').text('Use o id_carteira da carteira (o mesmo que o microserviço envia ao buscar credenciais).');
+            } else {
+                $('#create-env-id-hint').text('O valor idgis_ambiente usado nas campanhas');
+            }
 
             if (provider === 'salesforce') {
                 $('#salesforce-fields').removeClass('hidden');
@@ -758,23 +777,13 @@ ob_start();
                     codigo_usuario: $('#create-codigo-usuario').val()
                 };
             } else if (provider === 'making_oficial') {
-                const teamRaw = String($('#create-making-team').val() || '').trim();
-                const teamParts = teamRaw.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
-                const teamIds = teamParts.map(s => parseInt(s, 10)).filter(n => !Number.isNaN(n) && n > 0);
-                const cc = parseInt(String($('#create-making-cc').val() || '').trim(), 10);
                 const pn = parseInt(String($('#create-making-pn').val() || '').trim(), 10);
-                const jwt = String($('#create-making-token').val() || '').trim();
                 const optUrl = String($('#create-making-url').val() || '').trim();
-                if (!jwt || !cc || cc <= 0 || !pn || pn <= 0 || teamIds.length === 0) {
-                    showToast('Making: preencha JWT, cost_center_id, phone_number_id e ao menos um team_id válido.', 'error');
+                if (!pn || pn <= 0 || !Number.isFinite(pn)) {
+                    showToast('Making: informe um phone_number_id válido. O JWT fica em Static Provider Credentials.', 'error');
                     return;
                 }
-                credentialData = {
-                    token: jwt,
-                    cost_center_id: cc,
-                    phone_number_id: pn,
-                    team_id: teamIds.length === 1 ? teamIds[0] : teamIds
-                };
+                credentialData = { phone_number_id: pn };
                 if (optUrl) {
                     credentialData.url = optUrl;
                 }
@@ -863,28 +872,12 @@ ob_start();
                             </div>
                         `;
                         } else if (provider === 'making_oficial') {
-                            let teamStr = '';
-                            if (Array.isArray(data.team_id)) {
-                                teamStr = data.team_id.join(', ');
-                            } else if (data.team_id != null && data.team_id !== '') {
-                                teamStr = String(data.team_id);
-                            }
+                            const pnVal = data.phone_number_id != null ? data.phone_number_id : (data.phoneNumberId != null ? data.phoneNumberId : '');
                             html = `
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Token JWT</label>
-                                <input type="text" name="token" value="${escapeHtml(data.token || '')}" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" required>
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">cost_center_id</label>
-                                <input type="number" name="cost_center_id" value="${escapeHtml(String(data.cost_center_id ?? ''))}" min="1" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" required>
-                            </div>
+                            <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">Altere a linha desta carteira. O JWT global está em Static Provider Credentials → Making.</p>
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">phone_number_id</label>
-                                <input type="number" name="phone_number_id" value="${escapeHtml(String(data.phone_number_id ?? ''))}" min="1" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" required>
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">team_id(s), separados por vírgula</label>
-                                <input type="text" name="team_id_csv" value="${escapeHtml(teamStr)}" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" required>
+                                <input type="number" name="phone_number_id" value="${escapeHtml(String(pnVal))}" min="1" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" required>
                             </div>
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">URL (opcional)</label>
@@ -931,17 +924,14 @@ ob_start();
             });
 
             if (provider === 'making_oficial') {
-                const teamRaw = String(formData.team_id_csv || '').trim();
-                delete formData.team_id_csv;
-                const teamParts = teamRaw.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
-                const teamIds = teamParts.map(s => parseInt(s, 10)).filter(n => !Number.isNaN(n) && n > 0);
-                if (teamIds.length === 0) {
-                    showToast('Informe ao menos um team_id válido.', 'error');
+                const pn = parseInt(String(formData.phone_number_id || '').trim(), 10);
+                if (!pn || pn <= 0) {
+                    showToast('Making: phone_number_id inválido.', 'error');
                     return;
                 }
-                formData.team_id = teamIds.length === 1 ? teamIds[0] : teamIds;
-                formData.cost_center_id = parseInt(String(formData.cost_center_id || '').trim(), 10);
-                formData.phone_number_id = parseInt(String(formData.phone_number_id || '').trim(), 10);
+                formData.phone_number_id = pn;
+                const u = String(formData.url || '').trim();
+                formData.url = u;
             }
 
             $.ajax({
@@ -1022,6 +1012,7 @@ ob_start();
         $('#reset-form').on('click', function () {
             $('#create-credential-form')[0].reset();
             $('#url-token-fields, #salesforce-fields, #rcs-fields, #making-fields').addClass('hidden');
+            $('#create-env-id-hint').text('O valor idgis_ambiente usado nas campanhas');
         });
 
         // Funções auxiliares

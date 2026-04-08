@@ -286,6 +286,7 @@ const PROVIDERS = [
   { value: 'gosac_oficial', label: 'Gosac Oficial' },
   { value: 'noah', label: 'Noah' },
   { value: 'noah_oficial', label: 'Noah Oficial' },
+  { value: 'making_oficial', label: 'Making Oficial' },
   { value: 'salesforce', label: 'Salesforce' },
 ];
 
@@ -486,7 +487,6 @@ export default function ApiManager() {
     robbu_invenio_token: "",
     dashboard_password: "",
     making_jwt_token: "",
-    making_phone_id: "",
   });
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [evolutionConfig, setEvolutionConfig] = useState({
@@ -507,8 +507,6 @@ export default function ApiManager() {
     operacao: "",
     automation_id: "",
     chave_api: "",
-    making_cost_center_id: "",
-    making_team_id: "",
     making_phone_number_id: "",
   });
 
@@ -593,7 +591,6 @@ export default function ApiManager() {
         robbu_invenio_token: staticCredsData.robbu_invenio_token || "",
         dashboard_password: staticCredsData.dashboard_password || "",
         making_jwt_token: staticCredsData.making_jwt_token || "",
-        making_phone_id: staticCredsData.making_phone_id || "",
       };
       console.log('🔵 [ApiManager] Credenciais carregadas no estado:', Object.entries(loadedCreds).filter(([_, v]) => v && v.trim()).map(([k, v]) => `${k}: ${v.substring(0, 10)}...`));
       setStaticCreds(loadedCreds);
@@ -791,6 +788,23 @@ export default function ApiManager() {
         return;
       }
       credentialData.chave_api = dynamicCredential.chave_api;
+    } else if (dynamicCredential.provider === "making_oficial") {
+      const phoneRaw = dynamicCredential.making_phone_number_id.trim();
+      if (!phoneRaw) {
+        toast({
+          title: "Campo obrigatório",
+          description: "Phone Number ID é obrigatório para Making Oficial",
+          variant: "destructive",
+        });
+        return;
+      }
+      credentialData.phone_number_id = /^\d+$/.test(phoneRaw)
+        ? parseInt(phoneRaw, 10)
+        : phoneRaw;
+      const optUrl = dynamicCredential.url.trim();
+      if (optUrl) {
+        credentialData.url = optUrl;
+      }
     }
 
     createCredential({
@@ -815,8 +829,6 @@ export default function ApiManager() {
           operacao: "",
           automation_id: "",
           chave_api: "",
-          making_cost_center_id: "",
-          making_team_id: "",
           making_phone_number_id: "",
         });
       })
@@ -1696,7 +1708,7 @@ export default function ApiManager() {
           <div className="border-b pb-4 space-y-4">
             <h4 className="font-semibold">Making Oficial (WhatsApp)</h4>
             <p className="text-xs text-muted-foreground">
-              Token JWT e Phone Number ID são globais (listagem de modelos, equipes e centros de custo no painel; disparo no Nest).
+              Apenas o JWT é global (listagem de modelos, equipes e centros de custo). O Phone Number ID da linha remetente é por carteira: em Credenciais Dinâmicas, provider Making Oficial, com Environment ID = id_carteira.
               Na criação da campanha o usuário escolhe Equipe e Centro de Custo.
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1724,17 +1736,6 @@ export default function ApiManager() {
                     )}
                   </button>
                 </div>
-              </div>
-              <div className="space-y-2 md:col-span-2">
-                <Label>Phone Number ID</Label>
-                <Input
-                  inputMode="numeric"
-                  value={staticCreds.making_phone_id}
-                  onChange={(e) =>
-                    setStaticCreds({ ...staticCreds, making_phone_id: e.target.value })
-                  }
-                  placeholder="Ex: 1"
-                />
               </div>
             </div>
           </div>
@@ -1808,9 +1809,44 @@ export default function ApiManager() {
                       placeholder="Ex: 3641"
                     />
                     <p className="text-xs text-muted-foreground">
-                      O valor idgis_ambiente usado nas campanhas
+                      {dynamicCredential.provider === "making_oficial"
+                        ? "Use o id_carteira da carteira (o mesmo que o microserviço envia ao buscar credenciais)."
+                        : "O valor idgis_ambiente usado nas campanhas"}
                     </p>
                   </div>
+
+                  {/* Making Oficial: linha remetente por carteira; JWT vem das credenciais estáticas */}
+                  {dynamicCredential.provider === "making_oficial" && (
+                    <>
+                      <div className="space-y-2">
+                        <Label>Phone Number ID *</Label>
+                        <Input
+                          inputMode="numeric"
+                          value={dynamicCredential.making_phone_number_id}
+                          onChange={(e) =>
+                            setDynamicCredential({
+                              ...dynamicCredential,
+                              making_phone_number_id: e.target.value,
+                            })
+                          }
+                          placeholder="ID da linha WhatsApp (Making)"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Uma carteira = um Phone Number ID. Várias carteiras podem compartilhar o mesmo JWT global.
+                        </p>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>API base URL (opcional)</Label>
+                        <Input
+                          value={dynamicCredential.url}
+                          onChange={(e) =>
+                            setDynamicCredential({ ...dynamicCredential, url: e.target.value })
+                          }
+                          placeholder="Só preencha se a Making usar base customizada"
+                        />
+                      </div>
+                    </>
+                  )}
 
                   {/* Campos para URL/Token (GOSAC, Noah, GOSAC Oficial, NOAH Oficial) */}
                   {['gosac', 'noah', 'gosac_oficial', 'noah_oficial'].includes(dynamicCredential.provider) && (

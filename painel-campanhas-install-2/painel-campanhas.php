@@ -1807,7 +1807,6 @@ class Painel_Campanhas
                 'robbu_invenio_token' => 'sanitize_text_field',
                 'dashboard_password' => 'sanitize_text_field',
                 'making_jwt_token' => 'sanitize_text_field',
-                'making_phone_id' => 'sanitize_text_field',
             ];
 
             // Atualiza APENAS campos que foram enviados E têm valor (não vazio)
@@ -1903,9 +1902,6 @@ class Painel_Campanhas
             if (isset($static_credentials['making_jwt_token'])) {
                 update_option('making_jwt_token', (string) $static_credentials['making_jwt_token']);
             }
-            if (isset($static_credentials['making_phone_id'])) {
-                update_option('making_phone_id', (string) $static_credentials['making_phone_id']);
-            }
 
             wp_send_json_success(['message' => 'Static credentials salvas com sucesso!']);
 
@@ -1970,7 +1966,6 @@ class Painel_Campanhas
             'robbu_invenio_token',
             'dashboard_password',
             'making_jwt_token',
-            'making_phone_id',
         ];
 
         foreach ($default_fields as $field) {
@@ -4117,6 +4112,28 @@ class Painel_Campanhas
         $fallback = strtoupper(substr($p, 0, 1));
 
         return $fallback !== '' ? $fallback : 'X';
+    }
+
+    /**
+     * Bloco Making por carteira: acm_provider_credentials['making_oficial'][id_carteira] (phone_number_id, url opcional).
+     */
+    private function resolve_making_oficial_acm_block(array $acm_all, $env_id): ?array
+    {
+        if (empty($acm_all['making_oficial']) || !is_array($acm_all['making_oficial'])) {
+            return null;
+        }
+        $by_env = $acm_all['making_oficial'];
+        $key_str = trim((string) $env_id);
+        $key_int = is_numeric($env_id) ? (string) intval($env_id) : $key_str;
+
+        if ($key_str !== '' && isset($by_env[$key_str]) && is_array($by_env[$key_str])) {
+            return $by_env[$key_str];
+        }
+        if ($key_int !== $key_str && isset($by_env[$key_int]) && is_array($by_env[$key_int])) {
+            return $by_env[$key_int];
+        }
+
+        return null;
     }
 
     /**
@@ -8287,12 +8304,10 @@ class Painel_Campanhas
                 );
             }
 
-            // Making Oficial: JWT + phone_number_id globais (não por carteira). Equipe e centro de custo vêm do JSON da mensagem na fila.
+            // Making Oficial: JWT global + phone_number_id por carteira (acm_provider_credentials → making_oficial → id_carteira).
             if (strtoupper($provider) === 'MAKING_OFICIAL') {
                 $mk = $this->get_making_global_config();
                 $jwt = $mk['jwt'];
-                $phone_raw = $mk['phone_id'];
-                $phone_n = is_numeric($phone_raw) ? (int) $phone_raw : (int) preg_replace('/\D/', '', (string) $phone_raw);
                 if ($jwt === '') {
                     return new WP_Error(
                         'invalid_credentials',
@@ -8300,21 +8315,40 @@ class Painel_Campanhas
                         ['status' => 400]
                     );
                 }
-                if ($phone_n <= 0) {
+                $acm_all = get_option('acm_provider_credentials', []);
+                $wallet_block = $this->resolve_making_oficial_acm_block(is_array($acm_all) ? $acm_all : [], $env_id);
+                if (!is_array($wallet_block)) {
                     return new WP_Error(
                         'invalid_credentials',
-                        'Making Oficial: configure o Phone Number ID global (API Manager → credenciais estáticas).',
+                        'Making Oficial: cadastre o Phone Number ID para esta carteira (Credenciais Dinâmicas → making_oficial → Environment ID = id_carteira).',
                         ['status' => 400]
                     );
                 }
-                error_log('✅ [REST API] MAKING_OFICIAL credenciais globais (envId=' . $env_id . ' ignorado para token/phone)');
+                $phone_raw = $wallet_block['phone_number_id'] ?? $wallet_block['phoneNumberId'] ?? '';
+                $phone_n = is_numeric($phone_raw) ? (int) $phone_raw : (int) preg_replace('/\D/', '', (string) $phone_raw);
+                if ($phone_n <= 0) {
+                    return new WP_Error(
+                        'invalid_credentials',
+                        'Making Oficial: phone_number_id inválido ou ausente para env_id ' . $env_id . '.',
+                        ['status' => 400]
+                    );
+                }
+                error_log('✅ [REST API] MAKING_OFICIAL JWT global + phone envId=' . $env_id);
 
-                return rest_ensure_response([
+                $out = [
                     'token' => $jwt,
                     'bearer_token' => $jwt,
                     'phone_number_id' => $phone_n,
                     'phoneNumberId' => $phone_n,
-                ]);
+                ];
+                $opt_url = isset($wallet_block['url']) ? trim((string) $wallet_block['url']) : '';
+                if ($opt_url !== '') {
+                    $out['url'] = $opt_url;
+                    $out['api_url'] = $opt_url;
+                    $out['making_api_url'] = $opt_url;
+                }
+
+                return rest_ensure_response($out);
             }
 
             // Providers dinâmicos (GOSAC, NOAH) - busca credenciais por envId
@@ -12317,9 +12351,9 @@ class Painel_Campanhas
     }
 
     /**
-     * JWT e phone_number_id globais da Making (acm_static_credentials ou options dedicadas).
+     * JWT global da Making (acm_static_credentials / making_jwt_token). Phone Number ID é por carteira em acm_provider_credentials.
      *
-     * @return array{jwt: string, phone_id: string}
+     * @return array{jwt: string}
      */
     private function get_making_global_config()
     {
@@ -12331,12 +12365,8 @@ class Painel_Campanhas
         if ($jwt === '') {
             $jwt = trim((string) ($st['making_jwt_token'] ?? ''));
         }
-        $phone = trim((string) get_option('making_phone_id', ''));
-        if ($phone === '') {
-            $phone = trim((string) ($st['making_phone_id'] ?? ''));
-        }
 
-        return ['jwt' => $jwt, 'phone_id' => $phone];
+        return ['jwt' => $jwt];
     }
 
     /**
