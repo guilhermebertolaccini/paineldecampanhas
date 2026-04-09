@@ -590,6 +590,28 @@ class Painel_Campanhas
                 return is_user_logged_in() && current_user_can('read');
             },
         ]);
+
+        // ETL / Nest: leitura paginada de envios pendentes (Master API Key)
+        register_rest_route('pc/v1', '/relatorios/envios_pendentes', [
+            'methods' => 'GET',
+            'callback' => [$this, 'rest_get_envios_pendentes_etl'],
+            'permission_callback' => [$this, 'check_api_key_rest'],
+            'args' => [
+                'limit' => [
+                    'description' => 'Máximo de linhas (1–2000, padrão 1000)',
+                    'type' => 'integer',
+                    'default' => 1000,
+                    'minimum' => 1,
+                    'maximum' => 2000,
+                ],
+                'offset' => [
+                    'description' => 'Deslocamento para paginação',
+                    'type' => 'integer',
+                    'default' => 0,
+                    'minimum' => 0,
+                ],
+            ],
+        ]);
     }
 
     public function check_api_key_rest($request)
@@ -623,6 +645,195 @@ class Painel_Campanhas
 
         error_log('✅ [REST API] API Key válida');
         return true;
+    }
+
+    /**
+     * Colunas reais da tabela (whitelist) — evita injeção de identificadores no WHERE dinâmico.
+     *
+     * @param string $table Nome completo da tabela (ex.: wp_envios_pendentes)
+     * @return string[]
+     */
+    private function pc_get_envios_pendentes_column_names($table)
+    {
+        global $wpdb;
+        $table_esc = esc_sql($table);
+        $rows = $wpdb->get_results("SHOW COLUMNS FROM `{$table_esc}`", ARRAY_A);
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+        $out = [];
+        foreach ($rows as $row) {
+            if (!empty($row['Field']) && preg_match('/^[a-zA-Z0-9_]+$/', (string) $row['Field'])) {
+                $out[] = (string) $row['Field'];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Monta o fragmento WHERE para o ETL de envios_pendentes (filtros dinâmicos via query string).
+     * - Chave `or_*` → cláusula entra no grupo OR (internamente OR; o grupo inteiro é AND com o restante).
+     * - Valor com vírgula → IN (...); caso contrário → = %s
+     * Valores sempre via $wpdb->prepare; colunas só se existirem na tabela.
+     *
+     * @param WP_REST_Request $request
+     * @param string $table
+     * @return string Ex.: "WHERE 1=1 AND (`status` = 'x') AND ((`a` = '1') OR (`b` = '2'))"
+     */
+    private function pc_build_envios_pendentes_etl_where_sql($request, $table)
+    {
+        global $wpdb;
+
+        $allowed = array_flip($this->pc_get_envios_pendentes_column_names($table));
+        if (empty($allowed)) {
+            return 'WHERE 1=1';
+        }
+
+        $reserved_lower = [
+            'limit' => true,
+            'offset' => true,
+            '_route_' => true,
+            'rest_route' => true,
+            'context' => true,
+            '_locale' => true,
+            'x-api-key' => true,
+        ];
+
+        $params = $request->get_query_params();
+        if (!is_array($params)) {
+            return 'WHERE 1=1';
+        }
+
+        $where_and = [];
+        $where_or = [];
+
+        foreach ($params as $raw_key => $raw_val) {
+            $key = (string) $raw_key;
+            if ($key === '' || isset($reserved_lower[strtolower($key)])) {
+                continue;
+            }
+            // Evita parâmetros internos do REST (`_embed`, `_fields`, etc.)
+            if ($key[0] === '_') {
+                continue;
+            }
+            if (is_array($raw_val)) {
+                continue;
+            }
+
+            $val = trim((string) $raw_val);
+            if ($val === '') {
+                continue;
+            }
+
+            $is_or_group = (stripos($key, 'or_') === 0);
+            $col = $is_or_group ? substr($key, 3) : $key;
+            if ($col === '' || !isset($allowed[$col])) {
+                continue;
+            }
+
+            $col_sql = '`' . $col . '`';
+
+            if (strpos($val, ',') !== false) {
+                $parts = array_filter(array_map('trim', explode(',', $val)), function ($p) {
+                    return $p !== '';
+                });
+                if (empty($parts)) {
+                    continue;
+                }
+                $holders = implode(',', array_fill(0, count($parts), '%s'));
+                $template = $col_sql . ' IN (' . $holders . ')';
+                $clause = call_user_func_array(
+                    [$wpdb, 'prepare'],
+                    array_merge([$template], array_values($parts))
+                );
+            } else {
+                $clause = $wpdb->prepare($col_sql . ' = %s', $val);
+            }
+
+            if ($clause === null || $clause === false || $clause === '') {
+                continue;
+            }
+
+            if ($is_or_group) {
+                $where_or[] = $clause;
+            } else {
+                $where_and[] = $clause;
+            }
+        }
+
+        $chunks = ['1=1'];
+        if (!empty($where_and)) {
+            $chunks[] = '(' . implode(' AND ', $where_and) . ')';
+        }
+        if (!empty($where_or)) {
+            $chunks[] = '(' . implode(' OR ', $where_or) . ')';
+        }
+
+        return 'WHERE ' . implode(' AND ', $chunks);
+    }
+
+    /**
+     * GET /wp-json/pc/v1/relatorios/envios_pendentes
+     * Paginação para ETL (Nest): X-API-KEY = acm_master_api_key.
+     * Filtros opcionais: qualquer coluna existente na tabela como query param; `or_col` agrupa OR;
+     * valores com vírgula geram IN (...).
+     *
+     * @param WP_REST_Request $request
+     * @return WP_REST_Response|WP_Error
+     */
+    public function rest_get_envios_pendentes_etl($request)
+    {
+        global $wpdb;
+
+        $limit = (int) $request->get_param('limit');
+        if ($limit < 1) {
+            $limit = 1000;
+        }
+        if ($limit > 2000) {
+            $limit = 2000;
+        }
+        $offset = max(0, (int) $request->get_param('offset'));
+
+        $table = $wpdb->prefix . 'envios_pendentes';
+
+        $table_exists = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s',
+            DB_NAME,
+            $table
+        ));
+
+        if ($table_exists < 1) {
+            return rest_ensure_response([
+                'success' => true,
+                'pagination' => [
+                    'limit' => $limit,
+                    'offset' => $offset,
+                    'total_records' => 0,
+                ],
+                'data' => [],
+            ]);
+        }
+
+        $where_sql = $this->pc_build_envios_pendentes_etl_where_sql($request, $table);
+        $table_ident = '`' . esc_sql($table) . '`';
+
+        $sql_count = "SELECT COUNT(*) FROM {$table_ident} {$where_sql}";
+        $total_records = (int) $wpdb->get_var($sql_count);
+
+        // Não envolver $where_sql em outro prepare: valores já escapados podem conter `%` e quebrar sprintf.
+        $sql_rows = 'SELECT * FROM ' . $table_ident . ' ' . $where_sql
+            . ' ORDER BY id ASC LIMIT ' . (int) $limit . ' OFFSET ' . (int) $offset;
+        $rows = $wpdb->get_results($sql_rows, ARRAY_A);
+
+        return rest_ensure_response([
+            'success' => true,
+            'pagination' => [
+                'limit' => $limit,
+                'offset' => $offset,
+                'total_records' => $total_records,
+            ],
+            'data' => is_array($rows) ? $rows : [],
+        ]);
     }
 
     /**

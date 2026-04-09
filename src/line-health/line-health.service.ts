@@ -15,6 +15,12 @@ import {
   type LineHealthSyncRow,
 } from '../sql-server/mssql.service';
 import { wordpressConfig } from '../config/wordpress.config';
+import {
+  GosacHealthAdapter,
+  NoahHealthAdapter,
+  type StandardLineHealth,
+} from './adapters';
+import { standardLineHealthToSyncRow } from './standard-line-health.mapper';
 
 interface LineHealthTarget {
   provider: string;
@@ -170,25 +176,18 @@ export class LineHealthService {
           t.provider,
           t.envId,
         )) as Record<string, unknown>;
-        const evalResult = await this.evaluateProvider(t, creds);
-        const row: LineHealthSyncRow = {
-          id_linha: t.envId,
-          nome_linha: nome,
-          provedor: t.provider,
-          status_qualidade: evalResult.status_qualidade,
-          detalhes_retorno: evalResult.detalhes_retorno,
-        };
-        await this.digitalFunnel.insertSaudeLinhaHistorico(row);
-        consolidated.push(row);
+        const bundled = await this.resolveStandardLinesWithDetails(t, creds);
+        for (const { standard, detalhes_retorno } of bundled) {
+          const row = standardLineHealthToSyncRow(t, standard);
+          row.detalhes_retorno = detalhes_retorno;
+          await this.digitalFunnel.insertSaudeLinhaHistorico(row);
+          consolidated.push(row);
+        }
       } catch (e) {
         this.logger.warn(`Saúde linha ${nome}: ${e}`);
-        const row: LineHealthSyncRow = {
-          id_linha: t.envId,
-          nome_linha: nome,
-          provedor: t.provider,
-          status_qualidade: 'ERRO_CREDENCIAL_OU_API',
-          detalhes_retorno: this.toDetails(e),
-        };
+        const stdErr = this.standardFromErroAlvo(t, nome, this.toDetails(e));
+        const row = standardLineHealthToSyncRow(t, stdErr);
+        row.detalhes_retorno = this.toDetails(e);
         await this.digitalFunnel.insertSaudeLinhaHistorico(row);
         consolidated.push(row);
       }
@@ -237,6 +236,217 @@ export class LineHealthService {
       rowsConsolidated: consolidated.length,
       wordpressPostAttempted,
     };
+  }
+
+  /**
+   * Tenta ETL via API do provedor (NOAH / GOSAC); se não houver dados, cai no probe HTTP legado.
+   * Retorno sempre passa pelos adapters quando a API responde com corpo utilizável.
+   */
+  private async resolveStandardLinesWithDetails(
+    t: LineHealthTarget,
+    creds: Record<string, unknown>,
+  ): Promise<Array<{ standard: StandardLineHealth; detalhes_retorno: string | null }>> {
+    const p = t.provider.toUpperCase();
+    const isNoah = p.includes('NOAH') && !p.includes('GOSAC');
+    const isGosac = p.includes('GOSAC') && !p.includes('NOAH');
+
+    if (isNoah) {
+      try {
+        const raw = await this.fetchNoahChannelList(creds);
+        const standards = NoahHealthAdapter.adapt(raw);
+        if (standards.length > 0) {
+          return standards.map((standard) => ({
+            standard,
+            detalhes_retorno: null,
+          }));
+        }
+      } catch (e) {
+        this.logger.debug(
+          `NOAH adapt (${t.envId}): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+
+    if (isGosac) {
+      try {
+        const raw = await this.fetchGosacConnectionsJson(t, creds);
+        const standards = GosacHealthAdapter.adapt(raw);
+        if (standards.length > 0) {
+          return standards.map((standard) => ({
+            standard,
+            detalhes_retorno: null,
+          }));
+        }
+      } catch (e) {
+        this.logger.debug(
+          `GOSAC adapt (${t.envId}): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+
+    const evalResult = await this.evaluateProvider(t, creds);
+    return [
+      {
+        standard: this.standardFromProbe(t, evalResult),
+        detalhes_retorno: evalResult.detalhes_retorno,
+      },
+    ];
+  }
+
+  private standardFromProbe(
+    t: LineHealthTarget,
+    ev: LineHealthEval,
+  ): StandardLineHealth {
+    const p = t.provider.toUpperCase();
+    const canon = p.includes('NOAH')
+      ? 'NOAH'
+      : p.includes('GOSAC')
+        ? 'GOSAC'
+        : t.provider;
+    const nome = t.nome_linha ?? `${t.provider}:${t.envId}`;
+    return {
+      provedor: canon,
+      id_externo: t.envId,
+      nome_linha: nome,
+      numero_telefone: null,
+      status_conexao: ev.status_qualidade,
+      limite_mensagens: null,
+      restricao_conta: null,
+      waba_id: null,
+      waba_phone_id: null,
+      dados_brutos: {
+        fonte: 'probe_http',
+        detalhes_retorno: ev.detalhes_retorno,
+      },
+    };
+  }
+
+  private standardFromErroAlvo(
+    t: LineHealthTarget,
+    nome_linha: string,
+    detalhe: string,
+  ): StandardLineHealth {
+    const p = t.provider.toUpperCase();
+    const canon = p.includes('NOAH')
+      ? 'NOAH'
+      : p.includes('GOSAC')
+        ? 'GOSAC'
+        : t.provider;
+    return {
+      provedor: canon,
+      id_externo: t.envId,
+      nome_linha: nome_linha,
+      numero_telefone: null,
+      status_conexao: 'ERRO_CREDENCIAL_OU_API',
+      limite_mensagens: null,
+      restricao_conta: null,
+      waba_id: null,
+      waba_phone_id: null,
+      dados_brutos: { fonte: 'erro_credencial', detalhe },
+    };
+  }
+
+  private buildNoahIntegrationAuth(token: string): string {
+    let raw = String(token).trim();
+    if (!raw) {
+      return '';
+    }
+    raw = raw.replace(/^(Bearer|INTEGRATION)\s+/gi, '').trim();
+    return raw ? `INTEGRATION ${raw}` : '';
+  }
+
+  private buildGosacBearer(token: string): string {
+    const t = String(token).trim();
+    if (!t) {
+      return '';
+    }
+    return t.toLowerCase().startsWith('bearer ') ? t : `Bearer ${t}`;
+  }
+
+  private async fetchNoahChannelList(
+    creds: Record<string, unknown>,
+  ): Promise<unknown[]> {
+    const base = String(creds.url ?? '').replace(/\/$/, '');
+    const auth = this.buildNoahIntegrationAuth(String(creds.token ?? ''));
+    if (!base || !auth) {
+      throw new Error('NOAH: url ou token ausente nas credenciais');
+    }
+
+    const channelIds = creds.channel_ids;
+    if (Array.isArray(channelIds) && channelIds.length > 0) {
+      return channelIds.map((cid) => ({
+        id: cid,
+        channelId: cid,
+      }));
+    }
+
+    const url = `${base}/channels`;
+    const res = await firstValueFrom(
+      this.http.get<unknown>(url, {
+        headers: {
+          Authorization: auth,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        timeout: 45_000,
+        validateStatus: () => true,
+      }),
+    );
+    if (res.status !== 200) {
+      throw new Error(`NOAH GET /channels → HTTP ${res.status}`);
+    }
+    const body = res.data;
+    if (Array.isArray(body)) {
+      return body;
+    }
+    if (body && typeof body === 'object' && Array.isArray((body as { data?: unknown }).data)) {
+      return (body as { data: unknown[] }).data;
+    }
+    return [];
+  }
+
+  private async fetchGosacConnectionsJson(
+    t: LineHealthTarget,
+    creds: Record<string, unknown>,
+  ): Promise<unknown> {
+    const base = String(creds.url ?? '').replace(/\/$/, '');
+    const bearer = this.buildGosacBearer(String(creds.token ?? ''));
+    if (!base || !bearer) {
+      throw new Error('GOSAC: url ou token ausente nas credenciais');
+    }
+
+    let idgis = String(t.envId).trim();
+    let idRuler = '';
+    if (idgis.includes('|')) {
+      const parts = idgis.split('|', 2);
+      idgis = parts[0].trim();
+      idRuler = (parts[1] ?? '').trim();
+    }
+
+    const params = new URLSearchParams();
+    params.set('idgis', idgis);
+    params.set('idAmbient', idgis);
+    if (idRuler) {
+      params.set('ruler', idRuler);
+      params.set('idRuler', idRuler);
+    }
+
+    const url = `${base}/connections/official?${params.toString()}`;
+    const res = await firstValueFrom(
+      this.http.get<unknown>(url, {
+        headers: {
+          Authorization: bearer,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        timeout: 45_000,
+        validateStatus: () => true,
+      }),
+    );
+    if (res.status !== 200) {
+      throw new Error(`GOSAC GET /connections/official → HTTP ${res.status}`);
+    }
+    return res.data;
   }
 
   private async evaluateProvider(

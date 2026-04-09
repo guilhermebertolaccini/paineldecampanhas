@@ -10,6 +10,9 @@ export const wordpressConfig = {
       `${wordpressConfig.url}/wp-json/campaigns/v1/config/${agendamentoId}`,
     webhookStatus: () =>
       `${wordpressConfig.url}/wp-json/webhook-status/v1/update`,
+    /** ETL batch: envios pendentes (Master API Key / X-API-KEY). */
+    enviosPendentesEtl: () =>
+      `${wordpressConfig.url}/wp-json/pc/v1/relatorios/envios_pendentes`,
   },
 };
 

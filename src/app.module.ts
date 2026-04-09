@@ -11,6 +11,7 @@ import { ValidatorModule } from './validator/validator.module';
 import { SqlServerModule } from './sql-server/sql-server.module';
 import { LineHealthModule } from './line-health/line-health.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
+import { WpSyncModule } from './wp-sync/wp-sync.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
     JobsModule,
     LineHealthModule,
     WebhooksModule,
+    WpSyncModule,
     ValidatorModule,
   ],
   controllers: [AppController],
