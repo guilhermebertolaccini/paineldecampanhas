@@ -7,6 +7,7 @@ import {
   ProviderResponse,
   RetryStrategy,
 } from '../base/provider.interface';
+import { formatCpfForBot } from '../../utils/cpf-formatter.util';
 
 interface RCSTemplateMessage {
   date?: string;
@@ -122,6 +123,13 @@ export class RcsOtimaProvider extends BaseProvider {
         }
 
         const idCarteira = item.id_carteira ?? item.idgis_ambiente ?? '';
+        const rawCpfForBot =
+          item.variables?.cpf ??
+          item.variables?.CPF ??
+          item.variables?.document ??
+          item.cpf_cnpj;
+        const cpfBotExtras = formatCpfForBot(rawCpfForBot);
+
         const message: RCSTemplateMessage = {
           phone,
           document: item.cpf_cnpj?.replace(/\D/g, ''),
@@ -129,6 +137,7 @@ export class RcsOtimaProvider extends BaseProvider {
             nome: item.nome,
             id_carteira: idCarteira,
             idcob_contrato: item.idcob_contrato,
+            ...(cpfBotExtras ?? {}),
           },
           variables: resolvedVariables,
         };

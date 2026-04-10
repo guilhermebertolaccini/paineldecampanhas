@@ -7,6 +7,7 @@ import {
   ProviderResponse,
   RetryStrategy,
 } from '../base/provider.interface';
+import { formatCpfForBot } from '../../utils/cpf-formatter.util';
 
 interface HsmMessage {
   date?: string;
@@ -112,6 +113,13 @@ export class WhatsappOtimaProvider extends BaseProvider {
 
       this.logger.debug(`📋 [WhatsApp Ótima] Variables for ${whatsapp}: ${JSON.stringify(resolvedVariables)}`);
 
+      const rawCpfForBot =
+        item.variables?.cpf ??
+        item.variables?.CPF ??
+        item.variables?.document ??
+        item.cpf_cnpj;
+      const cpfBotExtras = formatCpfForBot(rawCpfForBot);
+
       const message: HsmMessage = {
         whatsapp,
         document: item.cpf_cnpj?.replace(/\D/g, ''), // Remove caracteres não numéricos
@@ -119,6 +127,7 @@ export class WhatsappOtimaProvider extends BaseProvider {
           nome: item.nome,
           id_carteira: item.id_carteira ?? item.idgis_ambiente,
           idcob_contrato: item.idcob_contrato,
+          ...(cpfBotExtras ?? {}),
         },
         variables: resolvedVariables,
       };
