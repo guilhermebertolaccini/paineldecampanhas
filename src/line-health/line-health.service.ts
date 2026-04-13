@@ -13,6 +13,7 @@ import { DigitalFunnelMssqlService } from '../sql-server/digital-funnel-mssql.se
 import {
   MssqlService,
   type LineHealthSyncRow,
+  type PcLineHealthSnapshotCsvRow,
 } from '../sql-server/mssql.service';
 import { wordpressConfig } from '../config/wordpress.config';
 import {
@@ -494,5 +495,123 @@ export class LineHealthService {
       status_qualidade: 'SEM_PROBE_CONFIGURADO',
       detalhes_retorno: null,
     };
+  }
+
+  /**
+   * Monta CSV (separador `;`, UTF-8 com BOM) a partir de `PC_LINE_HEALTH_SNAPSHOT`
+   * e do objeto opcional `standard_line_health` dentro de `metricas_json`.
+   */
+  async buildLineHealthCsvExport(): Promise<string> {
+    const rows = await this.mssqlService.fetchPcLineHealthSnapshotForCsvExport();
+    const headers = [
+      'line_key',
+      'nome_linha_snapshot',
+      'provedor_snapshot',
+      'idgis_ambiente',
+      'saude_tier',
+      'updated_at',
+      'metricas_source',
+      'metricas_captured_at',
+      'metricas_status_qualidade',
+      'metricas_detalhes_retorno',
+      'provedor',
+      'id_externo',
+      'nome_linha',
+      'numero_telefone',
+      'status_conexao',
+      'limite_mensagens',
+      'restricao_conta',
+      'waba_id',
+      'waba_phone_id',
+    ];
+    const lines: string[] = [headers.join(';')];
+    for (const r of rows) {
+      const m = this.parseMetricasJsonForExport(r.metricas_json);
+      const std = m?.standard_line_health;
+      const cells: unknown[] = [
+        r.line_key,
+        r.nome_linha,
+        r.provedor,
+        r.idgis_ambiente,
+        r.saude_tier,
+        this.formatSnapshotDateForCsv(r.updated_at),
+        m?.source,
+        m?.captured_at,
+        m?.status_qualidade,
+        m?.detalhes_retorno,
+        std?.provedor,
+        std?.id_externo,
+        std?.nome_linha,
+        std?.numero_telefone,
+        std?.status_conexao,
+        std?.limite_mensagens,
+        std?.restricao_conta,
+        std?.waba_id,
+        std?.waba_phone_id,
+      ];
+      lines.push(cells.map((c) => this.escapeCsvSemicolon(c)).join(';'));
+    }
+    const body = lines.join('\r\n');
+    return `\ufeff${body}`;
+  }
+
+  private parseMetricasJsonForExport(
+    raw: string | null | undefined,
+  ): {
+    source?: string;
+    captured_at?: string;
+    status_qualidade?: string;
+    detalhes_retorno?: string | null;
+    standard_line_health?: Partial<StandardLineHealth>;
+  } | null {
+    if (raw == null || String(raw).trim() === '') {
+      return null;
+    }
+    try {
+      const o = JSON.parse(raw) as Record<string, unknown>;
+      if (!o || typeof o !== 'object') {
+        return null;
+      }
+      const sh = o.standard_line_health;
+      return {
+        source: o.source != null ? String(o.source) : undefined,
+        captured_at:
+          o.captured_at != null ? String(o.captured_at) : undefined,
+        status_qualidade:
+          o.status_qualidade != null ? String(o.status_qualidade) : undefined,
+        detalhes_retorno:
+          o.detalhes_retorno != null && o.detalhes_retorno !== undefined
+            ? String(o.detalhes_retorno)
+            : null,
+        standard_line_health:
+          sh != null && typeof sh === 'object'
+            ? (sh as Partial<StandardLineHealth>)
+            : undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private formatSnapshotDateForCsv(v: PcLineHealthSnapshotCsvRow['updated_at']): string {
+    if (v instanceof Date) {
+      return v.toISOString();
+    }
+    if (typeof v === 'string') {
+      return v;
+    }
+    return '';
+  }
+
+  /** CSV com separador `;` (Excel PT-BR); aspas se necessário. */
+  private escapeCsvSemicolon(value: unknown): string {
+    if (value === null || value === undefined) {
+      return '';
+    }
+    const s = String(value);
+    if (/[";\r\n]/.test(s)) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
   }
 }

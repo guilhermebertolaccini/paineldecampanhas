@@ -27,6 +27,17 @@ export type SyncWpPendingRawOptions = {
   verbose?: boolean;
 };
 
+/** Linha do snapshot para exportação CSV (última versão por `line_key`). */
+export type PcLineHealthSnapshotCsvRow = {
+  line_key: string;
+  nome_linha: string | null;
+  provedor: string | null;
+  idgis_ambiente: string | null;
+  saude_tier: string;
+  metricas_json: string | null;
+  updated_at: Date | string;
+};
+
 /**
  * Snapshot operacional no SQL Server — mesmo contrato da ponte PHP (`PC_Wp_Mssql_Bridge`).
  * Usa o pool compartilhado de {@link SqlServerService} (variáveis MSSQL_* no .env).
@@ -360,6 +371,69 @@ WHEN NOT MATCHED THEN
       `MERGE concluído: ${merged}/${toMerge.length} linha(s) processada(s).`,
     );
     return merged;
+  }
+
+  /**
+   * Último snapshot por `line_key` (ROW_NUMBER por `updated_at`) para exportação CSV.
+   */
+  async fetchPcLineHealthSnapshotForCsvExport(): Promise<
+    PcLineHealthSnapshotCsvRow[]
+  > {
+    if (!this.sqlServer.isEnabled()) {
+      this.lineHealthSyncLog.warn(
+        'MSSQL desabilitado; fetchPcLineHealthSnapshotForCsvExport retorna vazio.',
+      );
+      return [];
+    }
+    const pool = await this.sqlServer.getPool();
+    if (!pool) {
+      this.lineHealthSyncLog.error(
+        'Pool MSSQL indisponível; fetchPcLineHealthSnapshotForCsvExport retorna vazio.',
+      );
+      return [];
+    }
+
+    try {
+      await pool.request().query(MssqlService.ENSURE_SNAPSHOT_DDL);
+    } catch (e) {
+      this.logMssqlDriverError('ENSURE_SNAPSHOT_DDL (export csv)', e);
+      return [];
+    }
+
+    const sql = `
+;WITH ranked AS (
+  SELECT
+    line_key,
+    nome_linha,
+    provedor,
+    idgis_ambiente,
+    saude_tier,
+    metricas_json,
+    updated_at,
+    ROW_NUMBER() OVER (PARTITION BY line_key ORDER BY updated_at DESC) AS rn
+  FROM dbo.PC_LINE_HEALTH_SNAPSHOT
+)
+SELECT
+  line_key,
+  nome_linha,
+  provedor,
+  idgis_ambiente,
+  saude_tier,
+  metricas_json,
+  updated_at
+FROM ranked
+WHERE rn = 1
+ORDER BY line_key ASC
+`;
+
+    try {
+      const result = await pool.request().query(sql);
+      const rows = result.recordset as PcLineHealthSnapshotCsvRow[] | undefined;
+      return Array.isArray(rows) ? rows : [];
+    } catch (e) {
+      this.logMssqlDriverError('fetchPcLineHealthSnapshotForCsvExport', e);
+      return [];
+    }
   }
 
   private logMssqlDriverError(phase: string, err: unknown): void {

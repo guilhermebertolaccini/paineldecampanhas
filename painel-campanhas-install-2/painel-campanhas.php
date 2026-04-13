@@ -612,6 +612,20 @@ class Painel_Campanhas
                 ],
             ],
         ]);
+
+        // DW / ETL: exportação CSV em streaming (Master API Key; evita estourar memory_limit)
+        register_rest_route('pc/v1', '/export/csv', [
+            'methods' => 'GET',
+            'callback' => [$this, 'rest_export_csv_stream'],
+            'permission_callback' => [$this, 'check_api_key_rest'],
+            'args' => [
+                'table' => [
+                    'required' => true,
+                    'type' => 'string',
+                    'description' => 'Nome lógico sem prefixo: envios_pendentes, eventos_envios, eventos_indicadores, eventos_tempos.',
+                ],
+            ],
+        ]);
     }
 
     public function check_api_key_rest($request)
@@ -834,6 +848,151 @@ class Painel_Campanhas
             ],
             'data' => is_array($rows) ? $rows : [],
         ]);
+    }
+
+    /**
+     * GET /wp-json/pc/v1/export/csv?table=envios_pendentes
+     * Streaming para php://output (lotes de 5000 linhas). X-API-KEY = acm_master_api_key.
+     *
+     * @param WP_REST_Request $request
+     * @return void|WP_Error
+     */
+    public function rest_export_csv_stream($request)
+    {
+        global $wpdb;
+
+        $whitelist = [
+            'envios_pendentes',
+            'eventos_envios',
+            'eventos_indicadores',
+            'eventos_tempos',
+        ];
+
+        $table_param = (string) $request->get_param('table');
+        $table_key = sanitize_key($table_param);
+
+        if ($table_key === '' || !in_array($table_key, $whitelist, true)) {
+            return new WP_Error(
+                'invalid_table',
+                'Parâmetro "table" inválido. Valores permitidos: ' . implode(', ', $whitelist),
+                ['status' => 400]
+            );
+        }
+
+        $full_table = $wpdb->prefix . $table_key;
+
+        $table_exists = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s',
+            DB_NAME,
+            $full_table
+        ));
+
+        if ($table_exists < 1) {
+            return new WP_Error(
+                'table_not_found',
+                'Tabela não encontrada no banco de dados.',
+                ['status' => 404]
+            );
+        }
+
+        $table_ident = '`' . esc_sql($full_table) . '`';
+        $col_rows = $wpdb->get_results('SHOW COLUMNS FROM ' . $table_ident, ARRAY_A);
+        if (!is_array($col_rows) || empty($col_rows)) {
+            return new WP_Error(
+                'columns_failed',
+                'Não foi possível ler a estrutura da tabela.',
+                ['status' => 500]
+            );
+        }
+
+        $column_names = [];
+        foreach ($col_rows as $row) {
+            if (!empty($row['Field']) && is_string($row['Field'])) {
+                $column_names[] = $row['Field'];
+            }
+        }
+        if ($column_names === []) {
+            return new WP_Error(
+                'no_columns',
+                'A tabela não possui colunas legíveis.',
+                ['status' => 500]
+            );
+        }
+
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+        if (function_exists('ignore_user_abort')) {
+            @ignore_user_abort(true);
+        }
+
+        while (ob_get_level() > 0) {
+            if (!@ob_end_clean()) {
+                break;
+            }
+        }
+        if (ob_get_level() > 0) {
+            @ob_clean();
+        }
+
+        if (!headers_sent()) {
+            nocache_headers();
+            header('Content-Type: text/csv; charset=utf-8');
+            $filename = 'export_' . $table_key . '_' . date('Ymd_His') . '.csv';
+            header('Content-Disposition: attachment; filename="' . str_replace('"', '', $filename) . '"');
+        }
+
+        $output = fopen('php://output', 'w');
+        if ($output === false) {
+            exit(1);
+        }
+
+        fputcsv($output, $column_names);
+
+        $batch_size = 5000;
+        $offset = 0;
+
+        while (true) {
+            $sql = 'SELECT * FROM ' . $table_ident
+                . ' LIMIT ' . (int) $batch_size . ' OFFSET ' . (int) $offset;
+            $rows = $wpdb->get_results($sql, ARRAY_A);
+
+            if (!is_array($rows) || $rows === []) {
+                break;
+            }
+
+            $chunk_count = count($rows);
+
+            foreach ($rows as $row) {
+                $line = [];
+                foreach ($column_names as $col) {
+                    if (!array_key_exists($col, $row)) {
+                        $line[] = '';
+                        continue;
+                    }
+                    $v = $row[$col];
+                    if ($v === null) {
+                        $line[] = '';
+                    } elseif (is_scalar($v) || (is_object($v) && is_callable([$v, '__toString']))) {
+                        $line[] = (string) $v;
+                    } else {
+                        $encoded = wp_json_encode($v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                        $line[] = $encoded !== false ? $encoded : '';
+                    }
+                }
+                fputcsv($output, $line);
+            }
+
+            $offset += $batch_size;
+            unset($rows);
+
+            if ($chunk_count < $batch_size) {
+                break;
+            }
+        }
+
+        fclose($output);
+        exit(0);
     }
 
     /**
