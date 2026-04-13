@@ -5473,7 +5473,16 @@ class Painel_Campanhas
             return;
         }
 
-        $count = PC_Campaign_Filters::count_records($table_name, $filters);
+        $base_limit = isset($_POST['base_limit']) ? max(0, intval($_POST['base_limit'])) : 0;
+        if ($base_limit <= 0 && isset($_POST['record_limit'])) {
+            $base_limit = max(0, intval($_POST['record_limit']));
+        }
+
+        $count = PC_Campaign_Filters::count_records(
+            $table_name,
+            $filters,
+            $base_limit > 0 ? $base_limit : 0
+        );
 
         wp_send_json_success($count);
     }
@@ -5584,6 +5593,10 @@ class Painel_Campanhas
         $filters = json_decode($filters_json, true);
         $exclude_recent = isset($_POST['exclude_recent']) && $_POST['exclude_recent'] === 'true';
         $exclude_recent_hours = isset($_POST['exclude_recent_hours']) ? intval($_POST['exclude_recent_hours']) : 48;
+        $base_limit = isset($_POST['base_limit']) ? max(0, intval($_POST['base_limit'])) : 0;
+        if ($base_limit <= 0 && isset($_POST['record_limit'])) {
+            $base_limit = max(0, intval($_POST['record_limit']));
+        }
 
         if (empty($table_name)) {
             wp_send_json_error('Nome da tabela não fornecido ou inválido');
@@ -5594,7 +5607,11 @@ class Painel_Campanhas
         $envios_table = $wpdb->prefix . 'envios_pendentes';
 
         $where_sql = PC_Campaign_Filters::build_where_clause($filters);
-        $total_count = PC_Campaign_Filters::count_records($table_name, $filters);
+        $total_count = PC_Campaign_Filters::count_records(
+            $table_name,
+            $filters,
+            $base_limit > 0 ? $base_limit : 0
+        );
 
         if ($total_count === 0) {
             wp_send_json_success([
@@ -5603,6 +5620,7 @@ class Painel_Campanhas
                 'blocked' => 0,
                 'effective' => 0,
                 'partial' => false,
+                'base_limit_applied' => $base_limit > 0 ? $base_limit : null,
             ]);
             return;
         }
@@ -5665,6 +5683,7 @@ class Painel_Campanhas
         }
 
         $chunk_size = 2500;
+        $db_scanned = 0;
 
         if ($pk_column !== null) {
             $pk_esc = '`' . str_replace('`', '', $pk_column) . '`';
@@ -5686,6 +5705,18 @@ class Painel_Campanhas
                 if (empty($batch)) {
                     break;
                 }
+
+                if ($base_limit > 0) {
+                    $remaining = $base_limit - $db_scanned;
+                    if ($remaining <= 0) {
+                        break;
+                    }
+                    if (count($batch) > $remaining) {
+                        $batch = array_slice($batch, 0, $remaining);
+                    }
+                }
+
+                $db_scanned += count($batch);
 
                 $max_in_batch = 0;
                 foreach ($batch as &$row) {
@@ -5720,6 +5751,7 @@ class Painel_Campanhas
                 'blocked' => $blocked_count,
                 'effective' => $effective_count,
                 'partial' => false,
+                'base_limit_applied' => $base_limit > 0 ? $base_limit : null,
             ]);
             return;
         }
@@ -5733,17 +5765,26 @@ class Painel_Campanhas
                 'effective' => $total_count,
                 'partial' => true,
                 'partial_message' => 'Esta visão não tem coluna ID indexável para contagem em lotes. O total líquido exibido iguala o bruto; blocklist e exclusão por envio recente ainda serão aplicadas ao gerar a campanha.',
+                'base_limit_applied' => $base_limit > 0 ? $base_limit : null,
             ]);
             return;
         }
 
         $sql = "SELECT {$select_clause} FROM `{$table_name}`" . $where_sql;
+        if ($base_limit > 0) {
+            $sql .= $wpdb->prepare(' LIMIT %d', $base_limit);
+        }
         $suprime_erro = $wpdb->suppress_errors(true);
         $records = $wpdb->get_results($sql, ARRAY_A);
         $wpdb->suppress_errors($suprime_erro);
 
         if ($records === null || $wpdb->last_error) {
-            $records = $this->get_filtered_records_optimized($table_name, $filters, 0, false);
+            $records = $this->get_filtered_records_optimized(
+                $table_name,
+                $filters,
+                $base_limit > 0 ? $base_limit : 0,
+                false
+            );
         }
 
         if (!is_array($records) || empty($records)) {
@@ -5753,6 +5794,7 @@ class Painel_Campanhas
                 'blocked' => 0,
                 'effective' => 0,
                 'partial' => false,
+                'base_limit_applied' => $base_limit > 0 ? $base_limit : null,
             ]);
             return;
         }
@@ -5772,6 +5814,7 @@ class Painel_Campanhas
             'blocked' => $blocked_count,
             'effective' => $effective_count,
             'partial' => false,
+            'base_limit_applied' => $base_limit > 0 ? $base_limit : null,
         ]);
     }
 
@@ -15072,6 +15115,52 @@ class PC_Campaign_Filters
         return $filters;
     }
 
+    /**
+     * Normaliza valor de filtro para lista de tokens (valor único, CSV ou array do JSON).
+     * Usado em equals/not_equals para gerar IN/NOT IN com placeholders.
+     *
+     * @param mixed $value
+     * @return string[]
+     */
+    public static function normalize_filter_in_values($value)
+    {
+        if (is_array($value)) {
+            $out = [];
+            foreach ($value as $v) {
+                if ($v === null || $v === '') {
+                    continue;
+                }
+                if (is_scalar($v)) {
+                    $s = trim((string) $v);
+                    if ($s !== '') {
+                        $out[] = $s;
+                    }
+                }
+            }
+
+            return array_values(array_unique($out));
+        }
+
+        if (is_scalar($value) && $value !== '') {
+            $s = trim((string) $value);
+            if ($s === '') {
+                return [];
+            }
+            if (strpos($s, ',') !== false) {
+                $parts = array_map('trim', explode(',', $s));
+                $parts = array_values(array_unique(array_filter($parts, static function ($p) {
+                    return $p !== '';
+                })));
+
+                return $parts;
+            }
+
+            return [$s];
+        }
+
+        return [];
+    }
+
     public static function build_where_clause($filters)
     {
         global $wpdb;
@@ -15111,11 +15200,15 @@ class PC_Campaign_Filters
 
                 $sanitized_column = esc_sql(str_replace('`', '', $column));
 
-                if (is_array($value)) {
-                    $placeholders = implode(', ', array_fill(0, count($value), '%s'));
-                    $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` IN ({$placeholders})", $value);
+                $vals = self::normalize_filter_in_values($value);
+                if (count($vals) === 0) {
+                    continue;
+                }
+                if (count($vals) === 1) {
+                    $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` = %s", $vals[0]);
                 } else {
-                    $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` = %s", $value);
+                    $placeholders = implode(', ', array_fill(0, count($vals), '%s'));
+                    $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` IN ({$placeholders})", $vals);
                 }
             }
         } else {
@@ -15150,10 +15243,28 @@ class PC_Campaign_Filters
 
                 switch ($operator) {
                     case 'equals':
-                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` = %s", $value);
+                        $vals = self::normalize_filter_in_values($value);
+                        if (count($vals) === 0) {
+                            break;
+                        }
+                        if (count($vals) === 1) {
+                            $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` = %s", $vals[0]);
+                        } else {
+                            $placeholders = implode(', ', array_fill(0, count($vals), '%s'));
+                            $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` IN ({$placeholders})", $vals);
+                        }
                         break;
                     case 'not_equals':
-                        $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` != %s", $value);
+                        $vals = self::normalize_filter_in_values($value);
+                        if (count($vals) === 0) {
+                            break;
+                        }
+                        if (count($vals) === 1) {
+                            $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` != %s", $vals[0]);
+                        } else {
+                            $placeholders = implode(', ', array_fill(0, count($vals), '%s'));
+                            $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` NOT IN ({$placeholders})", $vals);
+                        }
                         break;
                     case 'greater':
                         $where_clauses[] = $wpdb->prepare("`{$sanitized_column}` > %s", $value);
@@ -15205,7 +15316,10 @@ class PC_Campaign_Filters
         return ' WHERE ' . implode(' AND ', $where_clauses);
     }
 
-    public static function count_records($table_name, $filters)
+    /**
+     * @param int $max_rows Se > 0, retorna no máximo esse número (equivalente a COUNT em subquery com LIMIT).
+     */
+    public static function count_records($table_name, $filters, $max_rows = 0)
     {
         global $wpdb;
 
@@ -15214,6 +15328,15 @@ class PC_Campaign_Filters
         }
 
         $where_sql = self::build_where_clause($filters);
+        $cap = max(0, intval($max_rows));
+        if ($cap > 0) {
+            $count = $wpdb->get_var(
+                "SELECT COUNT(*) FROM (SELECT 1 AS `_pc_one` FROM `{$table_name}`" . $where_sql . ' LIMIT ' . $cap . ') `_pc_cap`'
+            );
+
+            return intval($count);
+        }
+
         $count = $wpdb->get_var("SELECT COUNT(*) FROM `{$table_name}`" . $where_sql);
 
         return intval($count);
@@ -15319,12 +15442,27 @@ class PC_Campaign_Filters
             $limit_sql = $wpdb->prepare(" LIMIT %d", $limit);
         }
 
+        $order_sql = '';
+        if ($limit > 0) {
+            $raw_cols_order = (array) $wpdb->get_col("SHOW COLUMNS FROM `{$table_name}`");
+            $id_col_order = null;
+            foreach ($raw_cols_order as $cn) {
+                if (strtoupper((string) $cn) === 'ID') {
+                    $id_col_order = str_replace('`', '', (string) $cn);
+                    break;
+                }
+            }
+            if ($id_col_order !== null && preg_match('/^[a-zA-Z0-9_]+$/', $id_col_order)) {
+                $order_sql = ' ORDER BY `' . esc_sql($id_col_order) . '` ASC';
+            }
+        }
+
         $select_list = self::build_lean_select_list($table_name, $extra_columns);
         if ($select_list === null) {
             error_log('PC Campaign Filters - SELECT enxuto indisponível; usando SELECT * (memória maior). Tabela: ' . $table_name);
-            $sql = "SELECT * FROM `{$table_name}`" . $where_sql . $limit_sql;
+            $sql = "SELECT * FROM `{$table_name}`" . $where_sql . $order_sql . $limit_sql;
         } else {
-            $sql = "SELECT {$select_list} FROM `{$table_name}`" . $where_sql . $limit_sql;
+            $sql = "SELECT {$select_list} FROM `{$table_name}`" . $where_sql . $order_sql . $limit_sql;
         }
 
         $records = $wpdb->get_results($sql, ARRAY_A);

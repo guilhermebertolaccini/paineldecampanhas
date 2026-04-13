@@ -679,7 +679,9 @@ export default function NovaCampanha() {
       .filter((f) => {
         if (!f.column || !f.operator) return false;
         if (f.operator === "is_null" || f.operator === "is_not_null") return true;
-        return f.value !== "" && f.value !== null && f.value !== undefined;
+        if (f.value === null || f.value === undefined) return false;
+        if (Array.isArray(f.value)) return f.value.length > 0;
+        return f.value !== "";
       })
       .map((f) => ({ column: f.column, operator: f.operator, value: f.value }));
 
@@ -760,7 +762,7 @@ export default function NovaCampanha() {
 
   // Calcular contagem quando filtros mudarem
   const { data: countData = { total: 0, recent_excluded: 0, blocked: 0, effective: 0 }, isLoading: countLoading } = useQuery({
-    queryKey: ['count', formData.base, filters, formData.exclude_recent_phones],
+    queryKey: ['count', formData.base, filters, formData.exclude_recent_phones, formData.exclude_recent_hours, formData.record_limit],
     queryFn: async () => {
       try {
         // Formata os filtros novos para enviar ao backend
@@ -772,6 +774,8 @@ export default function NovaCampanha() {
           table_name: formData.base,
           filters: formattedFilters,
           exclude_recent: formData.exclude_recent_phones,
+          exclude_recent_hours: formData.exclude_recent_hours,
+          base_limit: formData.record_limit > 0 ? formData.record_limit : 0,
         });
       } catch (error: any) {
         console.error('🔴 [NovaCampanha] Erro ao calcular contagem:', error);
@@ -1454,6 +1458,30 @@ export default function NovaCampanha() {
                   </div>
                 )}
 
+                <div className="flex flex-col gap-2 border rounded-lg p-4 bg-card sm:flex-row sm:items-center sm:justify-between">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="record-limit-base" className="text-base font-semibold">
+                      Limitar base a X contatos (opcional)
+                    </Label>
+                    <p className="text-sm text-muted-foreground max-w-xl">
+                      Máximo de contatos após os filtros (ordenado por ID). Usado na prévia abaixo e no disparo. Deixe vazio para usar toda a base filtrada.
+                    </p>
+                  </div>
+                  <Input
+                    id="record-limit-base"
+                    type="number"
+                    min={0}
+                    className="h-9 w-full sm:w-32 shrink-0"
+                    placeholder="Sem limite"
+                    value={formData.record_limit > 0 ? String(formData.record_limit) : ''}
+                    onChange={(e) => {
+                      const raw = e.target.value.trim();
+                      const n = raw === '' ? 0 : Math.max(0, parseInt(raw, 10) || 0);
+                      setFormData({ ...formData, record_limit: n });
+                    }}
+                  />
+                </div>
+
                 <div className="rounded-lg bg-muted/50 p-4 space-y-2">
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-muted-foreground">Total Bruto (após filtros):</span>
@@ -1490,6 +1518,13 @@ export default function NovaCampanha() {
                       {(countData as { partial_message?: string }).partial_message}
                     </p>
                   )}
+                  {(countData as { base_limit_applied?: number | null }).base_limit_applied ? (
+                    <p className="text-xs text-muted-foreground mt-2 leading-snug">
+                      Prévia alinhada ao limite de até{' '}
+                      {(countData as { base_limit_applied?: number }).base_limit_applied?.toLocaleString('pt-BR')}{' '}
+                      contatos (mesmo valor enviado ao disparar).
+                    </p>
+                  ) : null}
                 </div>
               </div></CardContent>
           </>

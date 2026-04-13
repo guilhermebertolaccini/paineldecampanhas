@@ -52,8 +52,8 @@ const OPERATORS_NUMBER = [
 ];
 
 const OPERATORS_SELECT = [
-    { value: "equals", label: "Igual a" },
-    { value: "not_equals", label: "Diferente de" },
+    { value: "equals", label: "Igual a (1 ou vários, OU)" },
+    { value: "not_equals", label: "Diferente de (1 ou vários)" },
     { value: "in", label: "Está na lista" },
     { value: "not_in", label: "Não está na lista" },
     ...OPERATORS_NULL,
@@ -199,21 +199,19 @@ export function FilterBuilder({ availableFilters, filters, onChange }: FilterBui
                                                 Este operador não usa valor.
                                             </p>
                                         ) : isSelect && (filter.operator === 'equals' || filter.operator === 'not_equals') ? (
-                                            <Select
-                                                value={filter.value}
-                                                onValueChange={(v) => updateFilter(filter.id, "value", v)}
-                                            >
-                                                <SelectTrigger className="h-9">
-                                                    <SelectValue placeholder="Selecione..." />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    {(filterDef.options || []).map((opt: any, i: number) => (
-                                                        <SelectItem key={i} value={String(opt)}>
-                                                            {String(opt)}
-                                                        </SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
+                                            <div className="text-xs text-muted-foreground p-2 border rounded bg-background">
+                                                Um valor ou vários separados por vírgula (OR / IN no SQL). Opções:{' '}
+                                                <span className="font-mono text-[11px] break-all">
+                                                    {(filterDef.options || []).slice(0, 12).map((o: unknown) => String(o)).join(', ')}
+                                                    {(filterDef.options || []).length > 12 ? '…' : ''}
+                                                </span>
+                                                <Input
+                                                    value={filter.value}
+                                                    onChange={(e) => updateFilter(filter.id, "value", e.target.value)}
+                                                    className="h-8 mt-1"
+                                                    placeholder="Ex: Segmento A, Segmento B"
+                                                />
+                                            </div>
                                         ) : (filter.operator === 'in' || filter.operator === 'not_in') && isSelect ? (
                                             <div className="text-xs text-muted-foreground p-2 border rounded bg-background">
                                                 Use vírgulas para múltiplos valores (ex: SP, RJ)

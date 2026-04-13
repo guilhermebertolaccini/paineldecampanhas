@@ -382,11 +382,14 @@ export const getCount = (data: Record<string, any>) => {
 };
 
 export const getCountDetailed = (data: Record<string, any>) => {
+  const cap = Math.max(0, parseInt(String(data.base_limit ?? data.record_limit ?? 0), 10) || 0);
   return wpAjax('cm_get_count_detailed', {
     table_name: data.table_name || data.base,
     filters: data.filters || [],
     exclude_recent: data.exclude_recent,
     exclude_recent_hours: data.exclude_recent_hours || 48,
+    base_limit: cap,
+    record_limit: cap,
   }, 'cmNonce');
 };
 
