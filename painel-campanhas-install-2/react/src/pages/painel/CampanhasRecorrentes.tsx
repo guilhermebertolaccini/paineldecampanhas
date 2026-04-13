@@ -38,6 +38,8 @@ import {
   saveRecurring,
   getIscas,
   getCarteiras,
+  getFilters as fetchTableFilterDefs,
+  updateRecurringCampaignFilters,
 } from "@/lib/api";
 import {
   Dialog,
@@ -51,6 +53,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RecurringCampaignCreateForm } from "@/components/campaign/RecurringCampaignCreateForm";
+import { FilterBuilder, type FilterItem } from "@/components/campaign/FilterBuilder";
 
 interface ParsedFilter {
   column?: string;
@@ -169,7 +172,7 @@ const parseProviderNames = (config?: string): string => {
   }
 };
 
-const getFilters = (campaign: any): ParsedFilter[] => {
+const parseStoredFilters = (campaign: any): ParsedFilter[] => {
   if (Array.isArray(campaign.parsed_filters) && campaign.parsed_filters.length > 0) {
     return campaign.parsed_filters;
   }
@@ -183,6 +186,35 @@ const getFilters = (campaign: any): ParsedFilter[] => {
   }
   return [];
 };
+
+function campaignFiltersToFilterItems(campaign: RecurringCampaign): FilterItem[] {
+  const raw = parseStoredFilters(campaign).filter(
+    (f) => f.operator !== "exclude_recent" && (f.column || f.field),
+  );
+  return raw.map((f) => ({
+    id: globalThis.crypto?.randomUUID?.() ?? `fi-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+    column: String(f.column || f.field || ""),
+    operator: String(f.operator || "equals"),
+    value:
+      f.value === null || f.value === undefined
+        ? ""
+        : Array.isArray(f.value)
+          ? f.value.join(", ")
+          : String(f.value),
+  }));
+}
+
+function buildFilterPayloadForApi(items: FilterItem[]) {
+  return items
+    .filter((f) => {
+      if (!f.column || !f.operator) return false;
+      if (f.operator === "is_null" || f.operator === "is_not_null") return true;
+      if (f.value === null || f.value === undefined) return false;
+      if (Array.isArray(f.value)) return f.value.length > 0;
+      return String(f.value).trim() !== "";
+    })
+    .map((f) => ({ column: f.column, operator: f.operator, value: f.value }));
+}
 
 const formatNumber = (n: number): string =>
   n.toLocaleString("pt-BR");
@@ -377,6 +409,18 @@ export default function CampanhasRecorrentes() {
   const [editIncludeBaits, setEditIncludeBaits] = useState(false);
   const [editSelectedBaitIds, setEditSelectedBaitIds] = useState<number[]>([]);
 
+  const [filtersEditorOpen, setFiltersEditorOpen] = useState(false);
+  const [filtersEditorCampaign, setFiltersEditorCampaign] = useState<RecurringCampaign | null>(null);
+  const [filtersEditorItems, setFiltersEditorItems] = useState<FilterItem[]>([]);
+
+  const filtersEditorTable = filtersEditorCampaign?.tabela_origem ?? "";
+
+  const { data: filterEditorDefs = [], isLoading: filterEditorDefsLoading } = useQuery({
+    queryKey: ["filters", "recurring-editor", filtersEditorTable],
+    queryFn: () => fetchTableFilterDefs(filtersEditorTable),
+    enabled: filtersEditorOpen && !!filtersEditorTable,
+  });
+
   const { data: editBaits = [] } = useQuery({
     queryKey: ["baits-recurring-edit"],
     queryFn: getIscas,
@@ -397,6 +441,33 @@ export default function CampanhasRecorrentes() {
     setEditSelectedBaitIds(normalizeBaitIds(cfg.bait_ids));
     setEditOpen(true);
   };
+
+  const openFiltersEditor = (c: RecurringCampaign) => {
+    setFiltersEditorCampaign(c);
+    setFiltersEditorItems(campaignFiltersToFilterItems(c));
+    setFiltersEditorOpen(true);
+  };
+
+  const saveFiltersEditorMutation = useMutation({
+    mutationFn: async () => {
+      if (!filtersEditorCampaign) throw new Error("Nenhuma campanha selecionada.");
+      const payload = buildFilterPayloadForApi(filtersEditorItems);
+      return updateRecurringCampaignFilters(filtersEditorCampaign.id, payload);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Filtros atualizados",
+        description: "Os critérios foram salvos nesta campanha recorrente.",
+      });
+      setFiltersEditorOpen(false);
+      setFiltersEditorCampaign(null);
+      queryClient.invalidateQueries({ queryKey: ["recurring-campaigns"] });
+    },
+    onError: (error: unknown) => {
+      const msg = error instanceof Error ? error.message : "Não foi possível salvar os filtros.";
+      toast({ title: "Erro ao salvar filtros", description: msg, variant: "destructive" });
+    },
+  });
 
   // Filtro legado com include_baits e sem `bait_ids` no JSON: equivale a todas as iscas ativas
   useEffect(() => {
@@ -558,7 +629,7 @@ export default function CampanhasRecorrentes() {
       ) : (
         <div className="grid gap-4">
           {campaigns.map((campaign: any, index: number) => {
-            const filters = getFilters(campaign);
+            const filters = parseStoredFilters(campaign);
             const displayCount = getDisplayCount(campaign);
             const recordLimit = parseInt(campaign.record_limit) || 0;
             const hasRefreshed = !!refreshedEstimates[campaign.id];
@@ -655,6 +726,15 @@ export default function CampanhasRecorrentes() {
                           <Play className="mr-2 h-4 w-4" />
                         )}
                         Gerar Agora
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openFiltersEditor(campaign as RecurringCampaign)}
+                        title="Editar critérios de filtro da base"
+                      >
+                        <Filter className="h-4 w-4 sm:mr-1" />
+                        <span className="hidden sm:inline">Editar filtros</span>
                       </Button>
                       <Button
                         variant="outline"
@@ -816,6 +896,73 @@ export default function CampanhasRecorrentes() {
           })}
         </div>
       )}
+
+      <Dialog
+        open={filtersEditorOpen}
+        onOpenChange={(open) => {
+          setFiltersEditorOpen(open);
+          if (!open) {
+            setFiltersEditorCampaign(null);
+            setFiltersEditorItems([]);
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[92vh] max-w-3xl flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+          <DialogHeader className="shrink-0 border-b px-6 py-4 text-left">
+            <DialogTitle>Editar filtros da campanha</DialogTitle>
+            <DialogDescription>
+              {filtersEditorCampaign ? (
+                <>
+                  Ajuste os critérios da base <strong>{filtersEditorCampaign.tabela_origem}</strong> para &quot;
+                  {filtersEditorCampaign.nome_campanha}&quot;. Alterações valem nas próximas execuções agendadas.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+            {filterEditorDefsLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-8">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Carregando colunas filtráveis da base…
+              </div>
+            ) : (
+              <FilterBuilder
+                embedded
+                availableFilters={Array.isArray(filterEditorDefs) ? filterEditorDefs : []}
+                filters={filtersEditorItems}
+                onChange={setFiltersEditorItems}
+              />
+            )}
+          </div>
+          <DialogFooter className="shrink-0 border-t px-6 py-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setFiltersEditorOpen(false);
+                setFiltersEditorCampaign(null);
+                setFiltersEditorItems([]);
+              }}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              onClick={() => saveFiltersEditorMutation.mutate()}
+              disabled={
+                saveFiltersEditorMutation.isPending ||
+                filterEditorDefsLoading ||
+                !filtersEditorCampaign
+              }
+            >
+              {saveFiltersEditorMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              Salvar filtros
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={editOpen}

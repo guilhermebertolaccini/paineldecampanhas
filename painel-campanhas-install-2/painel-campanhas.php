@@ -633,6 +633,120 @@ class Painel_Campanhas
             'callback' => [$this, 'rest_export_live_health_csv'],
             'permission_callback' => [$this, 'check_api_key_rest'],
         ]);
+
+        // Painel (SPA): atualizar só os filtros JSON de uma campanha recorrente (usuário logado).
+        register_rest_route('pc/v1', '/recurring-campaigns/(?P<id>\d+)/filters', [
+            'methods' => \WP_REST_Server::EDITABLE,
+            'callback' => [$this, 'rest_update_recurring_campaign_filters'],
+            'permission_callback' => function () {
+                return is_user_logged_in() && current_user_can('read');
+            },
+            'args' => [
+                'id' => [
+                    'required' => true,
+                    'type' => 'integer',
+                ],
+            ],
+        ]);
+    }
+
+    /**
+     * PUT/PATCH/POST /wp-json/pc/v1/recurring-campaigns/{id}/filters
+     * Body JSON: { "filters": [ { "column", "operator", "value" }, ... ] }
+     */
+    public function rest_update_recurring_campaign_filters(WP_REST_Request $request)
+    {
+        if (!is_user_logged_in() || !current_user_can('read')) {
+            return new WP_Error('pc_forbidden', 'Permissão negada.', ['status' => 403]);
+        }
+
+        $id = (int) $request->get_param('id');
+        if ($id <= 0) {
+            return new WP_Error('pc_invalid_id', 'ID inválido.', ['status' => 400]);
+        }
+
+        $params = $request->get_json_params();
+        if (!is_array($params)) {
+            return new WP_Error('pc_invalid_body', 'Corpo JSON inválido.', ['status' => 400]);
+        }
+
+        $filters = $params['filters'] ?? null;
+        if (!is_array($filters)) {
+            return new WP_Error('pc_invalid_filters', 'O campo "filters" deve ser um array.', ['status' => 400]);
+        }
+
+        $normalized = [];
+        foreach ($filters as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $col = isset($row['column']) ? sanitize_text_field((string) $row['column']) : '';
+            $op = isset($row['operator']) ? sanitize_key((string) $row['operator']) : '';
+            if ($col === '' || $op === '') {
+                continue;
+            }
+            $allowed_ops = [
+                'equals', 'not_equals', 'greater', 'greater_equals', 'less', 'less_equals',
+                'contains', 'not_contains', 'starts_with', 'ends_with', 'in', 'not_in',
+                'is_null', 'is_not_null',
+            ];
+            if (!in_array($op, $allowed_ops, true)) {
+                continue;
+            }
+            $entry = ['column' => $col, 'operator' => $op];
+            if ($op === 'is_null' || $op === 'is_not_null') {
+                $normalized[] = $entry;
+                continue;
+            }
+            $val = $row['value'] ?? '';
+            if (is_array($val)) {
+                $entry['value'] = array_map(static function ($v) {
+                    return is_scalar($v) ? (string) $v : '';
+                }, $val);
+            } else {
+                $entry['value'] = is_scalar($val) ? (string) $val : '';
+            }
+            if ($entry['value'] === '' || (is_array($entry['value']) && count($entry['value']) === 0)) {
+                continue;
+            }
+            $normalized[] = $entry;
+        }
+
+        $filters_json = wp_json_encode(array_values($normalized), JSON_UNESCAPED_UNICODE);
+        if ($filters_json === false) {
+            return new WP_Error('pc_encode_error', 'Não foi possível serializar os filtros.', ['status' => 500]);
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'cm_recurring_campaigns';
+        $uid = get_current_user_id();
+
+        $exists = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM `{$table}` WHERE id = %d AND criado_por = %d",
+            $id,
+            $uid
+        ));
+        if ($exists !== 1) {
+            return new WP_Error('pc_not_found', 'Campanha recorrente não encontrada ou sem permissão.', ['status' => 404]);
+        }
+
+        $updated = $wpdb->update(
+            $table,
+            ['filtros_json' => $filters_json],
+            ['id' => $id, 'criado_por' => $uid],
+            ['%s'],
+            ['%d', '%d']
+        );
+
+        if ($updated === false) {
+            return new WP_Error('pc_db_error', 'Erro ao atualizar: ' . $wpdb->last_error, ['status' => 500]);
+        }
+
+        return new WP_REST_Response([
+            'success' => true,
+            'id' => $id,
+            'message' => 'Filtros atualizados com sucesso.',
+        ], 200);
     }
 
     public function check_api_key_rest($request)
@@ -1863,6 +1977,7 @@ class Painel_Campanhas
                 'csvNonce' => wp_create_nonce('pc_csv_download'),
                 'adminPostUrl' => admin_url('admin-post.php'),
                 'homeUrl' => home_url(),
+                'restNonce' => wp_create_nonce('wp_rest'),
             ]);
         }
 
@@ -1876,6 +1991,8 @@ class Painel_Campanhas
             'homeUrl' => home_url(),
             'logoutUrl' => wp_logout_url( home_url( '/' ) ),
             'canManageOptions' => current_user_can('manage_options'),
+            /** Nonce para rotas REST autenticadas no mesmo site (cookie + X-WP-Nonce). */
+            'restNonce' => wp_create_nonce('wp_rest'),
         ]);
     }
 

@@ -368,6 +368,44 @@ export const getFilters = (base: string) => {
   return wpAjax('cm_get_filters', { table_name: base }, 'cmNonce');
 };
 
+/** Atualiza apenas `filtros_json` da campanha recorrente (REST autenticado com cookie + X-WP-Nonce). */
+export const updateRecurringCampaignFilters = async (
+  id: number | string,
+  filters: Array<{ column: string; operator: string; value?: unknown }>,
+): Promise<{ success?: boolean; message?: string; id?: number }> => {
+  const pc = (window as any).pcAjax;
+  const nonce = pc?.restNonce;
+  if (!nonce) {
+    throw new Error('Nonce REST indisponível. Recarregue o painel.');
+  }
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const url = `${origin}/wp-json/pc/v1/recurring-campaigns/${encodeURIComponent(String(id))}/filters`;
+  const res = await fetch(url, {
+    method: 'PUT',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'X-WP-Nonce': nonce,
+    },
+    body: JSON.stringify({ filters }),
+  });
+  let data: Record<string, unknown> = {};
+  try {
+    data = (await res.json()) as Record<string, unknown>;
+  } catch {
+    /* ignore */
+  }
+  if (!res.ok) {
+    const msg =
+      (typeof data.message === 'string' && data.message) ||
+      (typeof data.code === 'string' && data.code) ||
+      res.statusText;
+    throw new Error(msg || `Erro HTTP ${res.status}`);
+  }
+  return data as { success?: boolean; message?: string; id?: number };
+};
+
 /** Limpa o transient `pc_cols_*` da base (somente admin no PHP). */
 export const clearBaseColumnsCache = (table_name: string) => {
   return wpAjax('pc_clear_base_cache', { table_name });
