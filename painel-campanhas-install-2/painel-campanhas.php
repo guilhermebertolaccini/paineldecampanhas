@@ -626,6 +626,13 @@ class Painel_Campanhas
                 ],
             ],
         ]);
+
+        // CSV ao vivo: mesmas chamadas às APIs GOSAC/NOAH/Robbu do painel (sem snapshot MSSQL)
+        register_rest_route('pc/v1', '/export/live-health-csv', [
+            'methods' => 'GET',
+            'callback' => [$this, 'rest_export_live_health_csv'],
+            'permission_callback' => [$this, 'check_api_key_rest'],
+        ]);
     }
 
     public function check_api_key_rest($request)
@@ -12368,19 +12375,13 @@ class Painel_Campanhas
         return $out;
     }
 
-    public function handle_get_all_connections_health()
+    /**
+     * Coleta saúde das linhas em tempo real (mesma lógica de APIs do AJAX `pc_get_all_connections_health`).
+     *
+     * @return array{connections: array<int, array<string, mixed>>, debug_info: array<int, array<string, mixed>>}
+     */
+    private function pc_collect_live_connections_health_payload()
     {
-        if (!current_user_can('read')) {
-            wp_send_json_error('Acesso negado');
-            return;
-        }
-
-        check_ajax_referer('pc_nonce', 'nonce');
-
-        if (class_exists('PC_Wp_Mssql_Bridge')) {
-            PC_Wp_Mssql_Bridge::on_operational_health_page_visit();
-        }
-
         global $wpdb;
         $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
         $carteiras = $wpdb->get_results("SELECT id, nome, id_carteira, id_ruler FROM $table_carteiras WHERE ativo = 1", ARRAY_A);
@@ -12698,10 +12699,153 @@ class Painel_Campanhas
             }
         }
 
-        wp_send_json_success([
+        return [
             'connections' => $all_health_data,
             'debug_info' => $debug_info,
+        ];
+    }
+
+    public function handle_get_all_connections_health()
+    {
+        if (!current_user_can('read')) {
+            wp_send_json_error('Acesso negado');
+            return;
+        }
+
+        check_ajax_referer('pc_nonce', 'nonce');
+
+        if (class_exists('PC_Wp_Mssql_Bridge')) {
+            PC_Wp_Mssql_Bridge::on_operational_health_page_visit();
+        }
+
+        $payload = $this->pc_collect_live_connections_health_payload();
+        wp_send_json_success([
+            'connections' => $payload['connections'],
+            'debug_info' => $payload['debug_info'],
         ]);
+    }
+
+    /**
+     * GET /wp-json/pc/v1/export/live-health-csv — CSV em tempo real (APIs GOSAC / NOAH / Robbu).
+     * Master Key no header X-API-KEY. Separador `;`, BOM UTF-8, streaming em php://output.
+     *
+     * @param WP_REST_Request $request
+     * @return void|WP_Error
+     */
+    public function rest_export_live_health_csv($request)
+    {
+        if (class_exists('PC_Wp_Mssql_Bridge')) {
+            PC_Wp_Mssql_Bridge::on_operational_health_page_visit();
+        }
+
+        try {
+            $payload = $this->pc_collect_live_connections_health_payload();
+        } catch (\Throwable $e) {
+            error_log('[live-health-csv] ' . $e->getMessage());
+
+            return new WP_Error(
+                'live_health_collect_failed',
+                'Falha ao coletar saúde das linhas: ' . $e->getMessage(),
+                ['status' => 500]
+            );
+        }
+
+        $rows = (isset($payload['connections']) && is_array($payload['connections']))
+            ? $payload['connections']
+            : [];
+
+        while (ob_get_level() > 0) {
+            if (!@ob_end_clean()) {
+                break;
+            }
+        }
+        if (ob_get_level() > 0) {
+            @ob_clean();
+        }
+
+        if (!headers_sent()) {
+            nocache_headers();
+            header('Content-Type: text/csv; charset=utf-8');
+            $fname = 'live_health_' . gmdate('Ymd_His') . '.csv';
+            header('Content-Disposition: attachment; filename="' . str_replace('"', '', $fname) . '"');
+        }
+
+        $output = fopen('php://output', 'w');
+        if ($output === false) {
+            exit(1);
+        }
+
+        fwrite($output, "\xEF\xBB\xBF");
+
+        fputcsv($output, [
+            'Nome da Linha',
+            'Número',
+            'Provedor',
+            'Status Conexão',
+            'Qualidade da Linha',
+            'Limite de Mensagens',
+        ], ';');
+
+        foreach ($rows as $conn) {
+            if (!is_array($conn)) {
+                continue;
+            }
+            fputcsv($output, $this->pc_live_health_connection_to_csv_row($conn), ';');
+        }
+
+        fclose($output);
+        exit(0);
+    }
+
+    /**
+     * Normaliza um item de conexão do painel para colunas CSV uniformes.
+     *
+     * @param array<string, mixed> $conn
+     * @return array<int, string>
+     */
+    private function pc_live_health_connection_to_csv_row(array $conn)
+    {
+        $nome = isset($conn['name']) ? (string) $conn['name'] : '';
+        $numero = isset($conn['number']) ? (string) $conn['number'] : '';
+        $provedor = isset($conn['provider']) ? (string) $conn['provider'] : '';
+        $status_raw = isset($conn['status']) ? (string) $conn['status'] : '';
+
+        $prov_lc = strtolower($provedor);
+        $status_conexao = $status_raw;
+        if (strpos($prov_lc, 'gosac') !== false) {
+            $ar = $conn['accountRestriction'] ?? null;
+            $restricted = false;
+            if (is_string($ar) && trim($ar) !== '') {
+                $restricted = true;
+            } elseif (is_array($ar) && !empty($ar)) {
+                $restricted = true;
+            } elseif ($ar !== null && $ar !== false && $ar !== '') {
+                $restricted = true;
+            }
+            if ($restricted) {
+                $status_conexao = 'RESTRICTED';
+            } elseif ($status_conexao === '') {
+                $status_conexao = 'CONNECTED';
+            }
+        }
+
+        $qualidade = '';
+        if (!empty($conn['qualityRating'])) {
+            $qualidade = (string) $conn['qualityRating'];
+        } elseif (!empty($conn['quality_rating'])) {
+            $qualidade = (string) $conn['quality_rating'];
+        } else {
+            $qualidade = $status_raw !== '' ? $status_raw : $status_conexao;
+        }
+
+        $limite = '';
+        if (isset($conn['messagingLimit']) && (string) $conn['messagingLimit'] !== '') {
+            $limite = (string) $conn['messagingLimit'];
+        } elseif (isset($conn['messaging_limit_tier']) && (string) $conn['messaging_limit_tier'] !== '') {
+            $limite = (string) $conn['messaging_limit_tier'];
+        }
+
+        return [$nome, $numero, $provedor, $status_conexao, $qualidade, $limite];
     }
 
     /**
