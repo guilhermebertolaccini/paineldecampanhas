@@ -889,12 +889,20 @@ export function RecurringCampaignCreateForm() {
           )}
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1">
-              <Label className="text-xs">Limite de registros (0 = todos)</Label>
+              <Label className="text-xs">Limitar base a X contatos (0 = sem limite)</Label>
               <Input
                 type="number"
-                value={recordLimit || ""}
-                onChange={(e) => setRecordLimit(parseInt(e.target.value, 10) || 0)}
+                min={0}
+                placeholder="Ex.: 200"
+                value={recordLimit > 0 ? String(recordLimit) : ""}
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  setRecordLimit(raw === "" ? 0 : Math.max(0, parseInt(raw, 10) || 0));
+                }}
               />
+              <p className="text-[11px] text-muted-foreground leading-snug">
+                Máximo de linhas após os filtros (igual Nova Campanha). Útil para testar com poucos números.
+              </p>
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Exclusão: não reenviar nos últimos (horas)</Label>

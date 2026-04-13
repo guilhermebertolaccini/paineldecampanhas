@@ -406,6 +406,7 @@ export default function CampanhasRecorrentes() {
   const [editOpen, setEditOpen] = useState(false);
   const [editSource, setEditSource] = useState<RecurringCampaign | null>(null);
   const [editNome, setEditNome] = useState("");
+  const [editRecordLimit, setEditRecordLimit] = useState(0);
   const [editIncludeBaits, setEditIncludeBaits] = useState(false);
   const [editSelectedBaitIds, setEditSelectedBaitIds] = useState<number[]>([]);
 
@@ -435,6 +436,7 @@ export default function CampanhasRecorrentes() {
   const openEditDialog = (c: RecurringCampaign) => {
     setEditSource(c);
     setEditNome(c.nome_campanha || "");
+    setEditRecordLimit(Math.max(0, parseInt(String(c.record_limit ?? 0), 10) || 0));
     const inc = Number(c.include_baits) === 1;
     setEditIncludeBaits(inc);
     const cfg = getProvidersConfigParsed(c);
@@ -538,7 +540,7 @@ export default function CampanhasRecorrentes() {
         template_source: editSource.template_source || "local",
         broker_code: editSource.broker_code,
         customer_code: editSource.customer_code,
-        record_limit: parseInt(String(editSource.record_limit || 0), 10) || 0,
+        record_limit: Math.max(0, parseInt(String(editRecordLimit), 10) || 0),
         exclude_recent_phones: excludePhones,
         exclude_recent_hours: excludeHours,
         include_baits: editIncludeBaits ? 1 : 0,
@@ -975,9 +977,8 @@ export default function CampanhasRecorrentes() {
           <DialogHeader>
             <DialogTitle>Editar filtro salvo</DialogTitle>
             <DialogDescription>
-              Atualize o nome e as iscas usadas quando a opção estiver ativa. O campo{" "}
-              <strong>providers_config</strong> no servidor passa a refletir o array{" "}
-              <code className="text-xs">bait_ids</code>.
+              Nome, limite máximo de contatos na base (após filtros) e iscas. O{" "}
+              <strong>providers_config</strong> no servidor pode incluir <code className="text-xs">bait_ids</code>.
             </DialogDescription>
           </DialogHeader>
           {editSource && (
@@ -990,6 +991,27 @@ export default function CampanhasRecorrentes() {
                   onChange={(e) => setEditNome(e.target.value)}
                   placeholder="Nome do filtro salvo"
                 />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-record-limit-recurring">
+                  Limitar base a X contatos (opcional)
+                </Label>
+                <Input
+                  id="edit-record-limit-recurring"
+                  type="number"
+                  min={0}
+                  className="max-w-xs"
+                  placeholder="Sem limite"
+                  value={editRecordLimit > 0 ? String(editRecordLimit) : ""}
+                  onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    setEditRecordLimit(raw === "" ? 0 : Math.max(0, parseInt(raw, 10) || 0));
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Ex.: 200 = no máximo 200 linhas após os filtros (igual Nova Campanha; ordenação por ID no disparo).
+                  Deixe vazio para usar toda a base filtrada.
+                </p>
               </div>
               <div className="rounded-lg border border-dashed border-border p-3 space-y-3">
                 <div className="flex items-center gap-3">
