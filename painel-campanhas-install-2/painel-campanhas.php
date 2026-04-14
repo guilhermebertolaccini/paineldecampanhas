@@ -12686,6 +12686,9 @@ class Painel_Campanhas
                                             continue;
 
                                         foreach ($conns as $conn) {
+                                            if (!is_array($conn)) {
+                                                continue;
+                                            }
                                             // Parse stringified accountRestriction JSON
                                             $account_restriction = $conn['accountRestriction'] ?? '';
                                             if (is_string($account_restriction) && !empty($account_restriction)) {
@@ -12695,9 +12698,19 @@ class Painel_Campanhas
                                                 }
                                             }
 
+                                            // API GOSAC (novo): phoneNumber na linha; manter fallbacks legados + chave `number` (CSV / painel).
+                                            $line_number = '';
+                                            foreach (['phoneNumber', 'phone_number', 'number', 'display_phone_number'] as $_gk) {
+                                                if (!empty($conn[$_gk]) && is_scalar($conn[$_gk])) {
+                                                    $line_number = trim((string) $conn[$_gk]);
+                                                    break;
+                                                }
+                                            }
+
                                             $provider_conns[] = [
                                                 'id' => $conn['id'] ?? '',
                                                 'name' => $conn['name'] ?? '',
+                                                'number' => $line_number,
                                                 'status' => $conn['status'] ?? '',
                                                 'type' => $conn['type'] ?? '',
                                                 'messagingLimit' => $conn['messagingLimit'] ?? '',
@@ -13606,18 +13619,37 @@ class Painel_Campanhas
                 if (!is_array($item)) continue;
                 if (!empty($item['connections']) && is_array($item['connections'])) {
                     foreach ($item['connections'] as $conn) {
+                        if (!is_array($conn)) {
+                            continue;
+                        }
+                        $gosac_num = '';
+                        foreach (['phoneNumber', 'phone_number', 'number', 'display_phone_number'] as $_gk) {
+                            if (!empty($conn[$_gk]) && is_scalar($conn[$_gk])) {
+                                $gosac_num = trim((string) $conn[$_gk]);
+                                break;
+                            }
+                        }
                         $all_connections[] = [
                             'id' => $conn['id'] ?? '',
-                            'name' => $conn['name'] ?? ($conn['phoneNumber'] ?? ''),
+                            'name' => $conn['name'] ?? '',
+                            'number' => $gosac_num,
                             'status' => $conn['status'] ?? '',
                             'messagingLimit' => $conn['messagingLimit'] ?? '',
                             'accountRestriction' => $conn['accountRestriction'] ?? '',
                         ];
                     }
                 } elseif (isset($item['id'])) {
+                    $gosac_num_item = '';
+                    foreach (['phoneNumber', 'phone_number', 'number', 'display_phone_number'] as $_gk) {
+                        if (!empty($item[$_gk]) && is_scalar($item[$_gk])) {
+                            $gosac_num_item = trim((string) $item[$_gk]);
+                            break;
+                        }
+                    }
                     $all_connections[] = [
                         'id' => $item['id'] ?? '',
-                        'name' => $item['name'] ?? ($item['phoneNumber'] ?? ''),
+                        'name' => $item['name'] ?? '',
+                        'number' => $gosac_num_item,
                         'status' => $item['status'] ?? '',
                         'messagingLimit' => $item['messagingLimit'] ?? '',
                         'accountRestriction' => $item['accountRestriction'] ?? '',

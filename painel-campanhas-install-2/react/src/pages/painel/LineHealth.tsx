@@ -140,6 +140,7 @@ export default function LineHealth() {
                                 <TableHeader>
                                     <TableRow className="bg-muted/50">
                                         <TableHead className="font-bold">Nome / ID</TableHead>
+                                        <TableHead className="font-bold">Número</TableHead>
                                         <TableHead className="font-bold">Carteira</TableHead>
                                         <TableHead className="font-bold text-center">Provedor</TableHead>
                                         <TableHead className="font-bold text-center">Status</TableHead>
@@ -153,6 +154,9 @@ export default function LineHealth() {
                                             <TableCell className="font-medium">
                                                 <div className="font-bold">{String(conn.name ?? '')}</div>
                                                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-mono">{String(conn.id ?? '')}</div>
+                                            </TableCell>
+                                            <TableCell className="font-mono text-sm">
+                                                {String(conn.number ?? conn.phoneNumber ?? "—")}
                                             </TableCell>
                                             <TableCell>
                                                 <div className="flex items-center text-xs font-semibold">
