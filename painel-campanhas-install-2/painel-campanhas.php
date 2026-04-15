@@ -12364,18 +12364,51 @@ class Painel_Campanhas
 
     public function handle_get_gosac_oficial_templates()
     {
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Acesso negado');
             return;
         }
 
         check_ajax_referer('pc_nonce', 'nonce');
 
-        $static_creds = get_option('acm_static_credentials', []);
-        $gosac_url = trim($static_creds['gosac_oficial_url'] ?? '');
-        $gosac_token = trim($static_creds['gosac_oficial_token'] ?? '');
+        $carteira_id = intval($_POST['carteira'] ?? $_GET['carteira'] ?? 0);
+        $id_ambient_in = sanitize_text_field($_POST['id_ambient'] ?? $_GET['id_ambient'] ?? '');
+        $id_ruler_in = sanitize_text_field($_POST['id_ruler'] ?? $_GET['id_ruler'] ?? '');
 
-        if (empty($gosac_url) || empty($gosac_token)) {
+        global $wpdb;
+        $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
+
+        $id_ambient = trim($id_ambient_in);
+        $id_ruler = trim($id_ruler_in);
+        $carteira_nome = '';
+
+        if ($carteira_id > 0) {
+            $wallet = $wpdb->get_row($wpdb->prepare(
+                "SELECT id_carteira, id_ruler, nome FROM {$table_carteiras} WHERE id = %d AND ativo = 1 LIMIT 1",
+                $carteira_id
+            ), ARRAY_A);
+            if (!$wallet || trim((string) ($wallet['id_carteira'] ?? '')) === '') {
+                wp_send_json_success([]);
+                return;
+            }
+            if ($id_ambient === '') {
+                $id_ambient = trim((string) $wallet['id_carteira']);
+            }
+            if ($id_ruler === '') {
+                $id_ruler = trim((string) ($wallet['id_ruler'] ?? ''));
+            }
+            $carteira_nome = (string) ($wallet['nome'] ?? '');
+        }
+
+        if ($id_ambient === '') {
+            wp_send_json_success([]);
+            return;
+        }
+
+        $http = $this->resolve_gosac_oficial_http_config($id_ambient, $id_ruler);
+        $gosac_url = $http['url'];
+        $gosac_token = $http['token'];
+        if ($gosac_url === '' || $gosac_token === '') {
             wp_send_json_success([]);
             return;
         }
@@ -12384,95 +12417,120 @@ class Painel_Campanhas
             $gosac_token = 'Bearer ' . $gosac_token;
         }
 
+        $params = ['idgis' => $id_ambient, 'idAmbient' => $id_ambient];
+        if ($id_ruler !== '') {
+            $params['ruler'] = $id_ruler;
+            $params['idRuler'] = $id_ruler;
+        }
+        $url = rtrim($gosac_url, '/') . '/templates/waba?' . http_build_query($params);
+
+        $response = wp_remote_get($url, [
+            'headers' => [
+                'Authorization' => $gosac_token,
+                'Content-Type' => 'application/json',
+                'Accept' => 'application/json',
+            ],
+            'timeout' => 15,
+            'sslverify' => false,
+        ]);
+
+        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+            error_log('🔴 [Gosac Oficial] templates: HTTP ' . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)) . ' | idAmbient=' . $id_ambient . ' idRuler=' . $id_ruler);
+            wp_send_json_success([]);
+            return;
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        $templates_data = json_decode($body, true);
+        $tpls = $this->extract_gosac_templates($templates_data);
+
         $all_templates = [];
-        global $wpdb;
-        $table_carteiras = $wpdb->prefix . 'pc_carteiras_v2';
-        $carteiras = $wpdb->get_results("SELECT id, nome, id_carteira, id_ruler FROM $table_carteiras WHERE ativo = 1 AND id_carteira IS NOT NULL AND id_carteira != ''", ARRAY_A);
-
-        $pairs = [];
-        if (!empty($carteiras)) {
-            foreach ($carteiras as $c) {
-                $id_ambient = trim($c['id_carteira'] ?? '');
-                $id_ruler = trim($c['id_ruler'] ?? '');
-                if (empty($id_ambient)) continue;
-                $key = $id_ambient . '|' . $id_ruler;
-                if (!isset($pairs[$key])) {
-                    $pairs[$key] = ['id_ambient' => $id_ambient, 'id_ruler' => $id_ruler, 'nome' => $c['nome'] ?? ''];
-                }
-            }
-        }
-        if (empty($pairs)) {
-            $pairs['default'] = ['id_ambient' => 'default', 'id_ruler' => '', 'nome' => ''];
-        }
-
-        foreach ($pairs as $pair) {
-            $id_ambient = $pair['id_ambient'];
-            $id_ruler = $pair['id_ruler'];
-            $url = rtrim($gosac_url, '/') . '/templates/waba?idAmbient=' . urlencode($id_ambient);
-            if (!empty($id_ruler)) {
-                $url .= '&idRuler=' . urlencode($id_ruler);
-            }
-            $response = wp_remote_get($url, [
-                'headers' => [
-                    'Authorization' => $gosac_token,
-                    'Content-Type' => 'application/json',
-                    'Accept' => 'application/json',
-                ],
-                'timeout' => 15,
-                'sslverify' => false,
-            ]);
-
-            if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
-                error_log("🔴 [Gosac Oficial] erro ao buscar templates para idAmbient=$id_ambient: " . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
+        foreach ($tpls as $tpl) {
+            if (!is_array($tpl)) {
                 continue;
             }
-
-            $body = wp_remote_retrieve_body($response);
-            $templates_data = json_decode($body, true);
-            $tpls = $this->extract_gosac_templates($templates_data);
-
-            foreach ($tpls as $tpl) {
-                $conn_id = $tpl['connectionId'] ?? null;
-                $raw_id = $tpl['templateId'] ?? $tpl['id'] ?? $tpl['name'] ?? '';
-                $num_id = (is_numeric($raw_id) && (int) $raw_id > 0) ? (int) $raw_id : null;
-                if ($num_id === null && is_string($raw_id) && preg_match('/\d+/', $raw_id, $m)) {
-                    $num_id = (int) $m[0];
-                }
-                $body_text = isset($tpl['body']) && is_string($tpl['body']) ? $tpl['body'] : '';
-                $content_text = isset($tpl['content']) && is_string($tpl['content']) ? $tpl['content'] : '';
-                $text_for_ui = $content_text !== '' ? $content_text : $body_text;
-
-                $vc_raw = $tpl['variableComponents'] ?? $tpl['variable_components'] ?? [];
-                if (is_string($vc_raw)) {
-                    $vc_dec = json_decode($vc_raw, true);
-                    $vc_raw = is_array($vc_dec) ? $vc_dec : [];
-                }
-                if (!is_array($vc_raw)) {
-                    $vc_raw = [];
-                }
-
-                $all_templates[] = [
-                    'id' => $tpl['id'] ?? $tpl['name'] ?? '',
-                    'templateId' => $num_id,
-                    'name' => $tpl['name'] ?? $tpl['id'] ?? '',
-                    'body' => $body_text,
-                    'content' => $text_for_ui,
-                    'status' => $tpl['status'] ?? '',
-                    'category' => $tpl['category'] ?? '',
-                    'language' => $tpl['language'] ?? 'pt_BR',
-                    'components' => $tpl['components'] ?? [],
-                    'provider' => 'Gosac Oficial',
-                    'id_ambient' => $id_ambient,
-                    'templateName' => $tpl['name'] ?? $tpl['id'] ?? '',
-                    'idRuler' => $tpl['idRuler'] ?? $id_ruler,
-                    'connectionId' => $conn_id,
-                    'variableComponents' => $vc_raw,
-                    'carteira_nome' => $pair['nome'] ?? '',
-                ];
+            $conn_id = $tpl['connectionId'] ?? null;
+            $raw_id = $tpl['templateId'] ?? $tpl['id'] ?? $tpl['name'] ?? '';
+            $num_id = (is_numeric($raw_id) && (int) $raw_id > 0) ? (int) $raw_id : null;
+            if ($num_id === null && is_string($raw_id) && preg_match('/\d+/', $raw_id, $m)) {
+                $num_id = (int) $m[0];
             }
+            $body_text = isset($tpl['body']) && is_string($tpl['body']) ? $tpl['body'] : '';
+            $content_text = isset($tpl['content']) && is_string($tpl['content']) ? $tpl['content'] : '';
+            $text_for_ui = $content_text !== '' ? $content_text : $body_text;
+
+            $vc_raw = $tpl['variableComponents'] ?? $tpl['variable_components'] ?? [];
+            if (is_string($vc_raw)) {
+                $vc_dec = json_decode($vc_raw, true);
+                $vc_raw = is_array($vc_dec) ? $vc_dec : [];
+            }
+            if (!is_array($vc_raw)) {
+                $vc_raw = [];
+            }
+
+            $all_templates[] = [
+                'id' => $tpl['id'] ?? $tpl['name'] ?? '',
+                'templateId' => $num_id,
+                'name' => $tpl['name'] ?? $tpl['id'] ?? '',
+                'body' => $body_text,
+                'content' => $text_for_ui,
+                'status' => $tpl['status'] ?? '',
+                'category' => $tpl['category'] ?? '',
+                'language' => $tpl['language'] ?? 'pt_BR',
+                'components' => $tpl['components'] ?? [],
+                'provider' => 'Gosac Oficial',
+                'id_ambient' => $id_ambient,
+                'templateName' => $tpl['name'] ?? $tpl['id'] ?? '',
+                'idRuler' => $tpl['idRuler'] ?? $id_ruler,
+                'connectionId' => $conn_id,
+                'variableComponents' => $vc_raw,
+                'carteira_nome' => $carteira_nome,
+            ];
         }
 
         wp_send_json_success($all_templates);
+    }
+
+    /**
+     * URL + token GOSAC Oficial: credencial composta id_carteira|id_ruler (acm_provider_credentials), senão só id_carteira, senão estáticos.
+     *
+     * @return array{url: string, token: string}
+     */
+    private function resolve_gosac_oficial_http_config($id_ambient, $id_ruler)
+    {
+        $id_ambient = trim((string) $id_ambient);
+        $id_ruler = trim((string) $id_ruler);
+        $static = get_option('acm_static_credentials', []);
+        if (!is_array($static)) {
+            $static = [];
+        }
+        $url = trim((string) ($static['gosac_oficial_url'] ?? ''));
+        $token = trim((string) ($static['gosac_oficial_token'] ?? ''));
+
+        $creds_root = get_option('acm_provider_credentials', []);
+        if (!is_array($creds_root)) {
+            $creds_root = [];
+        }
+        $gos = isset($creds_root['gosac_oficial']) && is_array($creds_root['gosac_oficial']) ? $creds_root['gosac_oficial'] : [];
+
+        $compound = $id_ambient . '|' . $id_ruler;
+        $pick = null;
+        if ($id_ruler !== '' && isset($gos[$compound]) && is_array($gos[$compound])) {
+            $pick = $gos[$compound];
+        } elseif (isset($gos[$id_ambient]) && is_array($gos[$id_ambient])) {
+            $pick = $gos[$id_ambient];
+        }
+
+        if (is_array($pick)) {
+            if (!empty($pick['url'])) {
+                $url = trim((string) $pick['url']);
+            }
+            if (!empty($pick['token'])) {
+                $token = trim((string) $pick['token']);
+            }
+        }
+
+        return ['url' => $url, 'token' => $token];
     }
 
     /**
@@ -13261,7 +13319,7 @@ class Painel_Campanhas
 
     public function handle_get_templates_by_wallet()
     {
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Acesso negado');
             return;
         }
@@ -13286,93 +13344,25 @@ class Painel_Campanhas
         $id_ambient = trim($wallet['id_carteira']);
         $credentials = get_option('acm_provider_credentials', []);
 
-        // Inject static GOSAC OFICIAL credentials
-        $static_creds = get_option('acm_static_credentials', []);
-        $gosac_url = $static_creds['gosac_oficial_url'] ?? '';
-        $gosac_token = $static_creds['gosac_oficial_token'] ?? '';
-
-        if (!empty($gosac_url) && !empty($gosac_token)) {
-            if (!isset($credentials['gosac_oficial'])) {
-                $credentials['gosac_oficial'] = [];
-            }
-            if (!isset($credentials['gosac_oficial'][$id_ambient])) {
-                $credentials['gosac_oficial'][$id_ambient] = [
-                    'url' => $gosac_url,
-                    'token' => $gosac_token
-                ];
-            }
-        }
-
         $all_templates = [];
 
         foreach ($credentials as $provider => $envs) {
-            if (!is_array($envs) || !isset($envs[$id_ambient]))
+            if (!is_array($envs)) {
                 continue;
+            }
+
+            // GOSAC WABA: escopo id_carteira + id_ruler — usar `pc_get_gosac_oficial_templates` com wallet_id (evita duplicar lógica / misturar operações).
+            if ($provider === 'gosac_oficial') {
+                continue;
+            }
+
+            if (!isset($envs[$id_ambient])) {
+                continue;
+            }
 
             $data = $envs[$id_ambient];
 
-            if ($provider === 'gosac_oficial') {
-                $url = rtrim($data['url'], '/') . '/templates/waba?idAmbient=' . urlencode($id_ambient);
-                $token = $data['token'] ?? '';
-                if (stripos($token, 'Bearer ') !== 0) {
-                    $token = 'Bearer ' . $token;
-                }
-
-                if (!empty($url) && !empty($token)) {
-                    $response = wp_remote_get($url, [
-                        'headers' => [
-                            'Authorization' => $token,
-                            'Content-Type' => 'application/json',
-                            'Accept' => 'application/json',
-                        ],
-                        'timeout' => 15,
-                        'sslverify' => false,
-                    ]);
-
-                    if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
-                        $body = wp_remote_retrieve_body($response);
-                        $templates_data = json_decode($body, true);
-                        $temps = $this->extract_gosac_templates($templates_data);
-                        foreach ($temps as $template) {
-                            $body_text = isset($template['body']) && is_string($template['body']) ? $template['body'] : '';
-                            $content_text = isset($template['content']) && is_string($template['content']) ? $template['content'] : '';
-                            $text_for_ui = $content_text !== '' ? $content_text : $body_text;
-                            $vc_raw = $template['variableComponents'] ?? $template['variable_components'] ?? [];
-                            if (is_string($vc_raw)) {
-                                $vc_dec = json_decode($vc_raw, true);
-                                $vc_raw = is_array($vc_dec) ? $vc_dec : [];
-                            }
-                            if (!is_array($vc_raw)) {
-                                $vc_raw = [];
-                            }
-                            $conn_id = $template['connectionId'] ?? null;
-                            $raw_id = $template['templateId'] ?? $template['id'] ?? $template['name'] ?? '';
-                            $num_id = (is_numeric($raw_id) && (int) $raw_id > 0) ? (int) $raw_id : null;
-                            if ($num_id === null && is_string($raw_id) && preg_match('/\d+/', $raw_id, $m)) {
-                                $num_id = (int) $m[0];
-                            }
-                            $all_templates[] = [
-                                'id' => $template['id'] ?? $template['name'] ?? '',
-                                'templateId' => $num_id,
-                                'name' => $template['name'] ?? $template['id'] ?? '',
-                                'body' => $body_text,
-                                'content' => $text_for_ui,
-                                'category' => $template['category'] ?? '',
-                                'language' => $template['language'] ?? 'pt_BR',
-                                'status' => $template['status'] ?? '',
-                                'components' => $template['components'] ?? [],
-                                'provider' => 'Gosac Oficial',
-                                'id_ambient' => $id_ambient,
-                                'idRuler' => $template['idRuler'] ?? '',
-                                'connectionId' => $conn_id,
-                                'variableComponents' => $vc_raw,
-                            ];
-                        }
-                    } else {
-                        error_log('🔴 [Gosac] getTemplatesByWallet falhou: ' . (is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_response_code($response)));
-                    }
-                }
-            } elseif ($provider === 'noah_oficial') {
+            if ($provider === 'noah_oficial') {
                 $base_url = rtrim($data['url'], '/');
                 $token_raw = trim($data['token'] ?? '');
                 $token = $token_raw;
@@ -13540,25 +13530,12 @@ class Painel_Campanhas
 
     public function handle_get_gosac_oficial_connections()
     {
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can('read')) {
             wp_send_json_error('Acesso negado');
             return;
         }
 
         check_ajax_referer('pc_nonce', 'nonce');
-
-        $static_creds = get_option('acm_static_credentials', []);
-        $gosac_url = trim($static_creds['gosac_oficial_url'] ?? '');
-        $gosac_token = trim($static_creds['gosac_oficial_token'] ?? '');
-
-        if (empty($gosac_url) || empty($gosac_token)) {
-            wp_send_json_success([]);
-            return;
-        }
-
-        if (stripos($gosac_token, 'Bearer ') !== 0) {
-            $gosac_token = 'Bearer ' . $gosac_token;
-        }
 
         $id_ambient = sanitize_text_field($_POST['id_ambient'] ?? $_GET['id_ambient'] ?? '');
         $id_ruler = sanitize_text_field($_POST['id_ruler'] ?? $_GET['id_ruler'] ?? '');
@@ -13582,9 +13559,21 @@ class Painel_Campanhas
             return;
         }
 
+        $http = $this->resolve_gosac_oficial_http_config($id_ambient, $id_ruler);
+        $gosac_url = $http['url'];
+        $gosac_token = $http['token'];
+        if ($gosac_url === '' || $gosac_token === '') {
+            wp_send_json_success([]);
+            return;
+        }
+
+        if (stripos($gosac_token, 'Bearer ') !== 0) {
+            $gosac_token = 'Bearer ' . $gosac_token;
+        }
+
         // API GOSAC: parâmetros idgis e ruler (ou idAmbient e idRuler - envia ambos para compatibilidade)
         $params = ['idgis' => $id_ambient, 'idAmbient' => $id_ambient];
-        if (!empty($id_ruler)) {
+        if ($id_ruler !== '') {
             $params['ruler'] = $id_ruler;
             $params['idRuler'] = $id_ruler;
         }

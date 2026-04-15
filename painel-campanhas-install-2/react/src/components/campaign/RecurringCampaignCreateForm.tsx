@@ -155,8 +155,9 @@ export function RecurringCampaignCreateForm() {
     toast({ variant: "destructive", title: "Templates (carteira)", description: msg });
   }, [externalTemplatesIsError, externalTemplatesErr, toast]);
   const { data: gosacTemplatesData = [] } = useQuery({
-    queryKey: ["gosac-oficial-templates-rec"],
-    queryFn: getGosacOficialTemplates,
+    queryKey: ["gosac-oficial-templates-rec", carteira],
+    queryFn: () => getGosacOficialTemplates({ carteira }),
+    enabled: !!carteira && providers.includes("GOSAC_OFICIAL"),
     staleTime: 5 * 60 * 1000,
   });
   const { data: gosacConnectionsData = [] } = useQuery({

@@ -231,9 +231,9 @@ export default function CampanhaArquivo() {
 
   // Templates GOSAC Oficial (estáticos)
   const { data: gosacTemplatesData = [], isLoading: gosacTemplatesLoading } = useQuery({
-    queryKey: ['gosac-oficial-templates'],
-    queryFn: getGosacOficialTemplates,
-    enabled: provider === "GOSAC_OFICIAL",
+    queryKey: ['gosac-oficial-templates', carteira],
+    queryFn: () => getGosacOficialTemplates({ carteira }),
+    enabled: !!carteira && provider === "GOSAC_OFICIAL",
     staleTime: 5 * 60 * 1000,
   });
 

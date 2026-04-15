@@ -521,10 +521,27 @@ export const getOtimaBrokers = () => {
   return wpAjax('pc_get_otima_brokers', {});
 };
 
-/** Templates GOSAC Oficial (estáticos) */
-export const getGosacOficialTemplates = async (): Promise<any[]> => {
+/**
+ * Templates GOSAC Oficial (WABA) — escopo da carteira no WP (`carteira` = id em pc_carteiras_v2).
+ * O PHP resolve id_carteira (wallet / idAmbient) + id_ruler e monta a query na API GOSAC.
+ */
+export const getGosacOficialTemplates = async (params?: {
+  carteira?: string | number;
+  id_ambient?: string;
+  id_ruler?: string;
+}): Promise<any[]> => {
   try {
-    const data = await wpAjax('pc_get_gosac_oficial_templates', {});
+    const body: Record<string, unknown> = {};
+    if (params?.carteira != null && String(params.carteira).trim() !== '') {
+      body.carteira = String(params.carteira).trim();
+    }
+    if (params?.id_ambient != null && String(params.id_ambient).trim() !== '') {
+      body.id_ambient = String(params.id_ambient).trim();
+    }
+    if (params?.id_ruler != null && String(params.id_ruler).trim() !== '') {
+      body.id_ruler = String(params.id_ruler).trim();
+    }
+    const data = await wpAjax('pc_get_gosac_oficial_templates', body);
     return Array.isArray(data) ? data : [];
   } catch (err) {
     console.error('🔴 [Templates] getGosacOficialTemplates error:', err);

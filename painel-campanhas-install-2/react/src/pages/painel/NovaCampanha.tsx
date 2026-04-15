@@ -243,10 +243,11 @@ export default function NovaCampanha() {
     toast({ variant: 'destructive', title: 'Templates (carteira)', description: msg });
   }, [externalTemplatesIsError, externalTemplatesErr, toast]);
 
-  // Templates GOSAC Oficial (estáticos)
+  // Templates GOSAC Oficial — por carteira (id_ambient + id_ruler no PHP)
   const { data: gosacTemplatesData = [], isLoading: gosacTemplatesLoading } = useQuery({
-    queryKey: ['gosac-oficial-templates'],
-    queryFn: getGosacOficialTemplates,
+    queryKey: ['gosac-oficial-templates', formData.carteira],
+    queryFn: () => getGosacOficialTemplates({ carteira: formData.carteira }),
+    enabled: !!formData.carteira,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -550,7 +551,7 @@ export default function NovaCampanha() {
           provider: 'Gosac Oficial',
           templateCode: t.name || t.id || '',
           walletId: t.id_ambient || 'default',
-          walletName: `Gosac Oficial (${t.id_ambient || 'default'})`,
+          walletName: (t.carteira_nome && String(t.carteira_nome).trim()) || `Gosac Oficial (${t.id_ambient || ""})`,
           imageUrl: null,
           content: t.content || t.body || '',
           body: typeof t.body === "string" ? t.body : "",
