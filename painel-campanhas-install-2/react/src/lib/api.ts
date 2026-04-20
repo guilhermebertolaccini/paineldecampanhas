@@ -855,13 +855,43 @@ export const createCpfCampaign = (data: Record<string, any>) => {
   return wpAjax('cpf_cm_create_campaign', payload);
 };
 
-// Controle de custos
-export const saveCustoProvider = (data: Record<string, any>) => {
-  return wpAjax('pc_save_custo_provider', data);
+// Controle de custos (novo modelo: mapa em wp_options)
+export type CustoProviderDef = {
+  key: string;
+  label: string;
+  category: 'rcs' | 'whatsapp' | string;
 };
 
-export const getCustosProviders = () => {
+export type CustosProvidersResponse = {
+  defs: CustoProviderDef[];
+  map: Record<string, number>;
+  list?: Array<{
+    id: string;
+    key: string;
+    provider: string;
+    label: string;
+    category: string;
+    custo_por_disparo: number;
+  }>;
+};
+
+export const getCustosProviders = (): Promise<CustosProvidersResponse> => {
   return wpAjax('pc_get_custos_providers', {});
+};
+
+/**
+ * Salva o mapa completo de custos por fornecedor em uma única chamada.
+ * payload: { otima_rcs: 0.05, cda_rcs: 0.04, ... }
+ */
+export const saveCustosProvidersMap = (map: Record<string, number | string>) => {
+  return wpAjax('pc_save_custos_providers_map', {
+    custos: JSON.stringify(map),
+  });
+};
+
+// Legacy (single-value) – preservado para compat; atualiza apenas uma chave no mapa
+export const saveCustoProvider = (data: Record<string, any>) => {
+  return wpAjax('pc_save_custo_provider', data);
 };
 
 export const deleteCustoProvider = (id: string) => {

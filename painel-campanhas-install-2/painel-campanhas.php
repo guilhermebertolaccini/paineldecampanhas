@@ -372,6 +372,7 @@ class Painel_Campanhas
 
         // AJAX para Controle de Custo
         add_action('wp_ajax_pc_save_custo_provider', [$this, 'handle_save_custo_provider']);
+        add_action('wp_ajax_pc_save_custos_providers_map', [$this, 'handle_save_custos_providers_map']);
         add_action('wp_ajax_pc_get_custos_providers', [$this, 'handle_get_custos_providers']);
         add_action('wp_ajax_pc_delete_custo_provider', [$this, 'handle_delete_custo_provider']);
         add_action('wp_ajax_pc_save_orcamento_base', [$this, 'handle_save_orcamento_base']);
@@ -9300,94 +9301,192 @@ class Painel_Campanhas
 
     // ========== HANDLERS PARA CONTROLE DE CUSTO ==========
 
+    /**
+     * Lista ESTRITA e EXATA dos fornecedores suportados na página de Custos.
+     * A chave (snake_case) é usada no mapa em wp_options; o label deve bater
+     * visualmente com a nomenclatura da operação.
+     *
+     * @return array<int, array{key:string,label:string,category:string}>
+     */
+    public static function pc_get_custos_providers_defs()
+    {
+        return [
+            // RCS
+            ['key' => 'otima_rcs',      'label' => 'Ótima RCS',     'category' => 'rcs'],
+            ['key' => 'cda_rcs',        'label' => 'CDA RCS',       'category' => 'rcs'],
+
+            // WhatsApp / Demais Rotas
+            ['key' => 'otima_wpp',      'label' => 'Ótima WPP',     'category' => 'whatsapp'],
+            ['key' => 'cda',            'label' => 'CDA',           'category' => 'whatsapp'],
+            ['key' => 'gosac',          'label' => 'GOSAC',         'category' => 'whatsapp'],
+            ['key' => 'gosac_oficial',  'label' => 'Gosac Oficial', 'category' => 'whatsapp'],
+            ['key' => 'noah',           'label' => 'NOAH',          'category' => 'whatsapp'],
+            ['key' => 'noah_oficial',   'label' => 'Noah Oficial',  'category' => 'whatsapp'],
+            ['key' => 'robbu_oficial',  'label' => 'Robbu Oficial', 'category' => 'whatsapp'],
+            ['key' => 'making_oficial', 'label' => 'Making Oficial','category' => 'whatsapp'],
+        ];
+    }
+
+    /**
+     * Lê o mapa de custos de wp_options normalizado pelas chaves da lista oficial.
+     * Qualquer chave ausente é retornada como 0.0.
+     */
+    public static function pc_get_custos_providers_map()
+    {
+        $raw = get_option('pc_custos_providers_map', []);
+        if (!is_array($raw)) { $raw = []; }
+
+        $map = [];
+        foreach (self::pc_get_custos_providers_defs() as $def) {
+            $key = $def['key'];
+            $val = isset($raw[$key]) ? floatval($raw[$key]) : 0.0;
+            $map[$key] = $val < 0 ? 0.0 : $val;
+        }
+        return $map;
+    }
+
+    /**
+     * Persiste um mapa de custos em wp_options, filtrando apenas chaves válidas.
+     * @param array $incoming
+     * @return array mapa normalizado após persistência
+     */
+    public static function pc_save_custos_providers_map_raw($incoming)
+    {
+        $valid_keys = wp_list_pluck(self::pc_get_custos_providers_defs(), 'key');
+        $current = self::pc_get_custos_providers_map();
+
+        if (is_array($incoming)) {
+            foreach ($incoming as $key => $value) {
+                if (!in_array($key, $valid_keys, true)) { continue; }
+                $val = floatval(str_replace(',', '.', (string) $value));
+                $current[$key] = $val < 0 ? 0.0 : $val;
+            }
+        }
+
+        update_option('pc_custos_providers_map', $current, false);
+        return $current;
+    }
+
+    /**
+     * Handler novo: salva o mapa inteiro de custos por fornecedor em wp_options.
+     * Aceita POST: custos => { otima_rcs: 0.05, cda_rcs: 0.04, ... }
+     */
+    public function handle_save_custos_providers_map()
+    {
+        check_ajax_referer('pc_nonce', 'nonce');
+        if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
+
+        $incoming = $_POST['custos'] ?? [];
+        if (is_string($incoming)) {
+            $decoded = json_decode(wp_unslash($incoming), true);
+            $incoming = is_array($decoded) ? $decoded : [];
+        }
+
+        $saved = self::pc_save_custos_providers_map_raw($incoming);
+
+        wp_send_json_success([
+            'message' => 'Custos salvos com sucesso',
+            'defs'    => self::pc_get_custos_providers_defs(),
+            'map'     => $saved,
+        ]);
+    }
+
+    /**
+     * Handler legado (single-value): atualiza UMA chave no mapa wp_options.
+     * Mantido para compatibilidade com chamadas existentes.
+     */
     public function handle_save_custo_provider()
     {
         check_ajax_referer('pc_nonce', 'nonce');
         if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
-        global $wpdb;
 
-        $provider = sanitize_text_field($_POST['provider'] ?? '');
-        $custo_por_disparo = floatval($_POST['custo_por_disparo'] ?? 0);
+        $provider_raw = sanitize_text_field($_POST['provider'] ?? '');
+        $custo_por_disparo = floatval(str_replace(',', '.', (string) ($_POST['custo_por_disparo'] ?? 0)));
 
-        if (empty($provider) || $custo_por_disparo < 0) {
+        if ($provider_raw === '' || $custo_por_disparo < 0) {
             wp_send_json_error('Dados inválidos');
         }
 
-        $table = $wpdb->prefix . 'pc_custos_providers';
-
-        // Verifica se já existe
-        $exists = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $table WHERE provider = %s",
-            $provider
-        ));
-
-        if ($exists) {
-            // Atualiza
-            $result = $wpdb->update(
-                $table,
-                ['custo_por_disparo' => $custo_por_disparo],
-                ['provider' => $provider],
-                ['%f'],
-                ['%s']
-            );
-        } else {
-            // Insere
-            $result = $wpdb->insert(
-                $table,
-                [
-                    'provider' => $provider,
-                    'custo_por_disparo' => $custo_por_disparo
-                ],
-                ['%s', '%f']
-            );
+        // Aceita a chave interna (snake_case) OU o label visível
+        $defs = self::pc_get_custos_providers_defs();
+        $key = null;
+        foreach ($defs as $def) {
+            if (strcasecmp($def['key'], $provider_raw) === 0 || strcasecmp($def['label'], $provider_raw) === 0) {
+                $key = $def['key'];
+                break;
+            }
         }
 
-        if ($result === false) {
-            wp_send_json_error('Erro ao salvar custo');
+        if ($key === null) {
+            wp_send_json_error('Fornecedor desconhecido: ' . $provider_raw);
         }
 
-        wp_send_json_success('Custo salvo com sucesso');
+        $saved = self::pc_save_custos_providers_map_raw([$key => $custo_por_disparo]);
+
+        wp_send_json_success([
+            'message' => 'Custo salvo com sucesso',
+            'map'     => $saved,
+        ]);
     }
 
     public function handle_get_custos_providers()
     {
         check_ajax_referer('pc_nonce', 'nonce');
-        global $wpdb;
 
-        $table = $wpdb->prefix . 'pc_custos_providers';
-        $custos = $wpdb->get_results(
-            "SELECT * FROM $table WHERE ativo = 1 ORDER BY provider",
-            ARRAY_A
-        );
+        $defs = self::pc_get_custos_providers_defs();
+        $map  = self::pc_get_custos_providers_map();
 
-        wp_send_json_success($custos ?: []);
+        // Formato novo (preferido pelo frontend refatorado)
+        $response = [
+            'defs' => $defs,
+            'map'  => $map,
+            // Formato legado: lista com { id, provider (label), custo_por_disparo, key, category }
+            'list' => array_map(function ($def) use ($map) {
+                return [
+                    'id'                => $def['key'],
+                    'key'               => $def['key'],
+                    'provider'          => $def['label'],
+                    'label'             => $def['label'],
+                    'category'          => $def['category'],
+                    'custo_por_disparo' => isset($map[$def['key']]) ? floatval($map[$def['key']]) : 0.0,
+                ];
+            }, $defs),
+        ];
+
+        wp_send_json_success($response);
     }
 
+    /**
+     * "Excluir" passa a significar zerar o custo da chave no mapa.
+     * Aceita POST: id = chave (snake_case) OU label.
+     */
     public function handle_delete_custo_provider()
     {
         check_ajax_referer('pc_nonce', 'nonce');
         if (!current_user_can('manage_options')) { wp_send_json_error('Permissão negada.'); return; }
-        global $wpdb;
 
-        $id = intval($_POST['id'] ?? 0);
-        if (!$id) {
+        $id = sanitize_text_field($_POST['id'] ?? '');
+        if ($id === '') {
             wp_send_json_error('ID inválido');
         }
 
-        $table = $wpdb->prefix . 'pc_custos_providers';
-        $result = $wpdb->update(
-            $table,
-            ['ativo' => 0],
-            ['id' => $id],
-            ['%d'],
-            ['%d']
-        );
-
-        if ($result === false) {
-            wp_send_json_error('Erro ao excluir custo');
+        $defs = self::pc_get_custos_providers_defs();
+        $key = null;
+        foreach ($defs as $def) {
+            if (strcasecmp($def['key'], $id) === 0 || strcasecmp($def['label'], $id) === 0) {
+                $key = $def['key'];
+                break;
+            }
+        }
+        if ($key === null) {
+            wp_send_json_error('Fornecedor desconhecido: ' . $id);
         }
 
-        wp_send_json_success('Custo excluído com sucesso');
+        $saved = self::pc_save_custos_providers_map_raw([$key => 0]);
+        wp_send_json_success([
+            'message' => 'Custo zerado com sucesso',
+            'map'     => $saved,
+        ]);
     }
 
     public function handle_save_orcamento_base()
@@ -9501,8 +9600,20 @@ class Painel_Campanhas
         $data_fim = sanitize_text_field($_POST['data_fim'] ?? '');
 
         $envios_table = $wpdb->prefix . 'envios_pendentes';
-        $custos_table = $wpdb->prefix . 'pc_custos_providers';
         $orcamentos_table = $wpdb->prefix . 'pc_orcamentos_bases';
+
+        // Mapa de custos vindo de wp_options (lista estrita de fornecedores)
+        $defs = self::pc_get_custos_providers_defs();
+        $map  = self::pc_get_custos_providers_map();
+
+        // Lookup por label (case-insensitive) e por key (snake_case) para bater
+        // com possíveis variações do valor em envios_pendentes.fornecedor
+        $cost_lookup = [];
+        foreach ($defs as $def) {
+            $cost = isset($map[$def['key']]) ? floatval($map[$def['key']]) : 0.0;
+            $cost_lookup[strtolower($def['key'])]   = $cost;
+            $cost_lookup[strtolower($def['label'])] = $cost;
+        }
 
         // Query base para envios
         $where_conditions = ["status = 'enviado'"];
@@ -9522,19 +9633,33 @@ class Painel_Campanhas
 
         $where_clause = implode(' AND ', $where_conditions);
 
-        // Gastos por provider
-        $gastos_providers = $wpdb->get_results("
-            SELECT 
-                e.fornecedor AS provider,
-                COUNT(e.id) AS total_disparos,
-                AVG(c.custo_por_disparo) AS custo_unitario,
-                COUNT(e.id) * AVG(c.custo_por_disparo) AS total_gasto
-            FROM $envios_table e
-            LEFT JOIN $custos_table c ON e.fornecedor = c.provider AND c.ativo = 1
-            WHERE $where_clause
-            GROUP BY e.fornecedor
-            ORDER BY total_gasto DESC
-        ", ARRAY_A);
+        // Agrupamento simples por fornecedor em envios_pendentes
+        $rows = $wpdb->get_results(
+            "SELECT e.fornecedor AS provider, COUNT(e.id) AS total_disparos
+             FROM $envios_table e
+             WHERE $where_clause
+             GROUP BY e.fornecedor",
+            ARRAY_A
+        );
+
+        $gastos_providers = [];
+        foreach (($rows ?: []) as $row) {
+            $provider_name = (string) ($row['provider'] ?? '');
+            $disparos      = intval($row['total_disparos'] ?? 0);
+            $custo_unit    = isset($cost_lookup[strtolower($provider_name)])
+                ? floatval($cost_lookup[strtolower($provider_name)])
+                : 0.0;
+
+            $gastos_providers[] = [
+                'provider'       => $provider_name,
+                'total_disparos' => $disparos,
+                'custo_unitario' => $custo_unit,
+                'total_gasto'    => $disparos * $custo_unit,
+            ];
+        }
+        usort($gastos_providers, function ($a, $b) {
+            return $b['total_gasto'] <=> $a['total_gasto'];
+        });
 
         // Total geral
         $total_disparos = $wpdb->get_var("
@@ -9580,13 +9705,11 @@ class Painel_Campanhas
                 $id_carteiras = array_column($carteiras, 'id_carteira');
                 $placeholders = implode(',', array_fill(0, count($id_carteiras), '%s'));
 
-                // Busca envios com id_carteira correspondente e calcula custo
-                $query = "SELECT 
-                    e.fornecedor, 
-                    COUNT(e.id) as total_disparos,
-                    AVG(c.custo_por_disparo) as custo_unitario
+                // Busca envios com id_carteira correspondente (sem custo em SQL)
+                $query = "SELECT
+                    e.fornecedor,
+                    COUNT(e.id) as total_disparos
                 FROM $envios_table e
-                INNER JOIN $custos_table c ON e.fornecedor = c.provider AND c.ativo = 1
                 WHERE e.id_carteira IN ($placeholders) AND ($where_clause)
                 GROUP BY e.fornecedor";
 
@@ -9594,7 +9717,11 @@ class Painel_Campanhas
                 $envios_base = $wpdb->get_results($prepared_query, ARRAY_A);
 
                 foreach ($envios_base as $envio) {
-                    $gasto_base += floatval($envio['total_disparos']) * floatval($envio['custo_unitario']);
+                    $fornecedor_envio = (string) ($envio['fornecedor'] ?? '');
+                    $custo_unit = isset($cost_lookup[strtolower($fornecedor_envio)])
+                        ? floatval($cost_lookup[strtolower($fornecedor_envio)])
+                        : 0.0;
+                    $gasto_base += floatval($envio['total_disparos']) * $custo_unit;
                 }
             }
 

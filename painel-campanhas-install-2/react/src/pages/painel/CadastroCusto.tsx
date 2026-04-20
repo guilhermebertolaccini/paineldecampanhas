@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Edit2, Trash2, DollarSign, Loader2 } from "lucide-react";
+import { Plus, Trash2, DollarSign, Loader2, Save, MessageSquare, Radio } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,22 +43,49 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import {
   getCustosProviders,
-  saveCustoProvider,
-  deleteCustoProvider,
+  saveCustosProvidersMap,
   getOrcamentosBases,
   saveOrcamentoBase,
   deleteOrcamentoBase,
   getCarteiras,
+  type CustoProviderDef,
 } from "@/lib/api";
 
-const providers = ["CDA", "GOSAC", "NOAH", "RCS", "SALESFORCE"];
+// Lista ESTRITA e EXATA de fornecedores (fallback local caso o backend não retorne).
+// O backend é a fonte da verdade – mas mantemos aqui para consistência visual.
+const FALLBACK_DEFS: CustoProviderDef[] = [
+  { key: "otima_rcs",      label: "Ótima RCS",      category: "rcs" },
+  { key: "cda_rcs",        label: "CDA RCS",        category: "rcs" },
+  { key: "otima_wpp",      label: "Ótima WPP",      category: "whatsapp" },
+  { key: "cda",            label: "CDA",            category: "whatsapp" },
+  { key: "gosac",          label: "GOSAC",          category: "whatsapp" },
+  { key: "gosac_oficial",  label: "Gosac Oficial",  category: "whatsapp" },
+  { key: "noah",           label: "NOAH",           category: "whatsapp" },
+  { key: "noah_oficial",   label: "Noah Oficial",   category: "whatsapp" },
+  { key: "robbu_oficial",  label: "Robbu Oficial",  category: "whatsapp" },
+  { key: "making_oficial", label: "Making Oficial", category: "whatsapp" },
+];
+
+const toDisplay = (n: number | undefined | null): string => {
+  if (n === undefined || n === null || Number.isNaN(Number(n))) return "";
+  const v = Number(n);
+  if (v === 0) return "";
+  return String(v).replace(".", ",");
+};
+
+const parseBR = (s: string): number => {
+  if (!s || typeof s !== "string") return 0;
+  const trimmed = s.trim().replace(/\s+/g, "");
+  if (!trimmed) return 0;
+  const normalized = trimmed.replace(",", ".");
+  const n = parseFloat(normalized);
+  return Number.isNaN(n) || n < 0 ? 0 : n;
+};
 
 export default function CadastroCusto() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [isProviderDialogOpen, setIsProviderDialogOpen] = useState(false);
   const [isOrcamentoDialogOpen, setIsOrcamentoDialogOpen] = useState(false);
-  const [editingProvider, setEditingProvider] = useState<any>(null);
   const [selectedMonth, setSelectedMonth] = useState(String(new Date().getMonth() + 1));
   const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
 
@@ -86,10 +113,8 @@ export default function CadastroCusto() {
     { value: String(currentYear + 1), label: String(currentYear + 1) },
   ];
 
-  const [formData, setFormData] = useState({
-    provider: "",
-    custo_por_disparo: "",
-  });
+  // Estado local do formulário de custos (strings para permitir edição fluida com vírgula)
+  const [custosForm, setCustosForm] = useState<Record<string, string>>({});
 
   const [orcamentoFormData, setOrcamentoFormData] = useState({
     carteira_id: "",
@@ -98,11 +123,34 @@ export default function CadastroCusto() {
     ano: String(new Date().getFullYear()),
   });
 
-  // Buscar custos de providers
-  const { data: custosProviders = [], isLoading: custosLoading } = useQuery({
+  // Buscar custos de providers (novo formato: { defs, map })
+  const { data: custosResponse, isLoading: custosLoading } = useQuery({
     queryKey: ['custos-providers'],
     queryFn: getCustosProviders,
   });
+
+  const defs: CustoProviderDef[] = useMemo(() => {
+    const fromServer = custosResponse?.defs;
+    if (Array.isArray(fromServer) && fromServer.length > 0) return fromServer;
+    return FALLBACK_DEFS;
+  }, [custosResponse?.defs]);
+
+  const serverMap: Record<string, number> = useMemo(() => {
+    return custosResponse?.map ?? {};
+  }, [custosResponse?.map]);
+
+  // Hidrata o formulário quando chega do servidor (sem sobrescrever edição em progresso)
+  useEffect(() => {
+    if (!custosResponse) return;
+    const initial: Record<string, string> = {};
+    for (const def of defs) {
+      initial[def.key] = toDisplay(serverMap[def.key] ?? 0);
+    }
+    setCustosForm(initial);
+  }, [custosResponse, defs, serverMap]);
+
+  const rcsDefs = useMemo(() => defs.filter(d => d.category === 'rcs'), [defs]);
+  const whatsappDefs = useMemo(() => defs.filter(d => d.category === 'whatsapp'), [defs]);
 
   // Buscar orçamentos (filtrado por mês/ano)
   const { data: orcamentos = [], isLoading: orcamentosLoading } = useQuery({
@@ -118,34 +166,16 @@ export default function CadastroCusto() {
     queryFn: getCarteiras,
   });
 
-  const saveProviderMutation = useMutation({
-    mutationFn: (data: any) => saveCustoProvider(data),
+  const saveCustosMutation = useMutation({
+    mutationFn: (payload: Record<string, number>) => saveCustosProvidersMap(payload),
     onSuccess: () => {
-      toast({ title: "Custo do provider salvo com sucesso!" });
+      toast({ title: "Custos salvos com sucesso!" });
       queryClient.invalidateQueries({ queryKey: ['custos-providers'] });
-      setIsProviderDialogOpen(false);
-      setFormData({ provider: "", custo_por_disparo: "" });
-      setEditingProvider(null);
     },
     onError: (error: any) => {
       toast({
         title: "Erro ao salvar",
-        description: error.message || "Erro ao salvar custo",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const deleteProviderMutation = useMutation({
-    mutationFn: (id: string) => deleteCustoProvider(id),
-    onSuccess: () => {
-      toast({ title: "Custo excluído com sucesso!" });
-      queryClient.invalidateQueries({ queryKey: ['custos-providers'] });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Erro ao excluir",
-        description: error.message || "Erro ao excluir custo",
+        description: error.message || "Erro ao salvar custos",
         variant: "destructive",
       });
     },
@@ -188,21 +218,30 @@ export default function CadastroCusto() {
     },
   });
 
-  const handleSaveProvider = () => {
-    if (!formData.provider || !formData.custo_por_disparo) {
-      toast({
-        title: "Campos obrigatórios",
-        description: "Provider e custo são obrigatórios",
-        variant: "destructive",
-      });
-      return;
+  const handleSaveCustos = () => {
+    const payload: Record<string, number> = {};
+    for (const def of defs) {
+      payload[def.key] = parseBR(custosForm[def.key] ?? "");
     }
-
-    saveProviderMutation.mutate({
-      provider: formData.provider.toUpperCase(),
-      custo_por_disparo: parseFloat(formData.custo_por_disparo.replace(',', '.')),
-    });
+    saveCustosMutation.mutate(payload);
   };
+
+  const handleResetCustos = () => {
+    const reverted: Record<string, string> = {};
+    for (const def of defs) {
+      reverted[def.key] = toDisplay(serverMap[def.key] ?? 0);
+    }
+    setCustosForm(reverted);
+  };
+
+  const isDirty = useMemo(() => {
+    for (const def of defs) {
+      const current = parseBR(custosForm[def.key] ?? "");
+      const server = Number(serverMap[def.key] ?? 0);
+      if (current !== server) return true;
+    }
+    return false;
+  }, [custosForm, defs, serverMap]);
 
   const handleSaveOrcamento = () => {
     if (!orcamentoFormData.carteira_id || !orcamentoFormData.orcamento_total) {
@@ -255,21 +294,6 @@ export default function CadastroCusto() {
     });
   };
 
-  const openEditProvider = (custo: any) => {
-    setEditingProvider(custo);
-    setFormData({
-      provider: custo.provider || "",
-      custo_por_disparo: String(custo.custo_por_disparo || "").replace('.', ','),
-    });
-    setIsProviderDialogOpen(true);
-  };
-
-  const openNewProvider = () => {
-    setEditingProvider(null);
-    setFormData({ provider: "", custo_por_disparo: "" });
-    setIsProviderDialogOpen(true);
-  };
-
   const openNewOrcamento = () => {
     setOrcamentoFormData({
       carteira_id: "",
@@ -287,96 +311,130 @@ export default function CadastroCusto() {
         description="Configure custos por mensagem e orçamentos mensais por carteira"
       />
 
-      {/* Custo por Provedor */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <DollarSign className="h-5 w-5 text-primary" />
-                Custo por Mensagem (Fornecedor)
-              </CardTitle>
-              <CardDescription>Configure o custo unitário por fornecedor</CardDescription>
-            </div>
-            <Button onClick={openNewProvider} className="gradient-primary hover:opacity-90">
-              <Plus className="mr-2 h-4 w-4" />
-              Novo Custo
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {custosLoading ? (
-            <Skeleton className="h-32" />
-          ) : custosProviders.length === 0 ? (
-            <p className="text-center text-muted-foreground py-8">
-              Nenhum custo cadastrado. Clique em "Novo Custo" para adicionar.
-            </p>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-3">
-              {custosProviders.map((custo: any) => (
-                <div key={custo.id} className="space-y-2 p-4 border rounded-lg">
-                  <div className="flex items-center justify-between">
-                    <Label className="font-semibold">{custo.provider}</Label>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => {
-                          setEditingProvider(custo);
-                          setFormData({
-                            provider: custo.provider || "",
-                            custo_por_disparo: String(custo.custo_por_disparo || "").replace('.', ','),
-                          });
-                          setIsProviderDialogOpen(true);
-                        }}
-                      >
-                        <Edit2 className="h-4 w-4" />
-                      </Button>
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive">
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>Excluir custo?</AlertDialogTitle>
-                            <AlertDialogDescription>
-                              Esta ação não pode ser desfeita.
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                            <AlertDialogAction
-                              onClick={() => deleteProviderMutation.mutate(String(custo.id))}
-                              className="bg-destructive hover:bg-destructive/90"
-                              disabled={deleteProviderMutation.isPending}
-                            >
-                              {deleteProviderMutation.isPending && (
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                              )}
-                              Excluir
-                            </AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
+      {/* Custos por Fornecedor – lista estrita, 2 blocos (RCS / WhatsApp) */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        {/* Bloco 1: RCS */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Radio className="h-5 w-5 text-primary" />
+              Custos RCS
+            </CardTitle>
+            <CardDescription>
+              Custo unitário (R$) por disparo nas rotas RCS.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {custosLoading ? (
+              <Skeleton className="h-40" />
+            ) : (
+              <fieldset className="space-y-4 border-0 p-0">
+                <legend className="sr-only">Custos RCS</legend>
+                {rcsDefs.map((def) => (
+                  <div key={def.key} className="space-y-2">
+                    <Label htmlFor={`custo-${def.key}`} className="font-semibold">
+                      {def.label}
+                    </Label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
+                        R$
+                      </span>
+                      <Input
+                        id={`custo-${def.key}`}
+                        inputMode="decimal"
+                        placeholder="0,0000"
+                        value={custosForm[def.key] ?? ""}
+                        onChange={(e) =>
+                          setCustosForm((prev) => ({ ...prev, [def.key]: e.target.value }))
+                        }
+                        className="pl-9"
+                      />
                     </div>
                   </div>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-                      R$
-                    </span>
-                    <Input
-                      value={String(custo.custo_por_disparo || 0).replace('.', ',')}
-                      readOnly
-                      className="pl-9"
-                    />
+                ))}
+              </fieldset>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Bloco 2: WhatsApp / Demais Rotas */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <MessageSquare className="h-5 w-5 text-primary" />
+              Custos WhatsApp / Rotas
+            </CardTitle>
+            <CardDescription>
+              Custo unitário (R$) por disparo nas rotas de WhatsApp e demais fornecedores.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {custosLoading ? (
+              <Skeleton className="h-80" />
+            ) : (
+              <fieldset className="grid gap-4 sm:grid-cols-2 border-0 p-0">
+                <legend className="sr-only">Custos WhatsApp / Rotas</legend>
+                {whatsappDefs.map((def) => (
+                  <div key={def.key} className="space-y-2">
+                    <Label htmlFor={`custo-${def.key}`} className="font-semibold">
+                      {def.label}
+                    </Label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
+                        R$
+                      </span>
+                      <Input
+                        id={`custo-${def.key}`}
+                        inputMode="decimal"
+                        placeholder="0,0000"
+                        value={custosForm[def.key] ?? ""}
+                        onChange={(e) =>
+                          setCustosForm((prev) => ({ ...prev, [def.key]: e.target.value }))
+                        }
+                        className="pl-9"
+                      />
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </fieldset>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Barra de ações (salvar / reverter) */}
+      <Card>
+        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between py-4">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <DollarSign className="h-4 w-4" />
+            Valores armazenados em <code className="font-mono text-xs">wp_options → pc_custos_providers_map</code>.
+            {isDirty && (
+              <span className="ml-2 inline-flex items-center rounded-md bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+                Alterações não salvas
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={handleResetCustos}
+              disabled={!isDirty || saveCustosMutation.isPending || custosLoading}
+            >
+              Reverter
+            </Button>
+            <Button
+              onClick={handleSaveCustos}
+              disabled={saveCustosMutation.isPending || custosLoading}
+              className="gradient-primary hover:opacity-90"
+            >
+              {saveCustosMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="mr-2 h-4 w-4" />
+              )}
+              Salvar custos
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -513,73 +571,6 @@ export default function CadastroCusto() {
           )}
         </CardContent>
       </Card>
-
-      {/* Provider Dialog */}
-      <Dialog open={isProviderDialogOpen} onOpenChange={setIsProviderDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {editingProvider ? "Editar Custo" : "Novo Custo por Provider"}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>Provider</Label>
-              <Select
-                value={formData.provider}
-                onValueChange={(v) => setFormData({ ...formData, provider: v })}
-                disabled={!!editingProvider}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione o provider" />
-                </SelectTrigger>
-                <SelectContent>
-                  {providers.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {p}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>Custo por Disparo (R$)</Label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-                  R$
-                </span>
-                <Input
-                  value={formData.custo_por_disparo}
-                  onChange={(e) =>
-                    setFormData({ ...formData, custo_por_disparo: e.target.value })
-                  }
-                  placeholder="0,050"
-                  className="pl-9"
-                />
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setIsProviderDialogOpen(false)}
-              disabled={saveProviderMutation.isPending}
-            >
-              Cancelar
-            </Button>
-            <Button
-              onClick={handleSaveProvider}
-              disabled={saveProviderMutation.isPending}
-              className="gradient-primary hover:opacity-90"
-            >
-              {saveProviderMutation.isPending && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              )}
-              Salvar
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Orçamento Dialog */}
       <Dialog open={isOrcamentoDialogOpen} onOpenChange={setIsOrcamentoDialogOpen}>
