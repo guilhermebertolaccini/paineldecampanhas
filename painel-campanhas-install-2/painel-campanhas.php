@@ -592,6 +592,13 @@ class Painel_Campanhas
             },
         ]);
 
+        // Nest: lê a config do validador Evolution (URL + token) via X-API-KEY
+        register_rest_route('pc/v1', '/evolution/config', [
+            'methods'             => 'GET',
+            'callback'            => ['PC_Evolution_WA_Validator', 'rest_get_config_for_nest'],
+            'permission_callback' => [$this, 'check_api_key_rest'],
+        ]);
+
         // ETL / Nest: leitura paginada de envios pendentes (Master API Key)
         register_rest_route('pc/v1', '/relatorios/envios_pendentes', [
             'methods' => 'GET',

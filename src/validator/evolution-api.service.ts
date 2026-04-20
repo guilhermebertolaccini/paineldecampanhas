@@ -2,31 +2,145 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { wordpressConfig } from '../config/wordpress.config';
 
 export type EvolutionInstance = { name: string; status: string };
 
+type EvolutionCredentials = {
+  baseUrl: string;
+  token: string;
+  source: 'env' | 'wp_options' | 'wp-config' | 'none';
+};
+
+/** TTL do cache de credenciais vindas do WP, em ms (60s). */
+const CREDENTIALS_CACHE_TTL_MS = 60_000;
+
 /**
  * Cliente mínimo da Evolution API (mesmo contrato do validador PHP).
+ *
+ * Credenciais são resolvidas nesta ordem:
+ *   1) Env vars do Nest (EVOLUTION_API_URL / EVOLUTION_API_TOKEN) — source="env"
+ *   2) WordPress REST GET /wp-json/pc/v1/evolution/config (X-API-KEY = WORDPRESS_API_KEY)
+ *      retornando config salva via ApiManager em wp_options ou constantes em wp-config.php.
  */
 @Injectable()
 export class EvolutionApiService {
   private readonly logger = new Logger(EvolutionApiService.name);
+
+  private cachedCreds: EvolutionCredentials | null = null;
+  private cachedAt = 0;
 
   constructor(
     private readonly http: HttpService,
     private readonly config: ConfigService,
   ) {}
 
-  private baseUrl(): string {
+  private envBaseUrl(): string {
     return (this.config.get<string>('EVOLUTION_API_URL') || '').replace(/\/+$/, '');
   }
 
-  private token(): string {
+  private envToken(): string {
     return (this.config.get<string>('EVOLUTION_API_TOKEN') || '').trim();
   }
 
-  isConfigured(): boolean {
-    return this.baseUrl() !== '' && this.token() !== '';
+  /** Invalida o cache de credenciais (útil em testes / após salvar no WP). */
+  invalidateCredentialsCache(): void {
+    this.cachedCreds = null;
+    this.cachedAt = 0;
+  }
+
+  /**
+   * Resolve as credenciais. Usa env vars se presentes; caso contrário, busca
+   * do WordPress (endpoint pc/v1/evolution/config) com cache curto.
+   */
+  async resolveCredentials(): Promise<EvolutionCredentials> {
+    // 1) ENV wins
+    const envBase = this.envBaseUrl();
+    const envTok = this.envToken();
+    if (envBase !== '' && envTok !== '') {
+      return { baseUrl: envBase, token: envTok, source: 'env' };
+    }
+
+    // 2) Cache
+    const now = Date.now();
+    if (this.cachedCreds && now - this.cachedAt < CREDENTIALS_CACHE_TTL_MS) {
+      if (this.cachedCreds.baseUrl !== '' && this.cachedCreds.token !== '') {
+        return this.cachedCreds;
+      }
+    }
+
+    // 3) Fallback: WordPress
+    const wpBase = wordpressConfig.url.replace(/\/+$/, '');
+    const wpKey = wordpressConfig.apiKey;
+    if (!wpBase || !wpKey) {
+      const empty: EvolutionCredentials = { baseUrl: '', token: '', source: 'none' };
+      this.cachedCreds = empty;
+      this.cachedAt = now;
+      return empty;
+    }
+
+    const url = `${wpBase}/wp-json/pc/v1/evolution/config`;
+    try {
+      const res = await firstValueFrom(
+        this.http.get<{
+          success?: boolean;
+          api_url?: string;
+          token?: string;
+          source?: string;
+          is_configured?: boolean;
+        }>(url, {
+          headers: { 'X-API-KEY': wpKey, Accept: 'application/json' },
+          timeout: 10_000,
+          validateStatus: () => true,
+        }),
+      );
+      if (res.status !== 200 || !res.data || res.data.success !== true) {
+        this.logger.warn(
+          `Evolution config lookup @ WP falhou (status=${res.status}). Caindo para vazio.`,
+        );
+        const empty: EvolutionCredentials = { baseUrl: '', token: '', source: 'none' };
+        this.cachedCreds = empty;
+        this.cachedAt = now;
+        return empty;
+      }
+      const baseUrl = (res.data.api_url || '').replace(/\/+$/, '');
+      const token = (res.data.token || '').trim();
+      const rawSource = (res.data.source || '').toLowerCase();
+      const source: EvolutionCredentials['source'] =
+        rawSource === 'wp-config'
+          ? 'wp-config'
+          : rawSource === 'wp_options'
+            ? 'wp_options'
+            : 'none';
+
+      const creds: EvolutionCredentials = { baseUrl, token, source };
+      this.cachedCreds = creds;
+      this.cachedAt = now;
+
+      if (creds.baseUrl !== '' && creds.token !== '') {
+        this.logger.log(
+          `Evolution credentials carregadas via WordPress (source=${creds.source}).`,
+        );
+      } else {
+        this.logger.warn(
+          `Evolution credentials ausentes no WordPress (source=${creds.source}). ` +
+            `Configure em "API Manager → Evolution API" ou defina EVOLUTION_API_URL/EVOLUTION_API_TOKEN no Nest.`,
+        );
+      }
+      return creds;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`Erro ao buscar Evolution config no WP: ${msg}`);
+      const empty: EvolutionCredentials = { baseUrl: '', token: '', source: 'none' };
+      this.cachedCreds = empty;
+      this.cachedAt = now;
+      return empty;
+    }
+  }
+
+  async isConfigured(): Promise<boolean> {
+    const c = await this.resolveCredentials();
+    return c.baseUrl !== '' && c.token !== '';
   }
 
   normalizePhoneBr(raw: string): string {
@@ -60,8 +174,7 @@ export class EvolutionApiService {
   }
 
   async fetchConnectedInstances(): Promise<EvolutionInstance[]> {
-    const base = this.baseUrl();
-    const token = this.token();
+    const { baseUrl: base, token } = await this.resolveCredentials();
     if (!base || !token) return [];
 
     const url = `${base}/instance/fetchInstances`;
@@ -111,8 +224,7 @@ export class EvolutionApiService {
     instanceName: string,
     numbers: string[],
   ): Promise<Map<string, boolean>> {
-    const base = this.baseUrl();
-    const token = this.token();
+    const { baseUrl: base, token } = await this.resolveCredentials();
     const url = `${base}/chat/whatsappNumbers/${encodeURIComponent(instanceName)}`;
     const map = new Map<string, boolean>();
     try {

@@ -78,28 +78,82 @@ final class PC_Evolution_WA_Validator
      */
     public static function get_config_decrypted()
     {
+        $full = self::get_config_with_source();
+        return [
+            'api_url' => $full['api_url'],
+            'token'   => $full['token'],
+        ];
+    }
+
+    /**
+     * Retorna a config Evolution + a FONTE de onde ela veio (diagnóstico).
+     *
+     * Precedência:
+     *   1) Constantes em wp-config.php (PC_EVOLUTION_API_URL / PC_EVOLUTION_API_TOKEN[_FILE]) → source = "wp-config"
+     *   2) wp_options "acm_evolution_api" (salvo pelo ApiManager)                              → source = "wp_options"
+     *   3) Vazio                                                                                → source = "none"
+     *
+     * @return array{api_url: string, token: string, source: string, token_configured: bool}
+     */
+    public static function get_config_with_source()
+    {
         if (defined('PC_EVOLUTION_API_URL') && PC_EVOLUTION_API_URL !== '') {
             $u = esc_url_raw((string) PC_EVOLUTION_API_URL);
             $tok = defined('PC_EVOLUTION_API_TOKEN') ? (string) PC_EVOLUTION_API_TOKEN : '';
             if ($tok === '' && defined('PC_EVOLUTION_API_TOKEN_FILE') && is_readable(PC_EVOLUTION_API_TOKEN_FILE)) {
                 $tok = trim((string) file_get_contents(PC_EVOLUTION_API_TOKEN_FILE));
             }
+            $url = $u ? rtrim($u, '/') : '';
             return [
-                'api_url' => $u ? rtrim($u, '/') : '',
-                'token' => $tok,
+                'api_url'          => $url,
+                'token'            => (string) $tok,
+                'source'           => 'wp-config',
+                'token_configured' => $tok !== '',
             ];
         }
 
         $opt = get_option(self::OPTION_KEY, []);
         if (!is_array($opt)) {
-            return ['api_url' => '', 'token' => ''];
+            return [
+                'api_url'          => '',
+                'token'            => '',
+                'source'           => 'none',
+                'token_configured' => false,
+            ];
         }
-        $url = isset($opt['api_url']) ? esc_url_raw($opt['api_url']) : '';
-        $enc = isset($opt['token_enc']) ? (string) $opt['token_enc'] : '';
+        $url_raw = isset($opt['api_url']) ? esc_url_raw($opt['api_url']) : '';
+        $enc     = isset($opt['token_enc']) ? (string) $opt['token_enc'] : '';
+        $tok     = $enc !== '' ? self::decrypt_token($enc) : '';
+        $url     = $url_raw ? rtrim($url_raw, '/') : '';
+
         return [
-            'api_url' => $url ? rtrim($url, '/') : '',
-            'token' => self::decrypt_token($enc),
+            'api_url'          => $url,
+            'token'            => (string) $tok,
+            'source'           => ($url !== '' || $tok !== '') ? 'wp_options' : 'none',
+            'token_configured' => $tok !== '',
         ];
+    }
+
+    /**
+     * REST: GET /wp-json/pc/v1/evolution/config
+     * Devolve URL + token descriptografado para consumo do microserviço Nest.
+     * Protegido pela Master API Key (header X-API-KEY == acm_master_api_key).
+     *
+     * @return WP_REST_Response|WP_Error
+     */
+    public static function rest_get_config_for_nest(WP_REST_Request $request)
+    {
+        // Permission callback já validou X-API-KEY; aqui só montamos a resposta.
+        unset($request);
+        $cfg = self::get_config_with_source();
+        return new WP_REST_Response([
+            'success'          => true,
+            'api_url'          => $cfg['api_url'],
+            'token'            => $cfg['token'], // necessário para Nest chamar a Evolution
+            'source'           => $cfg['source'],
+            'token_configured' => $cfg['token_configured'],
+            'is_configured'    => ($cfg['api_url'] !== '' && $cfg['token'] !== ''),
+        ], 200);
     }
 
     /**

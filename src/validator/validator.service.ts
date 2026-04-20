@@ -74,9 +74,11 @@ export class ValidatorService {
     if (!Number.isFinite(wpUserId) || wpUserId <= 0) {
       throw new BadRequestException('wp_user_id inválido');
     }
-    if (!this.evolution.isConfigured()) {
+    if (!(await this.evolution.isConfigured())) {
       throw new ServiceUnavailableException(
-        'Evolution API não configurada no servidor (EVOLUTION_API_URL / EVOLUTION_API_TOKEN).',
+        'Evolution API não configurada. Defina EVOLUTION_API_URL/EVOLUTION_API_TOKEN no Nest ' +
+          'OU configure "API Manager → Evolution API" no WordPress ' +
+          '(verifique também WORDPRESS_URL e WORDPRESS_API_KEY/ACM_MASTER_API_KEY no Nest).',
       );
     }
 
