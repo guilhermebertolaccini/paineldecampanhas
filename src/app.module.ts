@@ -12,6 +12,7 @@ import { SqlServerModule } from './sql-server/sql-server.module';
 import { LineHealthModule } from './line-health/line-health.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { WpSyncModule } from './wp-sync/wp-sync.module';
+import { OtimaSftpSyncModule } from './integrations/otima/otima-sftp-sync.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { WpSyncModule } from './wp-sync/wp-sync.module';
     WebhooksModule,
     WpSyncModule,
     ValidatorModule,
+    OtimaSftpSyncModule,
   ],
   controllers: [AppController],
   providers: [AppService],
