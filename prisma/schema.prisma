@@ -60,6 +60,36 @@ enum MessageStatus {
   RETRYING
 }
 
+/// Cache local de Saúde das Linhas da Ótima — alimentado pelo cron SFTP
+/// (`OtimaSftpSyncService`) a cada 30 minutos. O WordPress consome via REST
+/// (`GET /api/v1/health/otima/lines`) como se o NestJS fosse a API da Ótima.
+model OtimaLineHealth {
+  id             String   @id @default(uuid())
+  /// Nome da linha (coluna `carteira` na planilha da Ótima).
+  name           String   @db.VarChar(512)
+  /// Telefone limpo (só dígitos). Chave natural do UPSERT.
+  number         String   @unique @db.VarChar(32)
+  /// Provedor reportado pela planilha (coluna `plataforma`).
+  provider       String   @db.VarChar(128)
+  /// CONNECTED | BANNED | UNKNOWN (derivado de `status_numero`).
+  status         String   @db.VarChar(32)
+  /// Rótulo TIER_* (derivado de `capacidade_disparo`).
+  messagingLimit String   @map("messaging_limit") @db.VarChar(32)
+  /// Estático "GREEN" na implementação atual; mantido como string para evolução.
+  quality        String   @db.VarChar(32)
+  /// Arquivo .xlsx de origem (auditoria).
+  sourceFile     String?  @map("source_file") @db.VarChar(512)
+  /// Linha bruta da planilha (JSON); útil para reprocessamento/debug.
+  raw            Json?
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt      @map("updated_at") @db.Timestamptz(6)
+
+  @@index([provider])
+  @@index([status])
+  @@index([updatedAt])
+  @@map("otima_line_health")
+}
+
 /// Histórico do validador WhatsApp (Evolution) — retenção 15 dias via cron NestJS
 model ValidatorHistory {
   id               String   @id @default(uuid())

@@ -15,7 +15,7 @@ export class OtimaSftpSyncController {
 
   /**
    * GET /api/v1/health/sync-otima
-   * Executa o pipeline SFTP → XLSX → De-Para → MSSQL imediatamente, ignorando o cron.
+   * Executa o pipeline SFTP → XLSX → De-Para → Prisma imediatamente, ignorando o cron.
    * Retorna o sumário detalhado (arquivos lidos, linhas processadas, erros, dry-run do delete).
    */
   @Get('sync-otima')
@@ -40,5 +40,20 @@ export class OtimaSftpSyncController {
         stack: err.stack,
       };
     }
+  }
+
+  /**
+   * GET /api/v1/health/otima/lines
+   * API de consumo interno — serve como "fonte da verdade" sobre as linhas da Ótima
+   * para o WordPress (equivalente a chamar a API oficial de um provedor).
+   */
+  @Get('otima/lines')
+  async listOtimaLines() {
+    const items = await this.otima.listLines();
+    return {
+      ok: true,
+      count: items.length,
+      items,
+    };
   }
 }

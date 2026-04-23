@@ -4,11 +4,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import SftpClient from 'ssh2-sftp-client';
 import * as XLSX from 'xlsx';
 
-import {
-  MssqlService,
-  type LineHealthSyncRow,
-} from '../../sql-server/mssql.service';
-import type { StandardLineHealth } from '../../line-health/adapters/standard-line-health.interface';
+import { PrismaService } from '../../prisma/prisma.service';
 
 /** Linha bruta lida da planilha Ótima (após `sheet_to_json`). */
 type OtimaRawRow = {
@@ -43,7 +39,7 @@ export class OtimaSftpSyncService {
 
   constructor(
     private readonly config: ConfigService,
-    private readonly mssql: MssqlService,
+    private readonly prisma: PrismaService,
   ) {}
 
   /** A cada 30 minutos. */
@@ -321,24 +317,73 @@ export class OtimaSftpSyncService {
       return 0;
     }
 
-    const syncRows = mapped.map((l) => this.toLineHealthSyncRow(l, fileName));
     this.syncLog.log(
-      `[DB] ${fileName}: enviando ${syncRows.length} linha(s) para MssqlService.syncLineHealth...`,
+      `[DB] ${fileName}: enviando ${mapped.length} linha(s) para Prisma (UPSERT por number)...`,
     );
     this.syncLog.debug(
-      `[DB] ${fileName}: PRIMEIRA LINHA SYNC = ${JSON.stringify(syncRows[0])}`,
+      `[DB] ${fileName}: PRIMEIRA LINHA PARA PRISMA = ${JSON.stringify(this.sampleMapped(mapped[0]))}`,
     );
 
-    // UPSERT — mesma função usada para Gosac/Noah (MERGE por line_key no MSSQL).
-    const merged = await this.mssql.syncLineHealth(syncRows, {
-      strict: true, // se falhar, NÃO deletamos o arquivo
-      metricsSource: 'nest_otima_sftp_sync',
-      verbose: true,
-    });
+    // UPSERT no Postgres (Prisma) — chave natural = `number` (@unique no schema).
+    // Linhas sem número não podem chavear UPSERT; reportamos e pulamos.
+    let upserted = 0;
+    let skippedNoNumber = 0;
+    for (const line of mapped) {
+      if (line.number === '') {
+        skippedNoNumber += 1;
+        continue;
+      }
+      try {
+        await this.prisma.otimaLineHealth.upsert({
+          where: { number: line.number },
+          update: {
+            name: line.name,
+            provider: line.provider,
+            status: line.status,
+            messagingLimit: line.messagingLimit,
+            quality: line.quality,
+            sourceFile: fileName,
+            raw: line.raw as unknown as object,
+          },
+          create: {
+            number: line.number,
+            name: line.name,
+            provider: line.provider,
+            status: line.status,
+            messagingLimit: line.messagingLimit,
+            quality: line.quality,
+            sourceFile: fileName,
+            raw: line.raw as unknown as object,
+          },
+        });
+        upserted += 1;
+      } catch (dbErr) {
+        // Erro por linha NÃO derruba o arquivo inteiro — só loga. Caso alguma
+        // linha falhe, o dry-run garante que o .xlsx fica no SFTP.
+        this.syncLog.error(
+          `[DB-ROW-FAIL] ${fileName} number=${line.number}: ${this.toMsg(dbErr)}`,
+          dbErr instanceof Error ? dbErr.stack : String(dbErr),
+        );
+      }
+    }
+
+    if (skippedNoNumber > 0) {
+      this.syncLog.warn(
+        `[DB] ${fileName}: ${skippedNoNumber} linha(s) ignoradas no UPSERT por não ter \`number\`.`,
+      );
+    }
 
     this.syncLog.log(
-      `[DB] ✓ ${fileName}: UPSERT concluído. MERGE=${merged} (enviadas=${syncRows.length}).`,
+      `[DB] ✓ ${fileName}: UPSERT concluído. Prisma=${upserted} (enviadas=${mapped.length}, skipped=${skippedNoNumber}).`,
     );
+
+    // Se NADA entrou no banco, preservamos o arquivo mesmo se o dry-run estiver desligado.
+    if (upserted === 0) {
+      this.syncLog.warn(
+        `[DB] ${fileName}: 0 UPSERTs efetivos — arquivo NÃO será deletado para investigação.`,
+      );
+      return 0;
+    }
 
     // ------------------------------------------------------------------
     // [DRY-RUN] Delete remoto desligado temporariamente para debug.
@@ -354,7 +399,7 @@ export class OtimaSftpSyncService {
           `Ative com OTIMA_SFTP_DELETE_AFTER_SYNC=true quando o debug terminar.`,
       );
     }
-    return syncRows.length;
+    return upserted;
   }
 
   /** Resumo "bonito" de uma linha mapeada para logs (evita dump gigante do raw). */
@@ -391,7 +436,7 @@ export class OtimaSftpSyncService {
   }
 
   // ---------------------------------------------------------------------------
-  // De-Para (planilha → contrato interno) + mapeamento para LineHealthSyncRow
+  // De-Para (planilha → contrato interno) + helpers
   // ---------------------------------------------------------------------------
 
   /** Aplica o De-Para solicitado na especificação. */
@@ -455,48 +500,39 @@ export class OtimaSftpSyncService {
   }
 
   /**
-   * Converte a linha mapeada para o formato que o `MssqlService.syncLineHealth` consome.
-   * `id_linha` = chave natural composta (prefere número; cai para nome). Evita colisão
-   * com outros provedores usando o prefixo PROVIDER_CANONICAL.
+   * Consulta pública (consumida pelo controller/WordPress).
+   * Retorna as linhas em um formato "API de provedor" — alinhado ao payload
+   * que o painel já espera para GOSAC/NOAH (chaves em snake_case semelhantes).
    */
-  private toLineHealthSyncRow(
-    line: OtimaMappedLine,
-    sourceFile: string,
-  ): LineHealthSyncRow {
-    const naturalKey =
-      line.number !== ''
-        ? `num:${line.number}`
-        : `name:${line.name.toLowerCase().replace(/\s+/g, '_')}`;
-
-    const idLinha = `${PROVIDER_CANONICAL}:${naturalKey}`.slice(0, 200);
-
-    const standard: StandardLineHealth = {
-      provedor: PROVIDER_CANONICAL,
-      id_externo: naturalKey,
-      nome_linha: line.name || line.number || naturalKey,
-      numero_telefone: line.number || null,
-      status_conexao: line.status,
-      limite_mensagens: line.messagingLimit,
-      restricao_conta: null,
-      waba_id: null,
-      waba_phone_id: null,
-      dados_brutos: {
-        fonte: 'otima_sftp_xlsx',
-        arquivo: sourceFile,
-        quality: line.quality,
-        provider_planilha: line.provider,
-        linha_bruta: line.raw,
-      },
-    };
-
-    return {
-      id_linha: idLinha,
-      nome_linha: standard.nome_linha.slice(0, 512),
-      provedor: PROVIDER_CANONICAL,
-      status_qualidade: line.status,
-      detalhes_retorno: null,
-      standard_line_health: standard,
-    };
+  async listLines(): Promise<
+    Array<{
+      id: string;
+      name: string;
+      number: string;
+      provider: string;
+      status: string;
+      messagingLimit: string;
+      quality: string;
+      sourceFile: string | null;
+      updatedAt: string;
+      createdAt: string;
+    }>
+  > {
+    const rows = await this.prisma.otimaLineHealth.findMany({
+      orderBy: [{ updatedAt: 'desc' }, { name: 'asc' }],
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      number: r.number,
+      provider: r.provider,
+      status: r.status,
+      messagingLimit: r.messagingLimit,
+      quality: r.quality,
+      sourceFile: r.sourceFile,
+      updatedAt: r.updatedAt.toISOString(),
+      createdAt: r.createdAt.toISOString(),
+    }));
   }
 
   // ---------------------------------------------------------------------------

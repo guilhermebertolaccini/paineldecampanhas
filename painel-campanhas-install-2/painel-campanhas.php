@@ -13064,10 +13064,124 @@ class Painel_Campanhas
             }
         }
 
+        // ------------------------------------------------------------------
+        // ÓTIMA — agora servida pelo microserviço NestJS
+        // GET <NEST_URL>/api/v1/health/otima/lines (Master Key no header X-API-KEY).
+        // Falha silenciosa: se o Nest cair, apenas as linhas da Ótima somem do painel
+        // (os demais provedores continuam renderizando normalmente).
+        // ------------------------------------------------------------------
+        $otima_lines = $this->pc_fetch_otima_lines_from_nest($debug_info);
+        if (!empty($otima_lines)) {
+            foreach ($otima_lines as $otima_row) {
+                $all_health_data[] = $otima_row;
+            }
+        }
+
         return [
             'connections' => $all_health_data,
             'debug_info' => $debug_info,
         ];
+    }
+
+    /**
+     * Consulta o endpoint interno do NestJS que devolve as linhas da Ótima
+     * processadas pelo cron SFTP. Mapeia o payload para o mesmo shape usado
+     * por GOSAC/NOAH/Robbu no `$all_health_data`, para que o frontend
+     * (DataTables / React / CSV) renderize sem tratamento especial.
+     *
+     * Tolerante a falha: qualquer erro de rede ou HTTP != 200 resulta em
+     * array vazio + `error_log()`. Nunca propaga exceção.
+     *
+     * @param array &$debug_info Injeta uma entrada na janela de debug do painel.
+     * @return array<int, array<string, mixed>> Linhas já mapeadas; pode ser vazio.
+     */
+    private function pc_fetch_otima_lines_from_nest(array &$debug_info = [])
+    {
+        try {
+            $microservice_config = get_option('acm_microservice_config', []);
+            $base_url = isset($microservice_config['url']) ? trim((string) $microservice_config['url']) : '';
+            $ms_key = isset($microservice_config['api_key']) ? trim((string) $microservice_config['api_key']) : '';
+            $master_key = trim((string) get_option('acm_master_api_key', ''));
+            $api_key = $ms_key !== '' ? $ms_key : $master_key;
+
+            if ($base_url === '' || $api_key === '') {
+                error_log('[pc_fetch_otima_lines_from_nest] NestJS URL ou API key não configurada; Ótima ignorada nesta coleta.');
+                return [];
+            }
+
+            $url = rtrim($base_url, '/') . '/api/v1/health/otima/lines';
+            $response = wp_remote_get($url, [
+                'timeout' => 20,
+                'sslverify' => false,
+                'headers' => [
+                    'X-API-KEY' => $api_key,
+                    'Accept' => 'application/json',
+                ],
+            ]);
+
+            $http_code = is_wp_error($response) ? 'WP_ERROR' : wp_remote_retrieve_response_code($response);
+            $raw_body = is_wp_error($response) ? $response->get_error_message() : wp_remote_retrieve_body($response);
+
+            $masked_key = strlen($api_key) > 8 ? substr($api_key, 0, 4) . '...' . substr($api_key, -4) : '[hidden]';
+            $debug_info[] = [
+                'external_url' => $url,
+                'method' => 'GET',
+                'headers_sent' => [
+                    'X-API-KEY' => $masked_key,
+                    'Accept' => 'application/json',
+                ],
+                'http_status' => $http_code,
+                'raw_response' => is_string($raw_body) ? substr($raw_body, 0, 4000) : '',
+                'provider' => 'otima',
+            ];
+
+            if (is_wp_error($response)) {
+                error_log('[pc_fetch_otima_lines_from_nest] WP_Error: ' . $response->get_error_message());
+                return [];
+            }
+            if ((int) $http_code !== 200) {
+                error_log('[pc_fetch_otima_lines_from_nest] HTTP ' . $http_code . ' em ' . $url);
+                return [];
+            }
+
+            $decoded = json_decode((string) $raw_body, true);
+            if (!is_array($decoded)) {
+                error_log('[pc_fetch_otima_lines_from_nest] JSON inválido em ' . $url);
+                return [];
+            }
+
+            $items = isset($decoded['items']) && is_array($decoded['items']) ? $decoded['items'] : [];
+            if (empty($items)) {
+                return [];
+            }
+
+            $mapped = [];
+            foreach ($items as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                // Ótima não tem 1:1 com `pc_carteiras_v2`, então `wallet_name` cai para o próprio nome.
+                $mapped[] = [
+                    'id' => isset($item['id']) ? (string) $item['id'] : '',
+                    'name' => isset($item['name']) ? (string) $item['name'] : '',
+                    'number' => isset($item['number']) ? (string) $item['number'] : '',
+                    'status' => isset($item['status']) ? (string) $item['status'] : '',
+                    'messagingLimit' => isset($item['messagingLimit']) ? (string) $item['messagingLimit'] : '',
+                    // NOAH/Robbu preenchem `qualityRating` (ex.: "GREEN"); alinhamos a Ótima no mesmo campo.
+                    'qualityRating' => isset($item['quality']) ? (string) $item['quality'] : '',
+                    'provider' => 'Ótima',
+                    'id_ambient' => '',
+                    'wallet_name' => isset($item['name']) ? (string) $item['name'] : '',
+                    // Campos auxiliares (não interferem nas colunas existentes; úteis para debug/CSV).
+                    'sourceFile' => isset($item['sourceFile']) ? (string) $item['sourceFile'] : '',
+                    'updated_at' => isset($item['updatedAt']) ? (string) $item['updatedAt'] : '',
+                ];
+            }
+            return $mapped;
+        } catch (\Throwable $e) {
+            error_log('[pc_fetch_otima_lines_from_nest] Exception: ' . $e->getMessage());
+            return [];
+        }
     }
 
     public function handle_get_all_connections_health()
