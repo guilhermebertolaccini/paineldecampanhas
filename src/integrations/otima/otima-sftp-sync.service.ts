@@ -52,6 +52,9 @@ export class OtimaSftpSyncService {
     // Kill-switch: OTIMA_SFTP_CRON_ENABLED=false desliga o agendamento sem remover código.
     const enabled =
       this.config.get<string>('OTIMA_SFTP_CRON_ENABLED', 'true') !== 'false';
+    this.syncLog.log(
+      `[CRON TICK] @Cron EVERY_30_MINUTES disparou (enabled=${enabled}) às ${new Date().toISOString()}.`,
+    );
     if (!enabled) {
       this.logger.debug('Cron Ótima SFTP desabilitado (OTIMA_SFTP_CRON_ENABLED=false).');
       return;
@@ -79,29 +82,63 @@ export class OtimaSftpSyncService {
     files_processed: number;
     files_failed: number;
     rows_upserted: number;
+    files_list: string[];
+    errors: Array<{ file: string; message: string }>;
+    dry_run_delete: boolean;
+    started_at: string;
+    finished_at: string;
   }> {
+    const startedAt = new Date().toISOString();
+    this.syncLog.log(`========== OTIMA SFTP SYNC :: START ${startedAt} ==========`);
+
     const cfg = this.readSftpConfig();
     if (!cfg) {
-      this.syncLog.warn(
-        'Credenciais SFTP Ótima incompletas (host/user/pass/dir). Cron ignorado.',
+      // Log super-explícito de quais vars estão faltando — zero adivinhação em produção.
+      const envSnapshot = {
+        OTIMA_SFTP_HOST: this.presenceTag(this.config.get<string>('OTIMA_SFTP_HOST')),
+        OTIMA_SFTP_PORT: this.config.get<string>('OTIMA_SFTP_PORT', '2222'),
+        OTIMA_SFTP_USER: this.presenceTag(this.config.get<string>('OTIMA_SFTP_USER')),
+        OTIMA_SFTP_PASS: this.presenceTag(this.config.get<string>('OTIMA_SFTP_PASS')),
+        OTIMA_SFTP_DIR: this.presenceTag(this.config.get<string>('OTIMA_SFTP_DIR')),
+      };
+      this.syncLog.error(
+        `Credenciais SFTP Ótima incompletas. Env atual: ${JSON.stringify(envSnapshot)}`,
       );
       return {
         files_scanned: 0,
         files_processed: 0,
         files_failed: 0,
         rows_upserted: 0,
+        files_list: [],
+        errors: [
+          {
+            file: '<config>',
+            message: `Credenciais SFTP incompletas: ${JSON.stringify(envSnapshot)}`,
+          },
+        ],
+        dry_run_delete: this.isDryRunDelete(),
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
       };
     }
 
+    // [DEBUG] Imprime configuração efetiva (sem expor a senha).
+    this.syncLog.log(
+      `[DEBUG-CFG] host=${cfg.host} port=${cfg.port} user=${cfg.user} dir=${cfg.dir} passLen=${cfg.pass.length}`,
+    );
+
     const sftp = new SftpClient();
+    const filesList: string[] = [];
+    const errors: Array<{ file: string; message: string }> = [];
     let filesScanned = 0;
     let filesProcessed = 0;
     let filesFailed = 0;
     let rowsUpserted = 0;
+    const dryRun = this.isDryRunDelete();
 
     try {
       this.syncLog.log(
-        `Conectando no SFTP Ótima ${cfg.user}@${cfg.host}:${cfg.port} → ${cfg.dir}`,
+        `[STEP 1/4] Conectando no SFTP Ótima ${cfg.user}@${cfg.host}:${cfg.port} → ${cfg.dir}`,
       );
       await sftp.connect({
         host: cfg.host,
@@ -110,7 +147,9 @@ export class OtimaSftpSyncService {
         password: cfg.pass,
         readyTimeout: 20_000,
       });
+      this.syncLog.log('[STEP 1/4] ✓ Conexão SFTP estabelecida.');
 
+      this.syncLog.log(`[STEP 2/4] Listando arquivos em ${cfg.dir}...`);
       const list = await sftp.list(cfg.dir);
       const xlsxFiles = list
         .filter((f) => f.type === '-' && /\.xlsx$/i.test(f.name))
@@ -118,42 +157,79 @@ export class OtimaSftpSyncService {
 
       filesScanned = xlsxFiles.length;
       this.syncLog.log(
-        `Listagem: ${list.length} entrada(s) no dir, ${xlsxFiles.length} .xlsx candidatos.`,
+        `[STEP 2/4] ✓ Listagem: ${list.length} entrada(s) no dir, ${xlsxFiles.length} .xlsx candidatos.`,
       );
 
+      if (xlsxFiles.length === 0) {
+        // [DEBUG] Se não achou nenhum .xlsx, dumpa as 20 primeiras entradas (tipo+nome) pra ver o que tem.
+        const preview = list.slice(0, 20).map((e) => ({ type: e.type, name: e.name }));
+        this.syncLog.warn(
+          `[DEBUG-LIST] Nenhum .xlsx encontrado. Primeiras ${preview.length} entradas do diretório: ${JSON.stringify(preview)}`,
+        );
+      } else {
+        this.syncLog.log(
+          `[DEBUG-LIST] Arquivos .xlsx a processar: ${JSON.stringify(xlsxFiles.map((f) => f.name))}`,
+        );
+      }
+
+      this.syncLog.log(
+        `[STEP 3/4] Processando ${xlsxFiles.length} arquivo(s). dry_run_delete=${dryRun}`,
+      );
       for (const entry of xlsxFiles) {
         const remotePath = this.joinRemote(cfg.dir, entry.name);
+        filesList.push(entry.name);
         try {
           const upserted = await this.processOneFile(sftp, remotePath, entry.name);
           rowsUpserted += upserted;
           filesProcessed += 1;
         } catch (e) {
           filesFailed += 1;
+          const msg = this.toMsg(e);
+          errors.push({ file: entry.name, message: msg });
           this.syncLog.error(
-            `Arquivo Ótima falhou (${entry.name}): ${this.toMsg(e)}. Pulando para o próximo.`,
-            e instanceof Error ? e.stack : undefined,
+            `[FILE-FAIL] Arquivo Ótima falhou (${entry.name}): ${msg}. Pulando para o próximo.`,
+            e instanceof Error ? e.stack : String(e),
           );
           // não dar "throw": erro de UM arquivo não impede o resto da fila
         }
       }
 
       this.syncLog.log(
-        `Concluído: ${filesProcessed}/${xlsxFiles.length} arquivo(s) processado(s); ` +
+        `[STEP 4/4] ✓ Concluído: ${filesProcessed}/${xlsxFiles.length} arquivo(s) processado(s); ` +
           `${rowsUpserted} linha(s) UPSERT no MSSQL; ${filesFailed} falha(s).`,
+      );
+    } catch (e) {
+      // Erro "alto nível" (ex.: SFTP connect/list). Registra e propaga no shape de retorno.
+      const msg = this.toMsg(e);
+      errors.push({ file: '<pipeline>', message: msg });
+      this.syncLog.error(
+        `[FATAL] Falha no pipeline SFTP Ótima: ${msg}`,
+        e instanceof Error ? e.stack : String(e),
       );
     } finally {
       try {
         await sftp.end();
-      } catch {
-        // noop
+        this.syncLog.debug('[CLEANUP] Conexão SFTP encerrada.');
+      } catch (endErr) {
+        this.syncLog.warn(
+          `[CLEANUP] sftp.end() falhou (ignorado): ${this.toMsg(endErr)}`,
+        );
       }
     }
+
+    const finishedAt = new Date().toISOString();
+    this.syncLog.log(`========== OTIMA SFTP SYNC :: END ${finishedAt} ==========`);
 
     return {
       files_scanned: filesScanned,
       files_processed: filesProcessed,
       files_failed: filesFailed,
       rows_upserted: rowsUpserted,
+      files_list: filesList,
+      errors,
+      dry_run_delete: dryRun,
+      started_at: startedAt,
+      finished_at: finishedAt,
     };
   }
 
@@ -168,14 +244,22 @@ export class OtimaSftpSyncService {
     remotePath: string,
     fileName: string,
   ): Promise<number> {
-    this.syncLog.log(`↓ Baixando ${remotePath}`);
+    this.syncLog.log(`[FILE] ↓ Baixando ${remotePath}`);
     const buffer = (await sftp.get(remotePath)) as Buffer;
     if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
       throw new Error(`Download retornou buffer vazio para ${remotePath}`);
     }
+    this.syncLog.log(
+      `[FILE] ↓ Download OK (${fileName}): ${buffer.length} bytes (${(buffer.length / 1024).toFixed(1)} KB).`,
+    );
 
+    this.syncLog.debug(`[PARSE] ${fileName}: chamando XLSX.read...`);
     const workbook = XLSX.read(buffer, { type: 'buffer' });
-    const firstSheetName = workbook.SheetNames[0];
+    const sheetNames = workbook.SheetNames || [];
+    this.syncLog.log(
+      `[PARSE] ${fileName}: ${sheetNames.length} aba(s) [${sheetNames.join(', ')}].`,
+    );
+    const firstSheetName = sheetNames[0];
     if (!firstSheetName) {
       throw new Error('Planilha sem abas (workbook.SheetNames vazio).');
     }
@@ -186,40 +270,124 @@ export class OtimaSftpSyncService {
     });
 
     this.syncLog.log(
-      `↪ ${fileName}: aba "${firstSheetName}" com ${rawRows.length} linha(s).`,
+      `[PARSE] ↪ ${fileName}: aba "${firstSheetName}" produziu ${rawRows.length} linha(s).`,
     );
 
+    // [DEBUG-SCHEMA] Dumpa as colunas + primeira linha crua. Vital pra descobrir
+    // se o cabeçalho está com nomes estranhos (acentos, BOM, espaços, camelCase, etc).
+    if (rawRows.length > 0) {
+      const first = rawRows[0];
+      const columns = Object.keys(first);
+      this.syncLog.log(
+        `[DEBUG-SCHEMA] ${fileName}: colunas detectadas (${columns.length}) = ${JSON.stringify(columns)}`,
+      );
+      this.syncLog.log(
+        `[DEBUG-SCHEMA] ${fileName}: PRIMEIRA LINHA CRUA = ${JSON.stringify(first)}`,
+      );
+      if (rawRows.length > 1) {
+        this.syncLog.debug(
+          `[DEBUG-SCHEMA] ${fileName}: SEGUNDA LINHA CRUA = ${JSON.stringify(rawRows[1])}`,
+        );
+      }
+    } else {
+      this.syncLog.warn(
+        `[DEBUG-SCHEMA] ${fileName}: sheet_to_json retornou 0 linhas. Verifique se a planilha tem cabeçalho na primeira linha.`,
+      );
+    }
+
     const mapped: OtimaMappedLine[] = [];
+    let discarded = 0;
     for (const raw of rawRows) {
       const line = this.applyDePara(raw);
-      if (!line) continue;
+      if (!line) {
+        discarded += 1;
+        continue;
+      }
       mapped.push(line);
+    }
+    this.syncLog.log(
+      `[DE-PARA] ${fileName}: ${mapped.length} válida(s) + ${discarded} descartada(s) (de ${rawRows.length} total).`,
+    );
+    if (mapped.length > 0) {
+      this.syncLog.debug(
+        `[DE-PARA] ${fileName}: PRIMEIRA LINHA MAPEADA = ${JSON.stringify(this.sampleMapped(mapped[0]))}`,
+      );
     }
 
     if (mapped.length === 0) {
       this.syncLog.warn(
-        `${fileName}: nenhuma linha válida após De-Para; arquivo NÃO será deletado para investigação.`,
+        `[DE-PARA] ${fileName}: nenhuma linha válida após De-Para; arquivo NÃO será deletado para investigação.`,
       );
       return 0;
     }
 
     const syncRows = mapped.map((l) => this.toLineHealthSyncRow(l, fileName));
+    this.syncLog.log(
+      `[DB] ${fileName}: enviando ${syncRows.length} linha(s) para MssqlService.syncLineHealth...`,
+    );
+    this.syncLog.debug(
+      `[DB] ${fileName}: PRIMEIRA LINHA SYNC = ${JSON.stringify(syncRows[0])}`,
+    );
 
     // UPSERT — mesma função usada para Gosac/Noah (MERGE por line_key no MSSQL).
     const merged = await this.mssql.syncLineHealth(syncRows, {
       strict: true, // se falhar, NÃO deletamos o arquivo
       metricsSource: 'nest_otima_sftp_sync',
-      verbose: false,
+      verbose: true,
     });
 
     this.syncLog.log(
-      `✓ ${fileName}: UPSERT concluído (MERGE=${merged}). Removendo do SFTP.`,
+      `[DB] ✓ ${fileName}: UPSERT concluído. MERGE=${merged} (enviadas=${syncRows.length}).`,
     );
 
-    // Só deleta após o MERGE ter respondido sem exception.
-    await sftp.delete(remotePath);
-    this.syncLog.log(`✓ ${fileName}: apagado em ${remotePath}.`);
+    // ------------------------------------------------------------------
+    // [DRY-RUN] Delete remoto desligado temporariamente para debug.
+    // Para reativar: OTIMA_SFTP_DELETE_AFTER_SYNC=true (ou remover este gate).
+    // ------------------------------------------------------------------
+    if (!this.isDryRunDelete()) {
+      this.syncLog.log(`[FILE] Deletando arquivo remoto ${remotePath}...`);
+      await sftp.delete(remotePath);
+      this.syncLog.log(`[FILE] ✓ ${fileName}: apagado em ${remotePath}.`);
+    } else {
+      this.syncLog.warn(
+        `[DRY-RUN] ${fileName}: sftp.delete PULADO. Arquivo preservado em ${remotePath}. ` +
+          `Ative com OTIMA_SFTP_DELETE_AFTER_SYNC=true quando o debug terminar.`,
+      );
+    }
     return syncRows.length;
+  }
+
+  /** Resumo "bonito" de uma linha mapeada para logs (evita dump gigante do raw). */
+  private sampleMapped(l: OtimaMappedLine): Record<string, unknown> {
+    return {
+      name: l.name,
+      number: l.number,
+      provider: l.provider,
+      status: l.status,
+      messagingLimit: l.messagingLimit,
+      quality: l.quality,
+    };
+  }
+
+  /**
+   * Dry-run do delete: quando `OTIMA_SFTP_DELETE_AFTER_SYNC` não é `'true'`,
+   * os arquivos permanecem no SFTP após o UPSERT (modo debug padrão).
+   */
+  private isDryRunDelete(): boolean {
+    const raw = String(
+      this.config.get<string>('OTIMA_SFTP_DELETE_AFTER_SYNC', 'false'),
+    )
+      .trim()
+      .toLowerCase();
+    return raw !== 'true' && raw !== '1' && raw !== 'yes';
+  }
+
+  /** Marcador (SET/EMPTY) + comprimento para inspecionar env vars sem vazar valor. */
+  private presenceTag(v: string | undefined | null): string {
+    if (v === undefined || v === null) return 'UNSET';
+    const s = String(v);
+    if (s.trim() === '') return 'EMPTY';
+    return `SET(len=${s.length})`;
   }
 
   // ---------------------------------------------------------------------------
