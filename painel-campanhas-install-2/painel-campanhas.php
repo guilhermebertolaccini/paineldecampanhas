@@ -13378,12 +13378,27 @@ class Painel_Campanhas
             $offset = max(0, (int) $request->get_param('offset'));
 
             // ----------------------------------------------------------------------
-            // 3) Monta a query (SELECT base + WHERE dinâmico). Identificadores
-            //    vêm do $wpdb->prefix (nunca do request) → imune a injeção de nome
-            //    de tabela; valores vão via $wpdb->prepare().
+            // 3) Monta a query com DEDUPLICAÇÃO em duas camadas:
+            //    - Subquery `UltimoRegistro`: 1 linha por (telefone, fornecedor) = MAX(id).
+            //    - Subquery `E`:             1 linha por (data, cpf, codigoCarteira, login)
+            //                                 para o LEFT JOIN não multiplicar o resultado.
+            //    Identificadores vêm do $wpdb->prefix (imune a injeção de tabela) e
+            //    qualquer valor dinâmico (data) é passado via $wpdb->prepare().
             // ----------------------------------------------------------------------
             $tbl_indicadores = $wpdb->prefix . 'eventos_indicadores';
             $tbl_envios = $wpdb->prefix . 'eventos_envios';
+
+            // Filtro de data DENTRO da subquery (sem alias `I.`, porque ela roda
+            // direto na tabela crua). `prepare()` recebe os args na ordem: [data_exact?, limit?, offset?].
+            $where_data_subquery = '';
+            $prepare_args = [];
+            if ($data_mode === 'today') {
+                $where_data_subquery = ' AND data = CURDATE() ';
+            } elseif ($data_mode === 'exact') {
+                $where_data_subquery = ' AND data = %s ';
+                $prepare_args[] = $data_exact;
+            }
+            // 'all' → subquery sem filtro de data
 
             $select_sql = "
                 SELECT
@@ -13418,34 +13433,34 @@ class Painel_Campanhas
                         ELSE '1X1'
                     END AS tipo_envio
                 FROM {$tbl_indicadores} I
-                LEFT JOIN {$tbl_envios} E
+                INNER JOIN (
+                    -- DEDUP MASTER: último registro (MAX id) por (telefone, fornecedor)
+                    SELECT MAX(id) AS max_id
+                    FROM {$tbl_indicadores}
+                    WHERE codigoCarteira NOT IN (0, 1)
+                        {$where_data_subquery}
+                    GROUP BY telefone, fornecedor
+                ) AS UltimoRegistro ON I.id = UltimoRegistro.max_id
+                LEFT JOIN (
+                    -- DEDUP ENVIO: 1 linha por chave; MAX(tipo) estabiliza o resultado
+                    -- se houver 'MASSIVO' e '1X1' no mesmo dia/CPF/carteira/login.
+                    SELECT data, cpf, codigoCarteira, login, MAX(tipo) AS tipo
+                    FROM {$tbl_envios}
+                    GROUP BY data, cpf, codigoCarteira, login
+                ) E
                     ON  I.data = E.data
                     AND I.cpf = E.cpf
                     AND I.codigoCarteira = E.codigoCarteira
                     AND I.login = E.login
-                WHERE I.codigoCarteira NOT IN (0, 1)
             ";
 
-            // WHERE dinâmico (apenas a parte de `data`, os filtros estruturais já estão no SELECT).
-            $where_extra = '';
-            $prepare_args = [];
-            if ($data_mode === 'today') {
-                $where_extra = ' AND I.data = CURDATE() ';
-            } elseif ($data_mode === 'exact') {
-                $where_extra = ' AND I.data = %s ';
-                $prepare_args[] = $data_exact;
-            }
-            // 'all' → não adiciona filtro
-
             $order_by = ' ORDER BY I.data DESC, I.codigoCarteira ASC ';
-            $limit_clause = '';
             if ($format === 'json' && $limit > 0) {
-                $where_extra_prepare = $where_extra . $order_by . ' LIMIT %d OFFSET %d ';
+                $sql = $select_sql . $order_by . ' LIMIT %d OFFSET %d ';
                 $prepare_args[] = $limit;
                 $prepare_args[] = $offset;
-                $sql = $select_sql . $where_extra_prepare;
             } else {
-                $sql = $select_sql . $where_extra . $order_by;
+                $sql = $select_sql . $order_by;
             }
 
             if (!empty($prepare_args)) {
