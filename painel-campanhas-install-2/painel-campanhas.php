@@ -642,6 +642,44 @@ class Painel_Campanhas
             'permission_callback' => [$this, 'check_api_key_rest'],
         ]);
 
+        // DW / ETL: relatório consolidado (JOIN `eventos_indicadores` ↔ `eventos_envios`).
+        // Master API Key via header X-API-KEY. Filtro `data`:
+        //   - ausente   → dia atual (CURRENT_DATE MySQL)
+        //   - `all`     → sem filtro (carga histórica)
+        //   - YYYY-MM-DD→ data exata
+        register_rest_route('pc/v1', '/export/indicadores', [
+            'methods' => 'GET',
+            'callback' => [$this, 'rest_export_indicadores'],
+            'permission_callback' => [$this, 'check_api_key_rest'],
+            'args' => [
+                'data' => [
+                    'required' => false,
+                    'type' => 'string',
+                    'description' => 'Filtro por data. Aceita YYYY-MM-DD, "all" (sem filtro) ou vazio (dia atual).',
+                    'default' => '',
+                ],
+                'format' => [
+                    'required' => false,
+                    'type' => 'string',
+                    'enum' => ['json', 'csv'],
+                    'default' => 'json',
+                    'description' => 'Formato da resposta. Use `csv` para streaming (recomendado para data=all).',
+                ],
+                'limit' => [
+                    'required' => false,
+                    'type' => 'integer',
+                    'default' => 0,
+                    'description' => 'Limite opcional de linhas (0 = sem limite). Ignorado no formato CSV.',
+                ],
+                'offset' => [
+                    'required' => false,
+                    'type' => 'integer',
+                    'default' => 0,
+                    'description' => 'Offset para paginação quando `limit > 0`.',
+                ],
+            ],
+        ]);
+
         // Painel (SPA): atualizar só os filtros JSON de uma campanha recorrente (usuário logado).
         register_rest_route('pc/v1', '/recurring-campaigns/(?P<id>\d+)/filters', [
             'methods' => \WP_REST_Server::EDITABLE,
@@ -13274,6 +13312,299 @@ class Painel_Campanhas
 
         fclose($output);
         exit(0);
+    }
+
+    /**
+     * GET /wp-json/pc/v1/export/indicadores — Relatório consolidado (indicadores ⋈ envios).
+     *
+     * Autenticação: header `X-API-KEY` (Master API Key) via {@see check_api_key_rest()}.
+     *
+     * Query params:
+     * - `data` (opcional): `all` → sem filtro | `YYYY-MM-DD` → data exata | vazio → `CURDATE()`.
+     * - `format` (opcional): `json` (default) ou `csv` (streaming recomendado para `data=all`).
+     * - `limit`/`offset` (opcionais, só JSON): paginação defensiva.
+     *
+     * @param WP_REST_Request $request
+     * @return WP_REST_Response|WP_Error|void
+     */
+    public function rest_export_indicadores($request)
+    {
+        global $wpdb;
+
+        // Memória/tempo — a query pode ser grande (especialmente com data=all).
+        @wp_raise_memory_limit('admin');
+        @set_time_limit(0);
+
+        try {
+            // ----------------------------------------------------------------------
+            // 1) Normalização do filtro de data
+            // ----------------------------------------------------------------------
+            $data_raw = trim((string) $request->get_param('data'));
+            $data_mode = 'today';   // today | all | exact
+            $data_exact = null;
+
+            if ($data_raw === '') {
+                $data_mode = 'today';
+            } elseif (strcasecmp($data_raw, 'all') === 0) {
+                $data_mode = 'all';
+            } elseif (preg_match('/^\d{4}-\d{2}-\d{2}$/', $data_raw)) {
+                // Validação extra: data precisa ser real (não aceita 2026-02-31).
+                $parts = explode('-', $data_raw);
+                if (!checkdate((int) $parts[1], (int) $parts[2], (int) $parts[0])) {
+                    return new WP_Error(
+                        'invalid_date',
+                        'Parâmetro `data` inválido (data inexistente). Use YYYY-MM-DD, "all" ou vazio.',
+                        ['status' => 400]
+                    );
+                }
+                $data_mode = 'exact';
+                $data_exact = $data_raw;
+            } else {
+                return new WP_Error(
+                    'invalid_date',
+                    'Parâmetro `data` inválido. Use YYYY-MM-DD, "all" ou vazio.',
+                    ['status' => 400]
+                );
+            }
+
+            // ----------------------------------------------------------------------
+            // 2) Formato de resposta + paginação
+            // ----------------------------------------------------------------------
+            $format = strtolower((string) $request->get_param('format'));
+            if (!in_array($format, ['json', 'csv'], true)) {
+                $format = 'json';
+            }
+            $limit = max(0, (int) $request->get_param('limit'));
+            $offset = max(0, (int) $request->get_param('offset'));
+
+            // ----------------------------------------------------------------------
+            // 3) Monta a query (SELECT base + WHERE dinâmico). Identificadores
+            //    vêm do $wpdb->prefix (nunca do request) → imune a injeção de nome
+            //    de tabela; valores vão via $wpdb->prepare().
+            // ----------------------------------------------------------------------
+            $tbl_indicadores = $wpdb->prefix . 'eventos_indicadores';
+            $tbl_envios = $wpdb->prefix . 'eventos_envios';
+
+            $select_sql = "
+                SELECT
+                    I.data,
+                    I.fornecedor,
+                    I.carteira,
+                    I.codigoCarteira AS idigs_ambiente,
+                    COALESCE(NULLIF(TRIM(I.contrato), ''), 'Não enviado pelo fornecedor') AS idcob_contrato,
+                    CASE
+                        WHEN I.cpf IS NULL OR TRIM(I.cpf) = '' OR I.cpf LIKE '%00000%' THEN 'Não preenchido'
+                        ELSE I.cpf
+                    END AS cpf_cnpj,
+                    COALESCE(NULLIF(TRIM(I.telefone), ''), 'Não enviado pelo fornecedor') AS telefone,
+                    I.status,
+                    CASE
+                        WHEN I.evento LIKE '%Sem In%' THEN 'Abertura de conversa'
+                        ELSE I.evento
+                    END AS evento,
+                    I.login,
+                    1 AS envio,
+                    CASE WHEN I.status LIKE '%entr%' OR I.entregue = 1 THEN 0 ELSE 1 END AS falha,
+                    CASE WHEN I.status LIKE '%entr%' OR I.entregue = 1 THEN 1 ELSE 0 END AS entregue,
+                    CASE WHEN I.lido = 1 THEN 1 ELSE 0 END AS lido,
+                    CASE WHEN I.cpc = 1 THEN 1 ELSE 0 END AS cpc,
+                    CASE WHEN I.cpcProdutivo = 1 THEN 1 ELSE 0 END AS CPCA,
+                    CASE WHEN I.boleto = 1 THEN 1 ELSE 0 END AS boleto,
+                    I.tipoAtendimento,
+                    COALESCE(NULLIF(TRIM(I.protocolo), ''), 'Não enviado pelo fornecedor') AS protocolo,
+                    I.tma,
+                    CASE
+                        WHEN I.tipoAtendimento NOT LIKE '%RECEP%' AND E.tipo LIKE '%MASS%' THEN 'Massivo'
+                        ELSE '1X1'
+                    END AS tipo_envio
+                FROM {$tbl_indicadores} I
+                LEFT JOIN {$tbl_envios} E
+                    ON  I.data = E.data
+                    AND I.cpf = E.cpf
+                    AND I.codigoCarteira = E.codigoCarteira
+                    AND I.login = E.login
+                WHERE I.codigoCarteira NOT IN (0, 1)
+            ";
+
+            // WHERE dinâmico (apenas a parte de `data`, os filtros estruturais já estão no SELECT).
+            $where_extra = '';
+            $prepare_args = [];
+            if ($data_mode === 'today') {
+                $where_extra = ' AND I.data = CURDATE() ';
+            } elseif ($data_mode === 'exact') {
+                $where_extra = ' AND I.data = %s ';
+                $prepare_args[] = $data_exact;
+            }
+            // 'all' → não adiciona filtro
+
+            $order_by = ' ORDER BY I.data DESC, I.codigoCarteira ASC ';
+            $limit_clause = '';
+            if ($format === 'json' && $limit > 0) {
+                $where_extra_prepare = $where_extra . $order_by . ' LIMIT %d OFFSET %d ';
+                $prepare_args[] = $limit;
+                $prepare_args[] = $offset;
+                $sql = $select_sql . $where_extra_prepare;
+            } else {
+                $sql = $select_sql . $where_extra . $order_by;
+            }
+
+            if (!empty($prepare_args)) {
+                $sql = $wpdb->prepare($sql, $prepare_args);
+            }
+
+            // ----------------------------------------------------------------------
+            // 4) Execução + serialização
+            // ----------------------------------------------------------------------
+            if ($format === 'csv') {
+                return $this->rest_export_indicadores_stream_csv($sql, $data_raw);
+            }
+
+            // JSON path (com paginação defensiva)
+            $rows = $wpdb->get_results($sql, ARRAY_A);
+            if ($rows === null) {
+                $msg = 'Falha ao executar consulta de indicadores: ' . ($wpdb->last_error ?: 'erro desconhecido');
+                error_log('[rest_export_indicadores] ' . $msg);
+                return new WP_Error('indicadores_query_failed', $msg, ['status' => 500]);
+            }
+
+            $count = is_array($rows) ? count($rows) : 0;
+            if ($count > 50000) {
+                error_log(sprintf(
+                    '[rest_export_indicadores] Payload grande (%d linhas) retornando como JSON. ' .
+                    'Considere usar ?format=csv para reduzir consumo de memória.',
+                    $count
+                ));
+            }
+
+            $response = new WP_REST_Response([
+                'ok' => true,
+                'count' => $count,
+                'filter' => [
+                    'data' => $data_raw === '' ? 'today' : $data_raw,
+                    'data_mode' => $data_mode,
+                    'data_exact' => $data_exact,
+                    'limit' => $limit,
+                    'offset' => $offset,
+                ],
+                'data' => $rows,
+            ], 200);
+            $response->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+            return $response;
+        } catch (\Throwable $e) {
+            error_log('[rest_export_indicadores] Exception: ' . $e->getMessage());
+            return new WP_Error(
+                'indicadores_unexpected_error',
+                'Erro inesperado ao gerar relatório de indicadores: ' . $e->getMessage(),
+                ['status' => 500]
+            );
+        }
+    }
+
+    /**
+     * Helper — streaming CSV para `rest_export_indicadores`.
+     *
+     * Usa mysqli_query() em modo unbuffered (MYSQLI_USE_RESULT) para não carregar
+     * milhões de linhas em memória. Encerra o request com exit() igual ao CSV do
+     * stream de `export/csv`.
+     *
+     * @param string $prepared_sql  SQL já preparada (nunca aceitar input cru).
+     * @param string $data_label    Valor de `?data=` usado no nome do arquivo.
+     * @return void                 Nunca retorna — encerra via exit().
+     */
+    private function rest_export_indicadores_stream_csv($prepared_sql, $data_label)
+    {
+        global $wpdb;
+
+        // Limpa qualquer buffer anterior (padrão do rest_export_csv_stream existente).
+        while (ob_get_level() > 0) {
+            if (!@ob_end_clean()) {
+                break;
+            }
+        }
+        if (ob_get_level() > 0) {
+            @ob_clean();
+        }
+
+        if (!headers_sent()) {
+            nocache_headers();
+            header('Content-Type: text/csv; charset=utf-8');
+            $label = ($data_label === '' || $data_label === null) ? 'today' : preg_replace('/[^A-Za-z0-9\-_]/', '_', $data_label);
+            $fname = 'indicadores_' . $label . '_' . gmdate('Ymd_His') . '.csv';
+            header('Content-Disposition: attachment; filename="' . $fname . '"');
+        }
+
+        $out = fopen('php://output', 'w');
+        if ($out === false) {
+            error_log('[rest_export_indicadores_stream_csv] php://output indisponível');
+            exit(1);
+        }
+        // BOM UTF-8 para Excel PT-BR.
+        fwrite($out, "\xEF\xBB\xBF");
+
+        $headers = [
+            'data', 'fornecedor', 'carteira', 'idigs_ambiente', 'idcob_contrato',
+            'cpf_cnpj', 'telefone', 'status', 'evento', 'login',
+            'envio', 'falha', 'entregue', 'lido', 'cpc', 'CPCA', 'boleto',
+            'tipoAtendimento', 'protocolo', 'tma', 'tipo_envio',
+        ];
+        fputcsv($out, $headers, ';');
+
+        // Fluxo unbuffered — consome pouco RAM mesmo em `?data=all`.
+        $dbh = $wpdb->dbh;
+        if (!($dbh instanceof \mysqli)) {
+            // Fallback: usa get_results se a handle mysqli não estiver acessível.
+            error_log('[rest_export_indicadores_stream_csv] $wpdb->dbh não é mysqli; caindo para get_results()');
+            $rows = $wpdb->get_results($prepared_sql, ARRAY_A);
+            if (is_array($rows)) {
+                foreach ($rows as $row) {
+                    fputcsv($out, $this->pc_indicadores_row_to_csv($row, $headers), ';');
+                }
+            }
+            fclose($out);
+            exit(0);
+        }
+
+        $result = @mysqli_query($dbh, $prepared_sql, MYSQLI_USE_RESULT);
+        if (!$result) {
+            error_log('[rest_export_indicadores_stream_csv] mysqli_query falhou: ' . mysqli_error($dbh));
+            fclose($out);
+            exit(1);
+        }
+
+        $written = 0;
+        while (($row = mysqli_fetch_assoc($result)) !== null) {
+            fputcsv($out, $this->pc_indicadores_row_to_csv($row, $headers), ';');
+            $written++;
+            if (($written % 5000) === 0) {
+                // Flush periódico para não acumular no SAPI buffer.
+                if (function_exists('fflush')) {
+                    @fflush($out);
+                }
+            }
+        }
+        mysqli_free_result($result);
+        fclose($out);
+        exit(0);
+    }
+
+    /**
+     * Garante que a linha seguirá a ordem das colunas do cabeçalho CSV.
+     *
+     * @param array<string, mixed> $row
+     * @param array<int, string>   $headers
+     * @return array<int, string>
+     */
+    private function pc_indicadores_row_to_csv(array $row, array $headers)
+    {
+        $out = [];
+        foreach ($headers as $h) {
+            $v = array_key_exists($h, $row) ? $row[$h] : '';
+            if ($v === null) {
+                $v = '';
+            }
+            $out[] = (string) $v;
+        }
+        return $out;
     }
 
     /**
