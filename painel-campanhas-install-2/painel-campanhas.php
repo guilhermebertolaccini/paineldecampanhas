@@ -13378,94 +13378,70 @@ class Painel_Campanhas
             $offset = max(0, (int) $request->get_param('offset'));
 
             // ----------------------------------------------------------------------
-            // 3) Monta a query com DEDUPLICAÇÃO em duas camadas:
-            //    - Subquery `UltimoRegistro`: 1 linha por (telefone, fornecedor) = MAX(id).
-            //    - Subquery `E`:             1 linha por (data, cpf, codigoCarteira, login)
-            //                                 para o LEFT JOIN não multiplicar o resultado.
-            //    Identificadores vêm do $wpdb->prefix (imune a injeção de tabela) e
-            //    qualquer valor dinâmico (data) é passado via $wpdb->prepare().
+            // 3) Query com DEDUPLICAÇÃO + filtro de data reutilizado em duas subqueries.
+            //    Em modo `exact`, $date_filter_sql contém "AND data = %s" duas vezes
+            //    (indicadores + envios) → $wpdb->prepare(…, $data_exact, $data_exact).
             // ----------------------------------------------------------------------
-            $tbl_indicadores = $wpdb->prefix . 'eventos_indicadores';
-            $tbl_envios = $wpdb->prefix . 'eventos_envios';
-
-            // Filtro de data DENTRO da subquery (sem alias `I.`, porque ela roda
-            // direto na tabela crua). `prepare()` recebe os args na ordem: [data_exact?, limit?, offset?].
-            $where_data_subquery = '';
-            $prepare_args = [];
+            $p = $wpdb->prefix;
+            $date_filter_sql = '';
             if ($data_mode === 'today') {
-                $where_data_subquery = ' AND data = CURDATE() ';
+                $date_filter_sql = 'AND data = CURDATE()';
             } elseif ($data_mode === 'exact') {
-                $where_data_subquery = ' AND data = %s ';
-                $prepare_args[] = $data_exact;
+                $date_filter_sql = 'AND data = %s';
             }
-            // 'all' → subquery sem filtro de data
+            // 'all' → $date_filter_sql vazio (sem filtro de data nas subqueries).
 
-            $select_sql = "
-                SELECT
-                    I.data,
-                    I.fornecedor,
-                    I.carteira,
-                    I.codigoCarteira AS idigs_ambiente,
-                    COALESCE(NULLIF(TRIM(I.contrato), ''), 'Não enviado pelo fornecedor') AS idcob_contrato,
-                    CASE
-                        WHEN I.cpf IS NULL OR TRIM(I.cpf) = '' OR I.cpf LIKE '%00000%' THEN 'Não preenchido'
-                        ELSE I.cpf
-                    END AS cpf_cnpj,
-                    COALESCE(NULLIF(TRIM(I.telefone), ''), 'Não enviado pelo fornecedor') AS telefone,
-                    I.status,
-                    CASE
-                        WHEN I.evento LIKE '%Sem In%' THEN 'Abertura de conversa'
-                        ELSE I.evento
-                    END AS evento,
-                    I.login,
-                    1 AS envio,
-                    CASE WHEN I.status LIKE '%entr%' OR I.entregue = 1 THEN 0 ELSE 1 END AS falha,
-                    CASE WHEN I.status LIKE '%entr%' OR I.entregue = 1 THEN 1 ELSE 0 END AS entregue,
-                    CASE WHEN I.lido = 1 THEN 1 ELSE 0 END AS lido,
-                    CASE WHEN I.cpc = 1 THEN 1 ELSE 0 END AS cpc,
-                    CASE WHEN I.cpcProdutivo = 1 THEN 1 ELSE 0 END AS CPCA,
-                    CASE WHEN I.boleto = 1 THEN 1 ELSE 0 END AS boleto,
-                    I.tipoAtendimento,
-                    COALESCE(NULLIF(TRIM(I.protocolo), ''), 'Não enviado pelo fornecedor') AS protocolo,
-                    I.tma,
-                    CASE
-                        WHEN I.tipoAtendimento NOT LIKE '%RECEP%' AND E.tipo LIKE '%MASS%' THEN 'Massivo'
-                        ELSE '1X1'
-                    END AS tipo_envio
-                FROM {$tbl_indicadores} I
-                INNER JOIN (
-                    -- DEDUP MASTER: último registro (MAX id) por (telefone, fornecedor)
-                    SELECT MAX(id) AS max_id
-                    FROM {$tbl_indicadores}
-                    WHERE codigoCarteira NOT IN (0, 1)
-                        {$where_data_subquery}
-                    GROUP BY telefone, fornecedor
-                ) AS UltimoRegistro ON I.id = UltimoRegistro.max_id
-                LEFT JOIN (
-                    -- DEDUP ENVIO: 1 linha por chave; MAX(tipo) estabiliza o resultado
-                    -- se houver 'MASSIVO' e '1X1' no mesmo dia/CPF/carteira/login.
-                    SELECT data, cpf, codigoCarteira, login, MAX(tipo) AS tipo
-                    FROM {$tbl_envios}
-                    GROUP BY data, cpf, codigoCarteira, login
-                ) E
-                    ON  I.data = E.data
-                    AND I.cpf = E.cpf
-                    AND I.codigoCarteira = E.codigoCarteira
-                    AND I.login = E.login
+            $sql = "
+            SELECT
+                I.data, I.fornecedor, I.carteira, I.codigoCarteira AS idigs_ambiente,
+                COALESCE(NULLIF(TRIM(I.contrato), ''), 'Não enviado pelo fornecedor') AS idcob_contrato,
+                CASE WHEN I.cpf IS NULL OR TRIM(I.cpf) = '' OR I.cpf LIKE '%00000%' THEN 'Não preenchido' ELSE I.cpf END AS cpf_cnpj,
+                COALESCE(NULLIF(TRIM(I.telefone), ''), 'Não enviado pelo fornecedor') AS telefone,
+                I.status,
+                CASE WHEN I.evento LIKE '%Sem In%' THEN 'Abertura de conversa' ELSE I.evento END AS evento,
+                I.login, 1 AS envio,
+                CASE WHEN I.status LIKE '%entr%' OR I.entregue = 1 THEN 0 ELSE 1 END AS falha,
+                CASE WHEN I.status LIKE '%entr%' OR I.entregue = 1 THEN 1 ELSE 0 END AS entregue,
+                CASE WHEN I.lido = 1 THEN 1 ELSE 0 END AS lido,
+                CASE WHEN I.cpc = 1 THEN 1 ELSE 0 END AS cpc,
+                CASE WHEN I.cpcProdutivo = 1 THEN 1 ELSE 0 END AS CPCA,
+                CASE WHEN I.boleto = 1 THEN 1 ELSE 0 END AS boleto,
+                I.tipoAtendimento,
+                COALESCE(NULLIF(TRIM(I.protocolo), ''), 'Não enviado pelo fornecedor') AS protocolo,
+                I.tma,
+                CASE WHEN I.tipoAtendimento NOT LIKE '%RECEP%' AND E.tipo LIKE '%MASS%' THEN 'Massivo' ELSE '1X1' END AS tipo_envio
+            FROM {$p}eventos_indicadores I
+            INNER JOIN (
+                SELECT MAX(id) AS max_id
+                FROM {$p}eventos_indicadores
+                WHERE codigoCarteira NOT IN (0, 1)
+                {$date_filter_sql}
+                GROUP BY telefone, fornecedor
+            ) AS UltimoRegistro ON I.id = UltimoRegistro.max_id
+            LEFT JOIN (
+                SELECT data, cpf, codigoCarteira, login, MAX(tipo) AS tipo
+                FROM {$p}eventos_envios
+                WHERE 1=1
+                {$date_filter_sql}
+                GROUP BY data, cpf, codigoCarteira, login
+            ) E ON I.data = E.data AND I.cpf = E.cpf AND I.codigoCarteira = E.codigoCarteira AND I.login = E.login
+            ORDER BY I.data DESC, I.codigoCarteira ASC
             ";
 
-            $order_by = ' ORDER BY I.data DESC, I.codigoCarteira ASC ';
             if ($format === 'json' && $limit > 0) {
-                $sql = $select_sql . $order_by . ' LIMIT %d OFFSET %d ';
-                $prepare_args[] = $limit;
-                $prepare_args[] = $offset;
-            } else {
-                $sql = $select_sql . $order_by;
+                $sql .= ' LIMIT %d OFFSET %d';
             }
 
-            if (!empty($prepare_args)) {
-                $sql = $wpdb->prepare($sql, $prepare_args);
+            if ($data_mode === 'exact') {
+                if ($format === 'json' && $limit > 0) {
+                    $sql = $wpdb->prepare($sql, $data_exact, $data_exact, $limit, $offset);
+                } else {
+                    $sql = $wpdb->prepare($sql, $data_exact, $data_exact);
+                }
+            } elseif ($format === 'json' && $limit > 0) {
+                $sql = $wpdb->prepare($sql, $limit, $offset);
             }
+            // today | all sem limit JSON: nenhum placeholder — SQL pronta.
 
             // ----------------------------------------------------------------------
             // 4) Execução + serialização
@@ -13570,6 +13546,14 @@ class Painel_Campanhas
             // Fallback: usa get_results se a handle mysqli não estiver acessível.
             error_log('[rest_export_indicadores_stream_csv] $wpdb->dbh não é mysqli; caindo para get_results()');
             $rows = $wpdb->get_results($prepared_sql, ARRAY_A);
+            if ($rows === null) {
+                error_log(
+                    'Erro MySQL no streaming CSV (fallback get_results): ' .
+                    (!empty($wpdb->last_error) ? $wpdb->last_error : 'resultado nulo')
+                );
+                fclose($out);
+                exit(1);
+            }
             if (is_array($rows)) {
                 foreach ($rows as $row) {
                     fputcsv($out, $this->pc_indicadores_row_to_csv($row, $headers), ';');
@@ -13579,9 +13563,11 @@ class Painel_Campanhas
             exit(0);
         }
 
-        $result = @mysqli_query($dbh, $prepared_sql, MYSQLI_USE_RESULT);
+        $result = mysqli_query($dbh, $prepared_sql, MYSQLI_USE_RESULT);
         if (!$result) {
-            error_log('[rest_export_indicadores_stream_csv] mysqli_query falhou: ' . mysqli_error($dbh));
+            $err = is_object($dbh) && method_exists($dbh, 'error') ? mysqli_error($dbh) : '';
+            error_log('Erro MySQL no streaming CSV: ' . $err);
+            error_log('[rest_export_indicadores_stream_csv] mysqli_query falhou: ' . $err);
             fclose($out);
             exit(1);
         }
