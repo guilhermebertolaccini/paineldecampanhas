@@ -13379,17 +13379,51 @@ class Painel_Campanhas
 
             // ----------------------------------------------------------------------
             // 3) Query com DEDUPLICAÇÃO + filtro de data reutilizado em duas subqueries.
-            //    Em modo `exact`, $date_filter_sql contém "AND data = %s" duas vezes
-            //    (indicadores + envios) → $wpdb->prepare(…, $data_exact, $data_exact).
+            //    Em modo `exact`, há DOIS placeholders `%s` (um em cada subquery),
+            //    portanto o $wpdb->prepare(...) recebe $data_exact duas vezes.
+            //    A subquery de indicadores usa alias I2 (para não colidir com o alias
+            //    externo `I`); a subquery de envios não tem alias, então usa `data`
+            //    direto.
             // ----------------------------------------------------------------------
             $p = $wpdb->prefix;
-            $date_filter_sql = '';
+            $date_filter_indicadores = '';   // dentro da subquery `UltimoRegistro` (alias I2)
+            $date_filter_envios = '';        // dentro da subquery de `eventos_envios` (sem alias)
             if ($data_mode === 'today') {
-                $date_filter_sql = 'AND data = CURDATE()';
+                $date_filter_indicadores = 'AND I2.data = CURDATE()';
+                $date_filter_envios = 'AND data = CURDATE()';
             } elseif ($data_mode === 'exact') {
-                $date_filter_sql = 'AND data = %s';
+                $date_filter_indicadores = 'AND I2.data = %s';
+                $date_filter_envios = 'AND data = %s';
             }
-            // 'all' → $date_filter_sql vazio (sem filtro de data nas subqueries).
+            // 'all' → ambos vazios (sem filtro de data nas subqueries).
+
+            // Chave de deduplicação à prova de fornecedores que repetem `telefone`.
+            //
+            // Histórico do bug: o NOAH (e qualquer integração que mande sem
+            // número real — vazio, 'N/A', '0', '00000…' ou um sentinela
+            // qualquer) fazia a subquery `GROUP BY telefone, fornecedor`
+            // colapsar TODA a base do fornecedor em 1 par único. Resultado:
+            // - ?data=all   → 1 única linha (a do MAX(id) global do fornecedor)
+            // - ?data=YYYY-MM-DD → 1 linha por dia, no melhor caso
+            //
+            // Solução: trocar `telefone` na chave de GROUP BY por uma expressão
+            // que cai para CONCAT('__row__', id) sempre que `telefone` não for
+            // utilizável (NULL/vazio/sentinelas conhecidas/string toda 0). Isso
+            // restaura cardinalidade 1:1 com `id` para esses casos, sem afetar
+            // a dedup correta de fornecedores com telefone real.
+            // OBS sobre `%`: a query é processada por $wpdb->prepare() em modo `exact`,
+            // portanto evitamos `%` literais nessa expressão (preferimos SUBSTRING a LIKE).
+            // O REGEXP '^0+$' usa `\$` apenas para escapar a interpolação do PHP — o
+            // SQL final recebe '^0+$' como esperado.
+            $dedup_telefone_expr = "CASE
+                WHEN I2.telefone IS NULL
+                  OR TRIM(I2.telefone) = ''
+                  OR UPPER(TRIM(I2.telefone)) IN ('N/A','NA','NULL','NONE','UNDEFINED','-')
+                  OR SUBSTRING(TRIM(I2.telefone), 1, 4) = '0000'
+                  OR TRIM(I2.telefone) REGEXP '^0+\$'
+                THEN CONCAT('__row__', I2.id)
+                ELSE TRIM(I2.telefone)
+            END";
 
             $sql = "
             SELECT
@@ -13412,17 +13446,17 @@ class Painel_Campanhas
                 CASE WHEN I.tipoAtendimento NOT LIKE '%RECEP%' AND E.tipo LIKE '%MASS%' THEN 'Massivo' ELSE '1X1' END AS tipo_envio
             FROM {$p}eventos_indicadores I
             INNER JOIN (
-                SELECT MAX(id) AS max_id
-                FROM {$p}eventos_indicadores
-                WHERE codigoCarteira NOT IN (0, 1)
-                {$date_filter_sql}
-                GROUP BY telefone, fornecedor
+                SELECT MAX(I2.id) AS max_id
+                FROM {$p}eventos_indicadores I2
+                WHERE I2.codigoCarteira NOT IN (0, 1)
+                {$date_filter_indicadores}
+                GROUP BY {$dedup_telefone_expr}, I2.fornecedor
             ) AS UltimoRegistro ON I.id = UltimoRegistro.max_id
             LEFT JOIN (
                 SELECT data, cpf, codigoCarteira, login, MAX(tipo) AS tipo
                 FROM {$p}eventos_envios
                 WHERE 1=1
-                {$date_filter_sql}
+                {$date_filter_envios}
                 GROUP BY data, cpf, codigoCarteira, login
             ) E ON I.data = E.data AND I.cpf = E.cpf AND I.codigoCarteira = E.codigoCarteira AND I.login = E.login
             ORDER BY I.data DESC, I.codigoCarteira ASC
