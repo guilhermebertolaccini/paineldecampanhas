@@ -118,12 +118,13 @@ export class WhatsappOtimaProvider extends BaseProvider {
       }
 
       const itemVariables = (item as { variables?: Record<string, unknown> }).variables ?? {};
+      const itemAsRecord = item as unknown as Record<string, unknown>;
       const lookupField = (fieldName: string): string => {
         const fromLine = lineVariablesFromMessage?.[fieldName];
         if (fromLine != null && fromLine !== '') return String(fromLine);
         const fromItemVars = itemVariables[fieldName];
         if (fromItemVars != null && fromItemVars !== '') return String(fromItemVars);
-        const fromRoot = (item as Record<string, unknown>)[fieldName];
+        const fromRoot = itemAsRecord[fieldName];
         if (fromRoot != null && fromRoot !== '') return String(fromRoot);
         return '';
       };
