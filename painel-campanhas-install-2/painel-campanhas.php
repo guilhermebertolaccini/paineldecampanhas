@@ -4288,14 +4288,23 @@ class Painel_Campanhas
                     // Para templates da Ótima, GOSAC ou NOAH, armazena JSON no campo mensagem
                     $mensagem_para_armazenar = $mensagem_final;
                     if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code)) {
+                        // Resolve as variáveis ALI, no momento do INSERT, e grava em
+                        // `variables` (objeto: { nome_var => valor_resolvido }). O Nest
+                        // só consome o mapa pronto. Antes só `variables_map` (estrutura
+                        // abstrata) era persistida → o NestJS fazia `item[mapping.value]`
+                        // mas a REST não expõe `extra_1`/etc. na raiz → chegava vazio.
+                        $otima_vars_row = is_array($variables_map) && count($variables_map) > 0
+                            ? $this->resolve_noah_variables_row_for_csv($record, $variables_map)
+                            : [];
                         $mensagem_para_armazenar = json_encode([
                             'template_code' => $template_code,
                             'template_source' => $template_source,
                             'broker_code' => $broker_code,
                             'customer_code' => (string) $id_carteira,
                             'original_message' => $mensagem_final,
-                            'variables_map' => $variables_map
-                        ]);
+                            'variables_map' => $variables_map,
+                            'variables' => $otima_vars_row,
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                     } elseif ($template_source === 'gosac_oficial' && !empty($template_code)) {
                         $gosac_template_id = intval($_POST['gosac_template_id'] ?? 0);
                         $gosac_connection_id = intval($_POST['gosac_connection_id'] ?? 0);
@@ -5349,15 +5358,23 @@ class Painel_Campanhas
                 // Para templates da Ótima, armazena template_code no campo mensagem
                 $mensagem_para_armazenar = $mensagem_final;
                 if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code)) {
-                    // JSON Ótima: igual Campanha por Arquivo - broker_code, customer_code=id_carteira, variables_map
+                    // JSON Ótima: broker_code, customer_code=id_carteira, variables_map
+                    // + `variables` (resolvido por linha aqui, em vez de delegar ao Nest;
+                    // garante que os valores realmente vão para a API mesmo que o REST do
+                    // WP não exponha colunas extras na raiz do item).
+                    $vm_arr_otima = is_array($variables_map) ? $variables_map : [];
+                    $otima_vars_row = count($vm_arr_otima) > 0
+                        ? $this->resolve_noah_variables_row_for_csv($record, $vm_arr_otima)
+                        : [];
                     $mensagem_para_armazenar = json_encode([
                         'template_code' => $template_code,
                         'template_source' => $template_source,
                         'broker_code' => $broker_code,
                         'customer_code' => (string) $id_carteira,
                         'original_message' => $mensagem_final,
-                        'variables_map' => !empty($variables_map) ? $variables_map : null
-                    ]);
+                        'variables_map' => !empty($variables_map) ? $variables_map : null,
+                        'variables' => $otima_vars_row,
+                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
                     $channel_id = intval($template_info['channel_id'] ?? 0);
                     $noah_tid = intval($template_info['template_id'] ?? 0);
@@ -11346,8 +11363,74 @@ class Painel_Campanhas
         $template_id = intval($_POST['template_id'] ?? 0);
         $provider = sanitize_text_field($_POST['provider'] ?? '');
 
+        // === Campos de orquestração para providers oficiais (Ótima/GOSAC/NOAH/Robbu/Making) ===
+        // Antes esses campos eram ignorados → a `mensagem` salva era texto puro,
+        // o que impedia `handle_aprovar_campanha` de extrair broker_code/customer_code/
+        // template_code → microserviço chamava Ótima sem broker_code → 404 "Broker
+        // code not found". Agora replicamos a montagem do JSON da `mensagem` que já
+        // existe nos fluxos de NovaCampanha/CSV (linhas 4288–4400 e 5349–5474).
+        $template_source = sanitize_text_field($_POST['template_source'] ?? 'local');
+        $template_code = sanitize_text_field($_POST['template_code'] ?? '');
+        $broker_code = sanitize_text_field($_POST['broker_code'] ?? '');
+        $customer_code_post = sanitize_text_field($_POST['customer_code'] ?? '');
+        $wallet_id_post = sanitize_text_field($_POST['wallet_id'] ?? '');
+
+        $variables_map_raw = $_POST['variables_map'] ?? '';
+        if (is_string($variables_map_raw) && $variables_map_raw !== '') {
+            $variables_map = json_decode(stripslashes($variables_map_raw), true);
+            if (!is_array($variables_map)) { $variables_map = []; }
+        } elseif (is_array($variables_map_raw)) {
+            $variables_map = $variables_map_raw;
+        } else {
+            $variables_map = [];
+        }
+
+        // GOSAC
+        $gosac_template_id = intval($_POST['gosac_template_id'] ?? 0);
+        $gosac_connection_id = intval($_POST['gosac_connection_id'] ?? 0);
+        $gosac_variable_components_raw = $_POST['gosac_variable_components'] ?? '';
+        if (is_string($gosac_variable_components_raw) && $gosac_variable_components_raw !== '') {
+            $gosac_variable_components = json_decode(stripslashes($gosac_variable_components_raw), true);
+            if (!is_array($gosac_variable_components)) { $gosac_variable_components = []; }
+        } elseif (is_array($gosac_variable_components_raw)) {
+            $gosac_variable_components = $gosac_variable_components_raw;
+        } else {
+            $gosac_variable_components = [];
+        }
+
+        // NOAH
+        $noah_channel_id = intval($_POST['noah_channel_id'] ?? 0);
+        $noah_template_id = sanitize_text_field((string) ($_POST['noah_template_id'] ?? ''));
+        $noah_language = sanitize_text_field($_POST['noah_language'] ?? 'pt_BR');
+        $noah_template_name = sanitize_text_field($_POST['noah_template_name'] ?? '');
+        $noah_template_data_raw = $_POST['noah_template_data'] ?? '';
+        if (is_string($noah_template_data_raw) && $noah_template_data_raw !== '') {
+            $noah_template_data = json_decode(stripslashes($noah_template_data_raw), true);
+            if (!is_array($noah_template_data)) { $noah_template_data = []; }
+        } elseif (is_array($noah_template_data_raw)) {
+            $noah_template_data = $noah_template_data_raw;
+        } else {
+            $noah_template_data = [];
+        }
+
+        // Robbu
+        $robbu_channel = intval($_POST['robbu_channel'] ?? 3);
+
+        // Making
+        $making_team_id = intval($_POST['making_team_id'] ?? 0);
+        $making_cost_center_id = intval($_POST['making_cost_center_id'] ?? 0);
+
         if (!$file_data || !$template_id || empty($provider)) {
             wp_send_json_error('Dados incompletos');
+        }
+
+        // Validação obrigatória para Ótima — faltar broker_code aqui é exatamente
+        // o que faz a API responder 404 "Broker code not found" lá no NestJS.
+        if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && empty($broker_code)) {
+            wp_send_json_error(
+                'Remetente Ótima (broker_code) não informado. Selecione o broker antes de criar a campanha.'
+            );
+            return;
         }
 
         $records = $file_data['records'] ?? [];
@@ -11379,7 +11462,9 @@ class Painel_Campanhas
         $envios_table = $wpdb->prefix . 'envios_pendentes';
         $current_user_id = get_current_user_id();
         $agendamento_base_id = current_time('YmdHis');
-        $prefix = $this->resolve_envios_agendamento_id_prefix($provider, 'local');
+        // Usa o template_source real para gerar o prefixo correto do agendamento_id
+        // (ex.: OTIMA_WPP → "OW", NOAH oficial → "N", etc.). Antes vinha 'local' hardcoded.
+        $prefix = $this->resolve_envios_agendamento_id_prefix($provider, $template_source);
         $agendamento_id = $prefix . $agendamento_base_id;
 
         $total_inserted = 0;
@@ -11388,13 +11473,135 @@ class Painel_Campanhas
         foreach ($records as $record) {
             $mensagem_final = $this->replace_placeholders($message_content, $record);
 
+            // id_carteira por linha (CSV) > wallet_id da campanha. Usado também
+            // como fallback para customer_code da Ótima.
+            $id_carteira_linha = (string) ($record['id_carteira'] ?? '');
+            if ($id_carteira_linha === '' && $wallet_id_post !== '') {
+                $id_carteira_linha = $wallet_id_post;
+            }
+            $customer_code = $customer_code_post !== '' ? $customer_code_post : $id_carteira_linha;
+
+            $mensagem_para_armazenar = $mensagem_final;
+            if (($template_source === 'otima_wpp' || $template_source === 'otima_rcs') && !empty($template_code)) {
+                // Resolve `variables` por linha aqui (mesma lógica do CSV/NovaCampanha).
+                // A REST do WP não expõe colunas extras (extra_1, valor, etc.) na raiz do
+                // item → o NestJS não consegue resolver via `item[mapping.value]`. Por isso
+                // gravamos o objeto já materializado em `variables` no JSON da mensagem.
+                $otima_vars_row = count($variables_map) > 0
+                    ? $this->resolve_noah_variables_row_for_csv($record, $variables_map)
+                    : [];
+                $mensagem_para_armazenar = json_encode([
+                    'template_code' => $template_code,
+                    'template_source' => $template_source,
+                    'broker_code' => $broker_code,
+                    'customer_code' => (string) $customer_code,
+                    'original_message' => $mensagem_final,
+                    'variables_map' => !empty($variables_map) ? $variables_map : null,
+                    'variables' => $otima_vars_row,
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            } elseif ($template_source === 'gosac_oficial' && !empty($template_code)) {
+                $contact_vars = $this->resolve_gosac_contact_variables_for_row($record, $variables_map, $gosac_variable_components);
+                $gosac_body_parameters = [];
+                foreach ($contact_vars as $cv) {
+                    $gosac_body_parameters[] = ['type' => 'text', 'text' => (string) ($cv['value'] ?? '')];
+                }
+                $gosac_components = [];
+                if (!empty($gosac_body_parameters)) {
+                    $gosac_components[] = ['type' => 'body', 'parameters' => $gosac_body_parameters];
+                }
+                $mensagem_para_armazenar = json_encode([
+                    'template_source' => 'gosac_oficial',
+                    'template_code' => $template_code,
+                    'id' => $gosac_template_id,
+                    'connectionId' => $gosac_connection_id,
+                    'variables_map' => $variables_map,
+                    'variableComponents' => $gosac_variable_components,
+                    'contact_variables' => $contact_vars,
+                    'components' => $gosac_components,
+                    'original_message' => $mensagem_final,
+                ]);
+            } elseif ($template_source === 'noah_oficial' && !empty($template_code)) {
+                $noah_flat_row = [
+                    'nome' => (string) ($record['nome'] ?? ''),
+                    'telefone' => (string) ($record['telefone'] ?? ''),
+                    'cpf_cnpj' => (string) ($record['cpf_cnpj'] ?? ''),
+                    'id_carteira' => (string) $id_carteira_linha,
+                    'idcob_contrato' => (string) ($record['idcob_contrato'] ?? $record['contrato'] ?? ''),
+                    'idgis_ambiente' => (string) (int) ($record['idgis_ambiente'] ?? 0),
+                ];
+                $noah_vars_row = count($variables_map) > 0
+                    ? $this->resolve_noah_variables_row_for_csv($record, $variables_map)
+                    : [];
+                $row_vars_merged = array_merge($noah_flat_row, $noah_vars_row);
+                $mensagem_para_armazenar = json_encode([
+                    'template_code' => $template_code,
+                    'template_source' => 'noah_oficial',
+                    'channel_id' => $noah_channel_id,
+                    'noah_template_id' => $noah_template_id,
+                    'language' => $noah_language,
+                    'templateName' => $noah_template_name !== '' ? $noah_template_name : $template_code,
+                    'variables_map' => $variables_map,
+                    'variables' => $row_vars_merged,
+                    'components' => $noah_template_data['components'] ?? null,
+                    'templateData' => [
+                        'components' => $noah_template_data['components'] ?? null,
+                        'buttons' => $noah_template_data['buttons'] ?? null,
+                        'textHeader' => $noah_template_data['textHeader'] ?? null,
+                        'textBody' => $noah_template_data['textBody'] ?? null,
+                        'textFooter' => $noah_template_data['textFooter'] ?? null,
+                    ],
+                    'buttons' => $noah_template_data['buttons'] ?? null,
+                    'textHeader' => $noah_template_data['textHeader'] ?? null,
+                    'textBody' => $noah_template_data['textBody'] ?? null,
+                    'textFooter' => $noah_template_data['textFooter'] ?? null,
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            } elseif ($template_source === 'robbu_oficial' && !empty($template_code)) {
+                $robbu_params = [];
+                if (!empty($variables_map) && is_array($variables_map)) {
+                    foreach ($variables_map as $param_name => $field) {
+                        $val = $record[$field] ?? $record[strtoupper($field)] ?? '';
+                        $robbu_params[] = [
+                            'parameterName' => $param_name,
+                            'parameterValue' => (string) $val,
+                        ];
+                    }
+                }
+                $mensagem_para_armazenar = json_encode([
+                    'template_source' => 'robbu_oficial',
+                    'templateName' => $template_code,
+                    'template_code' => $template_code,
+                    'channel' => $robbu_channel,
+                    'templateParameters' => $robbu_params,
+                    'original_message' => $mensagem_final,
+                ]);
+            } elseif ($template_source === 'making_oficial' && !empty($template_code)) {
+                $making_vars = $this->resolve_noah_variables_row_for_csv($record, $variables_map);
+                $mensagem_para_armazenar = json_encode([
+                    'template_source' => 'making_oficial',
+                    'send_meta_template' => $template_code,
+                    'template_code' => $template_code,
+                    'making_team_id' => $making_team_id,
+                    'making_cost_center_id' => $making_cost_center_id,
+                    'variables_map' => $variables_map,
+                    'variables' => $making_vars,
+                    'original_message' => $mensagem_final,
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            }
+
+            // Tracking data (extras do CSV embarcados na mensagem para auditoria/relatórios).
+            $tracking_data = $this->build_envios_tracking_data_from_record($record);
+            $mensagem_para_armazenar = $this->embed_tracking_data_in_envios_mensagem(
+                (string) $mensagem_para_armazenar,
+                $tracking_data
+            );
+
             $all_insert_data[] = [
                 'telefone' => $record['telefone'],
                 'nome' => $record['nome'],
-                'id_carteira' => $record['id_carteira'] ?? '',
-                'idcob_contrato' => intval($record['contrato'] ?? 0),
+                'id_carteira' => $id_carteira_linha,
+                'idcob_contrato' => intval($record['contrato'] ?? $record['idcob_contrato'] ?? 0),
                 'cpf_cnpj' => $record['cpf_cnpj'] ?? '',
-                'mensagem' => $mensagem_final,
+                'mensagem' => $mensagem_para_armazenar,
                 'fornecedor' => $provider,
                 'agendamento_id' => $agendamento_id,
                 'status' => 'pendente_aprovacao',

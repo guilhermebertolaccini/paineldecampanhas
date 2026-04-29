@@ -59,7 +59,10 @@ export class WhatsappOtimaProvider extends BaseProvider {
     // LOGICA DE EXTRAÇÃO DE TEMPLATE CORRIGIDA
     let final_template_code = template_code;
 
-    // Tenta extrair template_code, broker_code, customer_code e variables_map dos dados
+    // Extrai metadados GLOBAIS da campanha do JSON da `mensagem` (template_code,
+    // broker_code, customer_code, variables_map). Esses 4 são iguais para todas as
+    // linhas, então basta olhar a primeira. As `variables` resolvidas (por linha)
+    // são lidas DENTRO do `data.map(...)` mais abaixo, item por item.
     let variables_map: Record<string, { type: 'field' | 'text'; value: string }> | null = null;
     if (data.length > 0 && data[0].mensagem && typeof data[0].mensagem === 'string') {
       try {
@@ -97,21 +100,57 @@ export class WhatsappOtimaProvider extends BaseProvider {
     const messages: HsmMessage[] = data.map((item) => {
       const whatsapp = this.normalizePhoneForOtimaHsm(item.telefone);
 
+      // 1) Lê as `variables` JÁ resolvidas pelo PHP por linha — fonte primária e
+      //    confiável (PHP tem acesso direto a TODAS as colunas do CSV/base, não só
+      //    aos 6 campos que a REST do WP devolve).
+      // 2) `item.variables` (REST do WP) — fallback para fluxos antigos.
+      // 3) `item[mapping.value]` (raiz) — último recurso para fluxos legados.
+      let lineVariablesFromMessage: Record<string, string> | null = null;
+      if (typeof item.mensagem === 'string' && item.mensagem.trim().startsWith('{')) {
+        try {
+          const parsedLine = JSON.parse(item.mensagem);
+          if (parsedLine?.variables && typeof parsedLine.variables === 'object') {
+            lineVariablesFromMessage = parsedLine.variables as Record<string, string>;
+          }
+        } catch {
+          // Silencioso: a `mensagem` pode não ser JSON em fluxos legados.
+        }
+      }
+
+      const itemVariables = (item as { variables?: Record<string, unknown> }).variables ?? {};
+      const lookupField = (fieldName: string): string => {
+        const fromLine = lineVariablesFromMessage?.[fieldName];
+        if (fromLine != null && fromLine !== '') return String(fromLine);
+        const fromItemVars = itemVariables[fieldName];
+        if (fromItemVars != null && fromItemVars !== '') return String(fromItemVars);
+        const fromRoot = (item as Record<string, unknown>)[fieldName];
+        if (fromRoot != null && fromRoot !== '') return String(fromRoot);
+        return '';
+      };
+
       // Variáveis no formato da documentação Ótima: chaves alinhadas ao template (ex.: {{1}} → parâmetro nomeado como "nome")
       const resolvedVariables: Record<string, string> = {};
       if (variables_map) {
         for (const [varName, mapping] of Object.entries(variables_map)) {
           if (mapping.type === 'field') {
-            resolvedVariables[varName] = String((item as any)[mapping.value] ?? '');
+            // Cascata: linha-resolvida (PHP) → item.variables → raiz do item
+            resolvedVariables[varName] = lookupField(String(mapping.value ?? ''));
           } else {
             resolvedVariables[varName] = String(mapping.value ?? '');
           }
+        }
+      } else if (lineVariablesFromMessage) {
+        // Sem variables_map mas com variables resolvidas pelo PHP — usa direto.
+        for (const [k, v] of Object.entries(lineVariablesFromMessage)) {
+          resolvedVariables[k] = String(v ?? '');
         }
       } else {
         resolvedVariables['nome'] = item.nome ?? '';
       }
 
-      this.logger.debug(`📋 [WhatsApp Ótima] Variables for ${whatsapp}: ${JSON.stringify(resolvedVariables)}`);
+      this.logger.debug(
+        `📋 [WhatsApp Ótima] Variables for ${whatsapp}: ${JSON.stringify(resolvedVariables)}`,
+      );
 
       const rawCpfForBot =
         item.variables?.cpf ??
