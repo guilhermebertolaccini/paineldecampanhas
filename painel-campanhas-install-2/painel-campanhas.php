@@ -630,7 +630,7 @@ class Painel_Campanhas
                 'table' => [
                     'required' => true,
                     'type' => 'string',
-                    'description' => 'Nome lógico sem prefixo: envios_pendentes, eventos_envios, eventos_indicadores, eventos_tempos.',
+                    'description' => 'Nome lógico: envios_pendentes, eventos_envios, eventos_indicadores, eventos_tempos, salesforce_returns (MySQL físico sem prefixo wp).',
                 ],
             ],
         ]);
@@ -1033,6 +1033,8 @@ class Painel_Campanhas
             'eventos_envios',
             'eventos_indicadores',
             'eventos_tempos',
+            /** Tabela física MySQL sem prefixo (ingestão Salesforce / MC). Ver {@see PC_Wp_Mssql_Bridge::mysql_table_name()} */
+            'salesforce_returns',
         ];
 
         $table_param = (string) $request->get_param('table');
@@ -1046,7 +1048,17 @@ class Painel_Campanhas
             );
         }
 
-        $full_table = $wpdb->prefix . $table_key;
+        $full_table = null;
+        if (class_exists('PC_Wp_Mssql_Bridge')) {
+            $full_table = PC_Wp_Mssql_Bridge::mysql_table_name($table_key);
+        }
+        // Fallback quando o arquivo da bridge não estiver instalado (`mysql_table_name` só mapeia
+        // chaves declaradas lá). Mantém comportamento esperado só para whitelist acima.
+        if ($full_table === null || $full_table === '') {
+            $full_table = ($table_key === 'salesforce_returns')
+                ? 'salesforce_returns'
+                : ($wpdb->prefix . $table_key);
+        }
 
         $table_exists = (int) $wpdb->get_var($wpdb->prepare(
             'SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s',
