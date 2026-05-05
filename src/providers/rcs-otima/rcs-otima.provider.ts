@@ -108,18 +108,52 @@ export class RcsOtimaProvider extends BaseProvider {
 
       const messages: RCSTemplateMessage[] = groupData.map((item) => {
         const phone = this.normalizePhoneNumber(item.telefone);
+
+        // `variables` já resolvidas por linha no PHP (Campanha por Arquivo / bases)
+        // — fonte primária. A REST do WP não replica colunas extras (extra_1, cpf, …)
+        // na raiz do objeto; sem isso o lookup antigo `(item as any)[campo]`
+        // devolvia undefined e a Ótima recebia strings vazias → template mostrava o
+        // placeholder literal (-var1-).
+        let lineVariablesFromMessage: Record<string, string> | null = null;
+        if (typeof item.mensagem === 'string' && item.mensagem.trim().startsWith('{')) {
+          try {
+            const parsedLine = JSON.parse(item.mensagem);
+            if (parsedLine?.variables && typeof parsedLine.variables === 'object') {
+              lineVariablesFromMessage = parsedLine.variables as Record<string, string>;
+            }
+          } catch {
+            //
+          }
+        }
+
+        const itemVariables = (item as { variables?: Record<string, unknown> }).variables ?? {};
+        const itemAsRecord = item as unknown as Record<string, unknown>;
+        const lookupField = (fieldName: string): string => {
+          const fromLine = lineVariablesFromMessage?.[fieldName];
+          if (fromLine != null && fromLine !== '') return String(fromLine);
+          const fromItemVars = itemVariables[fieldName];
+          if (fromItemVars != null && fromItemVars !== '') return String(fromItemVars);
+          const fromRoot = itemAsRecord[fieldName];
+          if (fromRoot != null && fromRoot !== '') return String(fromRoot);
+          return '';
+        };
+
         const resolvedVariables: Record<string, string> = {};
         if (variables_map) {
           for (const [varName, mapping] of Object.entries(variables_map)) {
-            const hyphenatedVarName = `-${varName}-`;
+            const key = this.rcsTemplateVarKey(varName);
             if (mapping.type === 'field') {
-              resolvedVariables[hyphenatedVarName] = (item as any)[mapping.value] ?? '';
+              resolvedVariables[key] = lookupField(String(mapping.value ?? ''));
             } else {
-              resolvedVariables[hyphenatedVarName] = mapping.value ?? '';
+              resolvedVariables[key] = String(mapping.value ?? '');
             }
           }
+        } else if (lineVariablesFromMessage) {
+          for (const [k, v] of Object.entries(lineVariablesFromMessage)) {
+            resolvedVariables[this.rcsTemplateVarKey(k)] = String(v ?? '');
+          }
         } else {
-          resolvedVariables['-var1-'] = item.nome ?? '';
+          resolvedVariables[this.rcsTemplateVarKey('var1')] = String(item.nome ?? '');
         }
 
         const idCarteira = item.id_carteira ?? item.idgis_ambiente ?? '';
@@ -155,6 +189,13 @@ export class RcsOtimaProvider extends BaseProvider {
       this.logger.log(`🔖 [RCS Ótima] template_code: ${template_code}`);
       this.logger.log(`📦 [RCS Ótima] Enviando ${messages.length} mensagens (customer_code=${customer_code})`);
       this.logger.log(`🏢 [RCS Ótima] Broker: ${broker_code}, Customer: ${customer_code}`);
+      // Debug obrigatório p/ validar substituição de placeholders (Campanha por Arquivo):
+      // inspecionar 1ª linha do lote antes do HTTP (valores reais vs literais -varN-).
+      if (messages[0]) {
+        this.logger.warn(
+          `[RCS Ótima] DEBUG amostra (1º contato deste customer_code): ${JSON.stringify(messages[0])}`,
+        );
+      }
       this.logger.debug(`📋 [RCS Ótima] Payload: ${JSON.stringify(payload, null, 2)}`);
 
       lastResult = await this.executeWithRetry(
@@ -215,5 +256,17 @@ export class RcsOtimaProvider extends BaseProvider {
       maxRetries: 3,
       delays: [1000, 2000, 5000], // 1s, 2s, 5s
     };
+  }
+
+  /**
+   * A API RCS Ótima espera chaves do objeto `variables` no formato `-nome-` (ex.: `-var1-`).
+   * O painel pode mapear `var1` ou já enviar `-var1-`; normalizamos de forma idempotente.
+   */
+  private rcsTemplateVarKey(varName: string): string {
+    const t = String(varName).trim();
+    if (t.length >= 3 && t.startsWith('-') && t.endsWith('-')) {
+      return t;
+    }
+    return `-${t}-`;
   }
 }

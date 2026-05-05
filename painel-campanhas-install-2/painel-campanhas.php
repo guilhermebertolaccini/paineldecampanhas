@@ -11481,6 +11481,7 @@ class Painel_Campanhas
 
         $total_inserted = 0;
         $all_insert_data = [];
+        $pc_otima_from_file_debug_once = false;
 
         foreach ($records as $record) {
             $mensagem_final = $this->replace_placeholders($message_content, $record);
@@ -11511,6 +11512,17 @@ class Painel_Campanhas
                     'variables_map' => !empty($variables_map) ? $variables_map : null,
                     'variables' => $otima_vars_row,
                 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                if (
+                    !$pc_otima_from_file_debug_once
+                    && defined('WP_DEBUG')
+                    && constant('WP_DEBUG')
+                ) {
+                    $pc_otima_from_file_debug_once = true;
+                    error_log(
+                        '[pc_create_campaign_from_file] Amostra JSON mensagem (1ª linha Ótima ' . $template_source . '): '
+                        . substr($mensagem_para_armazenar, 0, 2000)
+                    );
+                }
             } elseif ($template_source === 'gosac_oficial' && !empty($template_code)) {
                 $contact_vars = $this->resolve_gosac_contact_variables_for_row($record, $variables_map, $gosac_variable_components);
                 $gosac_body_parameters = [];
