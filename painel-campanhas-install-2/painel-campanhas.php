@@ -3147,15 +3147,17 @@ class Painel_Campanhas
             return str_getcsv((string) $line, $delimiter);
         };
 
-        $header_upper = strtoupper($first_line);
-        $has_header = (strpos($header_upper, 'NOME') !== false
-            || strpos($header_upper, 'TELEFONE') !== false
-            || strpos($header_upper, 'CPF') !== false
-            || strpos($header_upper, 'CELULAR') !== false
-            || strpos($header_upper, 'IDCOB') !== false
-            || strpos($header_upper, 'EXTRA_') !== false);
+        /**
+         * Antes a 1ª linha só era cabeçalho se contivesse NOME/CPF/TELEFONE/etc. —
+         * arquivos com colunas livres ("CPF_PADRAO", "VALOR_DIVIDA") caíam em col_0…
+         * e o painel só sugeria os campos fixos do BD. Por padrão a 1ª linha é sempre
+         * tratada como cabeçalho (todas as colunas no mapeamento). Envio opcional:
+         * first_row_is_header=0|false|no quando o CSV não tiver linha de títulos.
+         */
+        $frh_raw = strtolower(trim((string) ($_POST['first_row_is_header'] ?? '1')));
+        $first_row_is_header = !in_array($frh_raw, ['0', 'false', 'no', 'off'], true);
 
-        if ($has_header) {
+        if ($first_row_is_header) {
             $headers = array_map(function ($h) {
                 $h = trim((string) $h, " \t\n\r\0\x0B\"'");
                 return $h !== '' ? $h : 'col';

@@ -5,7 +5,6 @@ import { Upload, FileText, CheckCircle, AlertCircle, Loader2, X, Check, Chevrons
 import {
   TemplateVariableMapper,
   VarMapping,
-  DB_FIELDS,
   extractVariables,
   resolveVariables,
   collectPlaceholdersSourceText,
@@ -18,6 +17,7 @@ import {
   extractNoahNumericPlaceholderKeys,
   isNoahOfficialTemplateSource,
   buildNoahOfficialTemplatePreviewMessage,
+  buildDynamicMapperFieldOptions,
 } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -57,6 +57,7 @@ import {
   getNoahOficialChannels,
   getRobbuOficialTemplates,
   getIscas,
+  getFilters,
 } from "@/lib/api";
 
 const providers = [
@@ -565,11 +566,32 @@ export default function CampanhaArquivo() {
     return out;
   }, [selectedTemplateForMapper, templateVariables]);
 
-  const fieldOptionsForMapper = useMemo(() => {
-    if (csvHeaders.length > 0) return csvHeaders.map((h) => ({ value: h, label: h }));
-    return DB_FIELDS;
-  }, [csvHeaders]);
-  const fieldSourceLabel = csvHeaders.length > 0 ? 'CSV' : 'BD';
+  const { data: mapperBaseFilters = [] } = useQuery({
+    queryKey: ["mapper-columns-campanha-arquivo", tableName],
+    queryFn: () => getFilters(tableName),
+    enabled: Boolean(!semConsulta && tableName),
+  });
+
+  const baseColumnNamesForMapper = useMemo(() => {
+    if (!Array.isArray(mapperBaseFilters)) return [];
+    return mapperBaseFilters
+      .map((f: { column?: string }) => String(f.column || "").trim())
+      .filter(Boolean);
+  }, [mapperBaseFilters]);
+
+  const fieldOptionsForMapper = useMemo(
+    () => buildDynamicMapperFieldOptions(csvHeaders, baseColumnNamesForMapper),
+    [csvHeaders, baseColumnNamesForMapper],
+  );
+
+  const fieldSourceLabel = useMemo(() => {
+    const hasCsv = csvHeaders.length > 0;
+    const hasBase = !semConsulta && baseColumnNamesForMapper.length > 0;
+    if (hasCsv && hasBase) return "Arquivo/Base";
+    if (hasCsv) return "CSV";
+    if (hasBase) return "Base";
+    return "BD";
+  }, [csvHeaders, semConsulta, baseColumnNamesForMapper]);
 
   const mapperVariableKeys = useMemo(() => {
     if (provider === "TECH_IA") {
@@ -693,14 +715,15 @@ export default function CampanhaArquivo() {
 
   const uploadMutation = useMutation({
     mutationFn: ({ file, matchField }: { file: File; matchField: string }) =>
-      uploadCampaignFile(file, matchField),
+      uploadCampaignFile(file, matchField, { firstRowIsHeader: true }),
     onSuccess: (data: any) => {
       setTempId(data.temp_id);
       setRecordCount(data.count || 0);
       setMatchField(data.match_field || 'cpf');
-      if (Array.isArray(data.headers) && data.headers.length > 0) {
-        setCsvHeaders(data.headers.map((h: unknown) => String(h)));
-      }
+      const serverHdrs = Array.isArray(data.headers)
+        ? data.headers.map((h: unknown) => String(h).trim()).filter(Boolean)
+        : [];
+      setCsvHeaders((prev) => (serverHdrs.length > 0 ? serverHdrs : prev));
       toast({
         title: "Arquivo validado com sucesso!",
         description: `${data.count} registros encontrados no arquivo.`,
@@ -1576,7 +1599,10 @@ export default function CampanhaArquivo() {
                   onValueChange={(v: "cpf" | "telefone") => {
                     setMatchField(v);
                     if (file) {
-                      uploadMutation.mutate({ file, matchField: v });
+                      uploadMutation.mutate({
+                        file,
+                        matchField: v,
+                      });
                     }
                   }}
                 >

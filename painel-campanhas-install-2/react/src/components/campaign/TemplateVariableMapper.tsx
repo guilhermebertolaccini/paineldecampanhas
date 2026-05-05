@@ -17,6 +17,33 @@ export const DB_FIELDS = [
     { value: "data_cadastro", label: "Data de Cadastro" },
 ];
 
+/**
+ * Monta o dropdown De/Para: colunas do CSV e/ou nomes físicos da base (prioridade),
+ * depois campos canônicos da fila para compatibilidade. Sem colunas dinâmicas → {@link DB_FIELDS}.
+ */
+export function buildDynamicMapperFieldOptions(
+    csvHeaders: string[],
+    baseColumnNames: string[],
+): { value: string; label: string }[] {
+    const seen = new Set<string>();
+    const out: { value: string; label: string }[] = [];
+    const push = (value: string, label?: string) => {
+        const v = String(value || "").trim();
+        if (!v || seen.has(v)) return;
+        seen.add(v);
+        out.push({ value: v, label: label?.trim() ? label.trim() : v });
+    };
+    for (const h of csvHeaders) push(h);
+    for (const c of baseColumnNames) push(c);
+    if (out.length === 0) {
+        return DB_FIELDS.slice();
+    }
+    for (const db of DB_FIELDS) {
+        push(db.value, db.label);
+    }
+    return out;
+}
+
 export type VarMapping = {
     type: "field" | "text";
     value: string;

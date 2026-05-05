@@ -17,6 +17,7 @@ import {
   buildNoahOfficialTemplatePreviewMessage,
   buildInitialVariableMappingFromGosacOfficial,
   listGosacOfficialVariableKeysFromTemplate,
+  buildDynamicMapperFieldOptions,
 } from "@/components/campaign/TemplateVariableMapper";
 import { RcsMessagePreview } from "@/components/campaign/RcsMessagePreview";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -742,6 +743,16 @@ export default function NovaCampanha() {
     retry: 1, // Tenta apenas 1 vez em caso de erro
     retryDelay: 1000,
   });
+
+  const mapperFieldOptionsNova = useMemo(() => {
+    const baseCols = Array.isArray(availableFilters)
+      ? availableFilters.map((f: { column?: string }) => String(f.column || "").trim()).filter(Boolean)
+      : [];
+    return buildDynamicMapperFieldOptions([], baseCols);
+  }, [availableFilters]);
+
+  const mapperFieldSourceLabelNova =
+    Array.isArray(availableFilters) && availableFilters.length > 0 ? "Base" : "BD";
 
   const refreshColumnsCache = useCallback(async () => {
     if (!formData.base) return;
@@ -2022,6 +2033,8 @@ export default function NovaCampanha() {
                   }
                   mapping={templateVariables}
                   onChange={setTemplateVariables}
+                  fieldOptions={mapperFieldOptionsNova}
+                  fieldSourceLabel={mapperFieldSourceLabelNova}
                 />
               )}
 

@@ -713,10 +713,18 @@ export const executeRecurringNow = (id: string) => {
 };
 
 // Campanha por arquivo
-export const uploadCampaignFile = async (file: File, matchField: string) => {
+export const uploadCampaignFile = async (
+  file: File,
+  matchField: string,
+  opts?: { firstRowIsHeader?: boolean },
+) => {
   const formData = new FormData();
   formData.append('csv_file', file);
   formData.append('match_field', matchField);
+  formData.append(
+    'first_row_is_header',
+    opts?.firstRowIsHeader === false ? '0' : '1',
+  );
 
   const ajaxUrl = typeof (window as any).pcAjax !== 'undefined' && (window as any).pcAjax?.ajaxurl
     ? (window as any).pcAjax.ajaxurl

@@ -10,6 +10,7 @@ import {
   buildInitialVariableMappingFromNoahOfficial,
   listOtimaWppVariableKeysFromTemplate,
   listNoahOfficialVariableKeysFromTemplate,
+  buildDynamicMapperFieldOptions,
 } from "@/components/campaign/TemplateVariableMapper";
 import { FilterBuilder, FilterItem } from "@/components/campaign/FilterBuilder";
 import { Button } from "@/components/ui/button";
@@ -207,6 +208,16 @@ export function RecurringCampaignCreateForm() {
     queryFn: () => getFilters(base),
     enabled: !!base,
   });
+
+  const mapperFieldOptionsRec = useMemo(() => {
+    const baseCols = Array.isArray(availableFilters)
+      ? availableFilters.map((f: { column?: string }) => String(f.column || "").trim()).filter(Boolean)
+      : [];
+    return buildDynamicMapperFieldOptions([], baseCols);
+  }, [availableFilters]);
+
+  const mapperFieldSourceLabelRec =
+    Array.isArray(availableFilters) && availableFilters.length > 0 ? "Base" : "BD";
 
   useQuery({
     queryKey: ["template-content-rec", template, templateSource],
@@ -743,6 +754,17 @@ export function RecurringCampaignCreateForm() {
                 variables={otimaWppMapperVariableKeys}
                 mapping={templateVariables}
                 onChange={setTemplateVariables}
+                fieldOptions={mapperFieldOptionsRec}
+                fieldSourceLabel={mapperFieldSourceLabelRec}
+              />
+            )}
+            {templateSource === "otima_rcs" && Object.keys(templateVariables).length > 0 && (
+              <TemplateVariableMapper
+                variables={Object.keys(templateVariables)}
+                mapping={templateVariables}
+                onChange={setTemplateVariables}
+                fieldOptions={mapperFieldOptionsRec}
+                fieldSourceLabel={mapperFieldSourceLabelRec}
               />
             )}
             {(templateSource === "noah_oficial" || templateSource === "noah") && noahOfficialMapperVariableKeys.length > 0 && (
@@ -750,6 +772,8 @@ export function RecurringCampaignCreateForm() {
                 variables={noahOfficialMapperVariableKeys}
                 mapping={templateVariables}
                 onChange={setTemplateVariables}
+                fieldOptions={mapperFieldOptionsRec}
+                fieldSourceLabel={mapperFieldSourceLabelRec}
               />
             )}
             {templateSource === "local" && Object.keys(templateVariables).length > 0 && (
@@ -757,6 +781,8 @@ export function RecurringCampaignCreateForm() {
                 variables={Object.keys(templateVariables)}
                 mapping={templateVariables}
                 onChange={setTemplateVariables}
+                fieldOptions={mapperFieldOptionsRec}
+                fieldSourceLabel={mapperFieldSourceLabelRec}
               />
             )}
           </>
