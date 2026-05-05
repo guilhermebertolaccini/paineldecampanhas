@@ -73,7 +73,8 @@ export class RcsOtimaProvider extends BaseProvider {
           }
         }
       } catch (e) {
-        this.logger.warn(`⚠️ [RCS Ótima] Falha ao parsear mensagem JSON: ${e.message}`);
+        const msg = e instanceof Error ? e.message : String(e);
+        this.logger.warn(`⚠️ [RCS Ótima] Falha ao parsear mensagem JSON: ${msg}`);
       }
     }
 
@@ -106,7 +107,10 @@ export class RcsOtimaProvider extends BaseProvider {
         continue;
       }
 
-      const messages: RCSTemplateMessage[] = groupData.map((item) => {
+      let firstRowMappedVariablesPreview: Record<string, string> | undefined;
+      let firstRowSubstitutionPreview: string | undefined;
+
+      const messages: RCSTemplateMessage[] = groupData.map((item, rowIndex) => {
         const phone = this.normalizePhoneNumber(item.telefone);
 
         // `variables` já resolvidas por linha no PHP (Campanha por Arquivo / bases)
@@ -115,24 +119,44 @@ export class RcsOtimaProvider extends BaseProvider {
         // devolvia undefined e a Ótima recebia strings vazias → template mostrava o
         // placeholder literal (-var1-).
         let lineVariablesFromMessage: Record<string, string> | null = null;
+        let originalMessageTemplate = '';
+        const itemVariables = (item as { variables?: Record<string, unknown> }).variables ?? {};
+        const itemAsRecord = item as unknown as Record<string, unknown>;
+
+        const fromWpRow = this.normalizeRowExtraFields(
+          itemAsRecord.extra_fields ?? (item as { extra_fields?: unknown }).extra_fields,
+        );
+        const rowExtraFields: Record<string, unknown> = {};
+
         if (typeof item.mensagem === 'string' && item.mensagem.trim().startsWith('{')) {
           try {
             const parsedLine = JSON.parse(item.mensagem);
             if (parsedLine?.variables && typeof parsedLine.variables === 'object') {
               lineVariablesFromMessage = parsedLine.variables as Record<string, string>;
             }
+            if (typeof parsedLine?.original_message === 'string') {
+              originalMessageTemplate = parsedLine.original_message;
+            }
+            // JSON primeiro, depois a linha do WP — dados da REST têm precedência sobre metadados.
+            Object.assign(
+              rowExtraFields,
+              this.normalizeRowExtraFields(parsedLine?.extra_fields),
+              fromWpRow,
+            );
           } catch {
-            //
+            Object.assign(rowExtraFields, fromWpRow);
           }
+        } else {
+          Object.assign(rowExtraFields, fromWpRow);
         }
 
-        const itemVariables = (item as { variables?: Record<string, unknown> }).variables ?? {};
-        const itemAsRecord = item as unknown as Record<string, unknown>;
         const lookupField = (fieldName: string): string => {
           const fromLine = lineVariablesFromMessage?.[fieldName];
           if (fromLine != null && fromLine !== '') return String(fromLine);
           const fromItemVars = itemVariables[fieldName];
           if (fromItemVars != null && fromItemVars !== '') return String(fromItemVars);
+          const fromExtra = this.pickFromRecordCaseInsensitive(rowExtraFields, fieldName);
+          if (fromExtra !== '') return fromExtra;
           const fromRoot = itemAsRecord[fieldName];
           if (fromRoot != null && fromRoot !== '') return String(fromRoot);
           return '';
@@ -156,18 +180,34 @@ export class RcsOtimaProvider extends BaseProvider {
           resolvedVariables[this.rcsTemplateVarKey('var1')] = String(item.nome ?? '');
         }
 
+        // Completa placeholders nominais / varN a partir das chaves já presentes em
+        // `extra_fields` (planilha) quando o `variables_map` não cobriu ou veio vazio.
+        this.backfillVariablesFromExtraFields(resolvedVariables, rowExtraFields);
+
+        // Ótima: alguns templates aceitam chave sem hífens (`nome`) além de `-varN-`.
+        this.emitVariableAliases(resolvedVariables, variables_map);
+
         const idCarteira = item.id_carteira ?? item.idgis_ambiente ?? '';
-        const rawCpfForBot =
+        const cpfFromItemVars =
           item.variables?.cpf ??
           item.variables?.CPF ??
           item.variables?.document ??
-          item.cpf_cnpj;
+          '';
+        const cpfFromExtraFields =
+          this.pickFromRecordCaseInsensitive(rowExtraFields, 'CPF_PADRAO') ||
+          this.pickFromRecordCaseInsensitive(rowExtraFields, 'cpf') ||
+          this.pickFromRecordCaseInsensitive(rowExtraFields, 'CPF') ||
+          '';
+        const rawCpfForBot = cpfFromItemVars || cpfFromExtraFields || item.cpf_cnpj;
         const cpfBotExtras = formatCpfForBot(rawCpfForBot);
+
+        const serializedExtras = this.serializeExtraFieldsForOtimaPayload(rowExtraFields);
 
         const message: RCSTemplateMessage = {
           phone,
           document: item.cpf_cnpj?.replace(/\D/g, ''),
           extra_fields: {
+            ...serializedExtras,
             nome: item.nome,
             id_carteira: idCarteira,
             idcob_contrato: item.idcob_contrato,
@@ -175,6 +215,20 @@ export class RcsOtimaProvider extends BaseProvider {
           },
           variables: resolvedVariables,
         };
+
+        const substitutionPreview = originalMessageTemplate
+          ? this.previewTemplateSubstitutions(
+              originalMessageTemplate,
+              resolvedVariables,
+              rowExtraFields,
+            )
+          : '';
+
+        if (rowIndex === 0) {
+          firstRowMappedVariablesPreview = { ...resolvedVariables };
+          firstRowSubstitutionPreview = substitutionPreview || undefined;
+        }
+
         if (item.data_cadastro) message.date = item.data_cadastro;
         return message;
       });
@@ -196,6 +250,16 @@ export class RcsOtimaProvider extends BaseProvider {
           `[RCS Ótima] DEBUG amostra (1º contato deste customer_code): ${JSON.stringify(messages[0])}`,
         );
       }
+      const validationPayload: Record<string, unknown> = {
+        variables_map_keys: variables_map ? Object.keys(variables_map) : [],
+        mapped_variables_ready: firstRowMappedVariablesPreview ?? {},
+        substitution_preview_linha_1:
+          firstRowSubstitutionPreview ??
+          '(sem original_message para preview local — confira apenas `mapped_variables_ready` e payload.)',
+      };
+      this.logger.warn(
+        `[RCS Ótima] Variáveis mapeadas e prontas para envio: ${JSON.stringify(validationPayload)}`,
+      );
       this.logger.debug(`📋 [RCS Ótima] Payload: ${JSON.stringify(payload, null, 2)}`);
 
       lastResult = await this.executeWithRetry(
@@ -268,5 +332,162 @@ export class RcsOtimaProvider extends BaseProvider {
       return t;
     }
     return `-${t}-`;
+  }
+
+  private escapeRegExp(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  private normalizeRowExtraFields(raw: unknown): Record<string, unknown> {
+    if (raw == null) {
+      return {};
+    }
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        return this.normalizeRowExtraFields(parsed);
+      } catch {
+        return {};
+      }
+    }
+    if (typeof raw === 'object' && !Array.isArray(raw)) {
+      return { ...(raw as Record<string, unknown>) };
+    }
+    return {};
+  }
+
+  private pickFromRecordCaseInsensitive(
+    extra: Record<string, unknown>,
+    fieldName: string,
+  ): string {
+    if (!fieldName) {
+      return '';
+    }
+    const direct = extra[fieldName];
+    if (direct !== null && direct !== undefined && String(direct).trim() !== '') {
+      return String(direct);
+    }
+    const want = fieldName.toLowerCase();
+    for (const [k, val] of Object.entries(extra)) {
+      if (k.toLowerCase() === want && val !== null && val !== undefined && String(val).trim() !== '') {
+        return String(val);
+      }
+    }
+    return '';
+  }
+
+  private serializeExtraFieldsForOtimaPayload(
+    row: Record<string, unknown>,
+  ): Record<string, string | number> {
+    const out: Record<string, string | number> = {};
+    for (const [k, val] of Object.entries(row)) {
+      if (val === null || val === undefined) {
+        continue;
+      }
+      if (typeof val === 'number' && Number.isFinite(val)) {
+        out[k] = val;
+      } else {
+        out[k] = String(val);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Preenche chaves `-coluna-` a partir do que já veio na planilha (`extra_fields`)
+   * quando não houve valor vindo do `variables_map` / PHP.
+   */
+  private backfillVariablesFromExtraFields(
+    resolvedVariables: Record<string, string>,
+    extra: Record<string, unknown>,
+  ): void {
+    for (const [col, raw] of Object.entries(extra)) {
+      if (raw === null || raw === undefined || String(raw).trim() === '') {
+        continue;
+      }
+      const keyHyphen = this.rcsTemplateVarKey(col);
+      const val = String(raw);
+      const cur = resolvedVariables[keyHyphen]?.trim?.() ?? '';
+      if (!cur) {
+        resolvedVariables[keyHyphen] = val;
+      }
+    }
+  }
+
+  /**
+   * Replica cada `-token-` como `token` (doc interna Ótima às vezes usa chave sem hífene).
+   * Não sobrescreve chaves já preenchidas.
+   */
+  private emitVariableAliases(
+    resolvedVariables: Record<string, string>,
+    variablesMap: Record<string, { type: 'field' | 'text'; value: string }> | null,
+  ): void {
+    const toAdd: Record<string, string> = {};
+    for (const [k, val] of Object.entries(resolvedVariables)) {
+      if (!val) {
+        continue;
+      }
+      if (!(k.startsWith('-') && k.endsWith('-')) || k.length < 3) {
+        continue;
+      }
+      const bare = k.slice(1, -1);
+      if (bare && resolvedVariables[bare] === undefined) {
+        toAdd[bare] = val;
+      }
+    }
+
+    // Nomes declarados no mapper (keys do map) mesmo quando o template usa apenas varN.
+    if (variablesMap) {
+      for (const varName of Object.keys(variablesMap)) {
+        const hk = this.rcsTemplateVarKey(varName);
+        const val = resolvedVariables[hk];
+        if (!val || varName === hk || varName.startsWith('-')) {
+          continue;
+        }
+        const rawName = varName.startsWith('-') && varName.endsWith('-')
+          ? varName.slice(1, -1)
+          : varName;
+        if (rawName && resolvedVariables[rawName] === undefined) {
+          toAdd[rawName] = val;
+        }
+      }
+    }
+
+    Object.assign(resolvedVariables, toAdd);
+  }
+
+  /** Texto apenas para logs (a API Ótima continua usando `variables` conforme contrato bulk). */
+  private previewTemplateSubstitutions(
+    template: string,
+    resolvedVariables: Record<string, string>,
+    extraColumns: Record<string, unknown>,
+  ): string {
+    let preview = template;
+    for (const [k, val] of Object.entries(resolvedVariables)) {
+      if (!val) {
+        continue;
+      }
+      preview = preview.replace(new RegExp(this.escapeRegExp(k), 'g'), val);
+      if (k.startsWith('-') && k.endsWith('-')) {
+        const bare = k.slice(1, -1);
+        if (bare) {
+          preview = preview.replace(new RegExp(this.escapeRegExp(`-${bare}-`), 'gi'), val);
+        }
+      }
+    }
+    for (const [col, raw] of Object.entries(extraColumns)) {
+      if (raw === null || raw === undefined) {
+        continue;
+      }
+      const s = String(raw);
+      if (!s.trim()) {
+        continue;
+      }
+      preview = preview.replace(
+        new RegExp(this.escapeRegExp(`-${col}-`), 'gi'),
+        s,
+      );
+    }
+    return preview;
   }
 }

@@ -11,6 +11,11 @@ export interface CampaignData {
   broker_code?: string;
   /** Preenchido pelo WordPress em fluxos como TECHIA (JSON com `variables` por linha). */
   variables?: Record<string, string>;
+  /**
+   * Colunas extras da planilha/base (REST) — usado pela Ótima RCS/WPP para correlacionar
+   * `variables_map` (ex.: CPF_PADRAO) quando não vêm na raiz do objeto nem em `variables`.
+   */
+  extra_fields?: Record<string, unknown>;
   data_cadastro?: string;
   midia_campanha?: string;
   /** Nome amigável da campanha (painel) — repassado ao GOSAC Oficial em `name` quando preenchido. */
