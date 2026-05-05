@@ -123,8 +123,11 @@ export class RcsOtimaProvider extends BaseProvider {
         const itemVariables = (item as { variables?: Record<string, unknown> }).variables ?? {};
         const itemAsRecord = item as unknown as Record<string, unknown>;
 
+        // REST pode enviar `extra_fields` ou `extraFields` (colunas da planilha).
         const fromWpRow = this.normalizeRowExtraFields(
-          itemAsRecord.extra_fields ?? (item as { extra_fields?: unknown }).extra_fields,
+          itemAsRecord.extra_fields ??
+            itemAsRecord.extraFields ??
+            (item as { extra_fields?: unknown }).extra_fields,
         );
         const rowExtraFields: Record<string, unknown> = {};
 
@@ -150,15 +153,46 @@ export class RcsOtimaProvider extends BaseProvider {
           Object.assign(rowExtraFields, fromWpRow);
         }
 
-        const lookupField = (fieldName: string): string => {
-          const fromLine = lineVariablesFromMessage?.[fieldName];
-          if (fromLine != null && fromLine !== '') return String(fromLine);
-          const fromItemVars = itemVariables[fieldName];
-          if (fromItemVars != null && fromItemVars !== '') return String(fromItemVars);
-          const fromExtra = this.pickFromRecordCaseInsensitive(rowExtraFields, fieldName);
-          if (fromExtra !== '') return fromExtra;
-          const fromRoot = itemAsRecord[fieldName];
-          if (fromRoot != null && fromRoot !== '') return String(fromRoot);
+        /**
+         * De/Para coluna → valor: a planilha chega em `extra_fields` / `extraFields`, não na raiz.
+         * Ordem: PHP (linha) → extra_fields do contato → merged (JSON msg + WP) → item.variables → raiz (case-insensitive).
+         */
+        const lookupField = (chaveMapeada: string): string => {
+          const key = String(chaveMapeada ?? '').trim();
+          if (!key) {
+            return '';
+          }
+
+          const fromLine = lineVariablesFromMessage?.[key];
+          if (fromLine != null && fromLine !== '') {
+            return String(fromLine);
+          }
+
+          const extraSolo = this.normalizeRowExtraFields(
+            itemAsRecord.extra_fields ??
+              itemAsRecord.extraFields ??
+              (item as { extra_fields?: unknown }).extra_fields,
+          );
+          const fromExtraOnly = this.pickFromRecordCaseInsensitive(extraSolo, key);
+          if (fromExtraOnly !== '') {
+            return fromExtraOnly;
+          }
+
+          const fromMergedExtras = this.pickFromRecordCaseInsensitive(rowExtraFields, key);
+          if (fromMergedExtras !== '') {
+            return fromMergedExtras;
+          }
+
+          const fromItemVars = itemVariables[key];
+          if (fromItemVars != null && fromItemVars !== '') {
+            return String(fromItemVars);
+          }
+
+          const fromRoot = this.pickFromRecordCaseInsensitive(itemAsRecord, key);
+          if (fromRoot !== '') {
+            return fromRoot;
+          }
+
           return '';
         };
 
@@ -203,12 +237,19 @@ export class RcsOtimaProvider extends BaseProvider {
 
         const serializedExtras = this.serializeExtraFieldsForOtimaPayload(rowExtraFields);
 
+        const nomeParaPayload =
+          (item.nome != null && String(item.nome).trim() !== ''
+            ? String(item.nome).trim()
+            : '') ||
+          this.pickFromRecordCaseInsensitive(rowExtraFields, 'nome') ||
+          (typeof serializedExtras.nome === 'string' ? serializedExtras.nome : '');
+
         const message: RCSTemplateMessage = {
           phone,
           document: item.cpf_cnpj?.replace(/\D/g, ''),
           extra_fields: {
             ...serializedExtras,
-            nome: item.nome,
+            nome: nomeParaPayload,
             id_carteira: idCarteira,
             idcob_contrato: item.idcob_contrato,
             ...(cpfBotExtras ?? {}),

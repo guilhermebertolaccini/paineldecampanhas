@@ -15,7 +15,9 @@ export interface CampaignData {
    * Colunas extras da planilha/base (REST) — usado pela Ótima RCS/WPP para correlacionar
    * `variables_map` (ex.: CPF_PADRAO) quando não vêm na raiz do objeto nem em `variables`.
    */
-  extra_fields?: Record<string, unknown>;
+  extra_fields?: Record<string, string | number | unknown>;
+  /** Alias camelCase em alguns payloads REST. */
+  extraFields?: Record<string, string | number | unknown>;
   data_cadastro?: string;
   midia_campanha?: string;
   /** Nome amigável da campanha (painel) — repassado ao GOSAC Oficial em `name` quando preenchido. */
