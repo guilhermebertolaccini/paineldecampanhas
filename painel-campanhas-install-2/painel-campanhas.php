@@ -7645,7 +7645,9 @@ class Painel_Campanhas
                 ];
             }
 
-            // 3. 🎣 ADICIONA ISCAS ATIVAS (apenas com IDGIS compatível), se include_baits na campanha
+            // 3. 🎣 ISCAS da recorrência: coluna `include_baits` na campanha + `bait_ids` (JSON em `providers_config`)
+            // IMPORTANTE: Não filtrar iscas só por igualdade idgis × base — muitas iscas cadastram idgis NULL ou diferente da base;
+            // o comportamento esperado replica Nova Campanha / Campanha Arquivo: todas as ativas filtradas entram na fila.
             $baits_count = 0;
             $include_baits_rc = intval($campaign['include_baits'] ?? 0);
             $bait_ids_cfg = null;
@@ -7662,37 +7664,54 @@ class Painel_Campanhas
             $recurring_campaign_id_carteira_pre = !empty($campaign['carteira'])
                 ? $this->resolve_id_carteira_from_carteira_id($campaign['carteira'])
                 : '';
-            if (!empty($all_baits)) {
-                $idgis_found = [];
 
-                foreach ($records as $record) {
-                    if (!empty($record['idgis_ambiente'])) {
-                        $idgis_found[$record['idgis_ambiente']] = true;
-                    }
+            $fallback_idgis_raw = 0;
+            foreach ($records as $__r) {
+                $gid = intval($__r['idgis_ambiente'] ?? 0);
+                if ($gid > 0) {
+                    $fallback_idgis_raw = $gid;
+                    break;
                 }
+            }
 
+            if (!empty($all_baits)) {
                 foreach ($all_baits as $bait) {
-                    if (isset($idgis_found[$bait['idgis_ambiente']])) {
-                        $bait_id_carteira = $bait['id_carteira'] ?? '';
-                        if (!empty($bait_id_carteira)) {
-                            $resolved = $this->resolve_id_carteira_from_carteira_id($bait_id_carteira);
-                            if (!empty($resolved)) {
-                                $bait_id_carteira = $resolved;
-                            }
-                        }
-                        if (empty($bait_id_carteira) && !empty($recurring_campaign_id_carteira_pre)) {
-                            $bait_id_carteira = $recurring_campaign_id_carteira_pre;
-                        }
-                        $records[] = [
-                            'telefone' => $bait['telefone'],
-                            'nome' => $bait['nome'] . ' [ISCA]',
-                            'idgis_ambiente' => $bait['idgis_ambiente'],
-                            'id_carteira' => $bait_id_carteira,
-                            'idcob_contrato' => 0,
-                            'cpf_cnpj' => ''
-                        ];
-                        $baits_count++;
+                    $bait_idgis_raw = intval($bait['idgis_ambiente'] ?? 0);
+                    if ($bait_idgis_raw <= 0) {
+                        $bait_idgis_raw = $fallback_idgis_raw;
                     }
+
+                    $bait_id_carteira = $bait['id_carteira'] ?? '';
+                    if ($bait_id_carteira !== '' && $bait_id_carteira !== null) {
+                        $resolved_bc = $this->resolve_id_carteira_from_carteira_id($bait_id_carteira);
+                        if ($resolved_bc !== '' && $resolved_bc !== null) {
+                            $bait_id_carteira = $resolved_bc;
+                        }
+                    }
+                    if (($bait_id_carteira === '' || $bait_id_carteira === null) && !empty($recurring_campaign_id_carteira_pre)) {
+                        $bait_id_carteira = $recurring_campaign_id_carteira_pre;
+                    }
+
+                    if ($bait_idgis_raw <= 0) {
+                        error_log('[Recurring] Isca id=' . intval($bait['id'] ?? 0) . ' sem idgis e base sem ambiente para fallback — omitida.');
+                        continue;
+                    }
+
+                    $nome_isc = isset($bait['nome']) ? trim((string) $bait['nome']) : '';
+                    $nome_linha = $nome_isc !== '' ? ($nome_isc . ' [ISCA]') : 'Isca [ISCA]';
+
+                    $records[] = [
+                        'telefone' => $bait['telefone'],
+                        'nome' => $nome_linha,
+                        'idgis_ambiente' => $bait_idgis_raw,
+                        'id_carteira' => $bait_id_carteira,
+                        'idcob_contrato' => 0,
+                        'cpf_cnpj' => isset($bait['cpf']) ? (string) $bait['cpf'] : '',
+                    ];
+                    $baits_count++;
+                }
+                if ($baits_count > 0) {
+                    error_log('🔵 Recorrência: ' . $baits_count . ' isca(s) acrescentadas à fila dos contatos (include_baits=1).');
                 }
             }
 
