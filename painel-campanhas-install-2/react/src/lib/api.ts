@@ -16,10 +16,19 @@ export const getAjaxUrl = () => {
 export const wpAjax = async (
   action: string,
   data: Record<string, any> = {},
-  nonceType: 'nonce' | 'cmNonce' | 'validatorNonce' = 'nonce'
+  nonceType: 'nonce' | 'cmNonce' | 'validatorNonce' = 'nonce',
+  /** Timeout opcional (ex.: operações pesadas como “Gerar agora”). Quando ultrapassa, lança erro. */
+  timeoutMs?: number,
 ) => {
   const formData = new FormData();
   formData.append('action', action);
+
+  let controller: AbortController | undefined;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  if (timeoutMs != null && timeoutMs > 0) {
+    controller = new AbortController();
+    timeoutId = setTimeout(() => controller!.abort(), timeoutMs);
+  }
 
   // Adiciona nonce se disponível
   if (typeof (window as any).pcAjax !== 'undefined') {
@@ -78,6 +87,7 @@ export const wpAjax = async (
       method: 'POST',
       body: formData,
       credentials: 'same-origin',
+      signal: controller?.signal,
     });
 
     // Verifica se a resposta é JSON válido
@@ -147,7 +157,19 @@ export const wpAjax = async (
     return result.data;
   } catch (error) {
     console.error('Erro na requisição AJAX:', error);
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      const mins = timeoutMs && timeoutMs > 0 ? Math.max(1, Math.round(timeoutMs / 60000)) : 0;
+      throw new Error(
+        mins > 0
+          ? `Tempo limite (${mins} min) ao aguardar o servidor. A geração pode continuar em background — verifique as campanhas ou tente de novo com público menor.`
+          : 'Requisição cancelada por tempo limite.',
+      );
+    }
     throw error;
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
   }
 };
 
@@ -708,8 +730,16 @@ export const toggleRecurring = (id: string, active: boolean) => {
   return wpAjax('cm_toggle_recurring', { id: parseInt(id), ativo: active ? 1 : 0 }, 'cmNonce');
 };
 
+/** Geração de campanha a partir de filtro salvo — pode levar vários minutos (SQL + lotes). */
+const RECURRING_EXECUTE_TIMEOUT_MS = 25 * 60 * 1000;
+
 export const executeRecurringNow = (id: string) => {
-  return wpAjax('cm_execute_recurring_now', { id: parseInt(id) }, 'cmNonce');
+  return wpAjax(
+    'cm_execute_recurring_now',
+    { id: parseInt(id, 10) },
+    'cmNonce',
+    RECURRING_EXECUTE_TIMEOUT_MS,
+  );
 };
 
 // Campanha por arquivo

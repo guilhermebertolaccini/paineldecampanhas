@@ -304,6 +304,7 @@ function AudienceBadge({
 export default function CampanhasRecorrentes() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [executeTargetId, setExecuteTargetId] = useState<string | null>(null);
   const [refreshedEstimates, setRefreshedEstimates] = useState<
     Record<string, { count: number; date: string }>
   >({});
@@ -348,20 +349,28 @@ export default function CampanhasRecorrentes() {
 
   const executeMutation = useMutation({
     mutationFn: (id: string) => executeRecurringNow(id),
+    onMutate: (id) => {
+      setExecuteTargetId(String(id));
+    },
     onSuccess: () => {
       toast({
-        title: "Execução iniciada",
+        title: "Execução concluída",
         description:
-          "A geração da campanha foi agendada e será processada em breve.",
+          "A campanha foi gerada e enviada para aprovação (fila de envios).",
       });
       queryClient.invalidateQueries({ queryKey: ["recurring-campaigns"] });
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
+      const msg =
+        error instanceof Error ? error.message : "Erro ao gerar campanha";
       toast({
         title: "Erro ao executar",
-        description: error.message || "Erro ao gerar campanha",
+        description: msg,
         variant: "destructive",
       });
+    },
+    onSettled: () => {
+      setExecuteTargetId(null);
     },
   });
 
@@ -722,7 +731,7 @@ export default function CampanhasRecorrentes() {
                         }
                       >
                         {executeMutation.isPending &&
-                        executeMutation.variables === campaign.id ? (
+                        String(executeTargetId) === String(campaign.id) ? (
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                         ) : (
                           <Play className="mr-2 h-4 w-4" />

@@ -7277,94 +7277,109 @@ class Painel_Campanhas
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
         if (!current_user_can('read')) { wp_send_json_error('Permissão negada.'); return; }
+
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+        @ini_set('max_execution_time', '0');
+
         global $wpdb;
 
         $id = intval($_POST['id'] ?? 0);
         $current_user_id = get_current_user_id();
         $table = $wpdb->prefix . 'cm_recurring_campaigns';
 
-        // Busca a campanha recorrente
-        $campaign = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$table} WHERE id = %d AND criado_por = %d",
-            $id,
-            $current_user_id
-        ), ARRAY_A);
+        try {
+            // Busca a campanha recorrente
+            $campaign = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM {$table} WHERE id = %d AND criado_por = %d",
+                $id,
+                $current_user_id
+            ), ARRAY_A);
 
-        if (!$campaign) {
-            wp_send_json_error('Campanha não encontrada ou você não tem permissão para executá-la.');
-            return;
-        }
+            if (!$campaign) {
+                wp_send_json_error('Campanha não encontrada ou você não tem permissão para executá-la.');
+                return;
+            }
 
-        // Verifica se a base está atualizada
-        $table_name = $campaign['tabela_origem'];
-        $column_exists = $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS 
-             WHERE TABLE_SCHEMA = %s 
-             AND TABLE_NAME = %s 
-             AND COLUMN_NAME = 'ult_atualizacao'",
-            DB_NAME,
-            $table_name
-        ));
+            // Verifica se a base está atualizada
+            $table_name = $campaign['tabela_origem'];
+            $column_exists = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS 
+                 WHERE TABLE_SCHEMA = %s 
+                 AND TABLE_NAME = %s 
+                 AND COLUMN_NAME = 'ult_atualizacao'",
+                DB_NAME,
+                $table_name
+            ));
 
-        if ($column_exists) {
-            $table_name_escaped = esc_sql($table_name);
-            $ult_atualizacao = $wpdb->get_var(
-                "SELECT MAX(ult_atualizacao) FROM `{$table_name_escaped}`"
-            );
+            if ($column_exists) {
+                $table_name_escaped = esc_sql($table_name);
+                $ult_atualizacao = $wpdb->get_var(
+                    "SELECT MAX(ult_atualizacao) FROM `{$table_name_escaped}`"
+                );
 
-            if (!empty($ult_atualizacao)) {
-                $today = current_time('Y-m-d');
-                $ult_atualizacao_date = date('Y-m-d', strtotime($ult_atualizacao));
+                if (!empty($ult_atualizacao)) {
+                    $today = current_time('Y-m-d');
+                    $ult_atualizacao_date = date('Y-m-d', strtotime($ult_atualizacao));
 
-                if ($ult_atualizacao_date !== $today) {
-                    wp_send_json_error(
-                        "Base desatualizada. A base '{$table_name}' não foi atualizada hoje. " .
-                        "Última atualização: {$ult_atualizacao_date}. " .
-                        "Não é possível executar campanhas com bases desatualizadas."
-                    );
-                    return;
+                    if ($ult_atualizacao_date !== $today) {
+                        wp_send_json_error(
+                            "Base desatualizada. A base '{$table_name}' não foi atualizada hoje. " .
+                            "Última atualização: {$ult_atualizacao_date}. " .
+                            "Não é possível executar campanhas com bases desatualizadas."
+                        );
+                        return;
+                    }
                 }
             }
-        }
 
-        if ($campaign['ativo'] != 1) {
-            wp_send_json_error('Esta campanha está desativada. Ative-a antes de executar.');
-            return;
-        }
-
-        $exclude_recent_execution = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : null;
-
-        // Se foi passado uma opção de exclusão na execução, sobrescreve a config salva
-        if ($exclude_recent_execution !== null) {
-            $providers_config = json_decode($campaign['providers_config'], true);
-            if (!is_array($providers_config)) {
-                $providers_config = [];
+            if ($campaign['ativo'] != 1) {
+                wp_send_json_error('Esta campanha está desativada. Ative-a antes de executar.');
+                return;
             }
-            $providers_config['exclude_recent_phones'] = $exclude_recent_execution;
-            $campaign['providers_config'] = json_encode($providers_config);
-        }
 
-        // Usa versão otimizada própria para melhor performance
-        $result = $this->execute_recurring_campaign_optimized($campaign, $exclude_recent_execution);
+            $exclude_recent_execution = isset($_POST['exclude_recent_phones']) ? intval($_POST['exclude_recent_phones']) : null;
 
-        // Atualiza última execução
-        $wpdb->update(
-            $table,
-            ['ultima_execucao' => current_time('mysql')],
-            ['id' => $id],
-            ['%s'],
-            ['%d']
-        );
+            // Se foi passado uma opção de exclusão na execução, sobrescreve a config salva
+            if ($exclude_recent_execution !== null) {
+                $providers_config = json_decode($campaign['providers_config'], true);
+                if (!is_array($providers_config)) {
+                    $providers_config = [];
+                }
+                $providers_config['exclude_recent_phones'] = $exclude_recent_execution;
+                $campaign['providers_config'] = json_encode($providers_config);
+            }
 
-        if ($result['success']) {
-            wp_send_json_success([
-                'message' => $result['message'],
-                'records_inserted' => $result['records_inserted'] ?? 0,
-                'records_skipped' => $result['records_skipped'] ?? 0,
-                'exclusion_enabled' => $exclude_recent_execution ?? 1
-            ]);
-        } else {
-            wp_send_json_error($result['message']);
+            $result = $this->execute_recurring_campaign_optimized($campaign, $exclude_recent_execution);
+
+            if (!is_array($result)) {
+                error_log('[Gerar Agora] Resposta inválida de execute_recurring_campaign_optimized (não é array).');
+                wp_send_json_error('Falha interna ao gerar campanha (resposta inválida do servidor).');
+                return;
+            }
+
+            if (!empty($result['success'])) {
+                $wpdb->update(
+                    $table,
+                    ['ultima_execucao' => current_time('mysql')],
+                    ['id' => $id],
+                    ['%s'],
+                    ['%d']
+                );
+                wp_send_json_success([
+                    'message' => $result['message'],
+                    'records_inserted' => $result['records_inserted'] ?? 0,
+                    'records_skipped' => $result['records_skipped'] ?? 0,
+                    'exclusion_enabled' => $exclude_recent_execution ?? 1
+                ]);
+            } else {
+                wp_send_json_error($result['message'] ?? 'Não foi possível gerar a campanha.');
+            }
+        } catch (\Throwable $e) {
+            error_log('[Gerar Agora] Erro fatal: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+            error_log('[Gerar Agora] Trace: ' . $e->getTraceAsString());
+            wp_send_json_error('Erro ao gerar campanha: ' . $e->getMessage());
         }
     }
 
@@ -8048,7 +8063,7 @@ class Painel_Campanhas
                 'exclusion_enabled' => $exclude_recent_phones
             ];
 
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             error_log('Painel Campanhas - Erro ao executar template: ' . $e->getMessage());
             error_log('Stack trace: ' . $e->getTraceAsString());
             return [
