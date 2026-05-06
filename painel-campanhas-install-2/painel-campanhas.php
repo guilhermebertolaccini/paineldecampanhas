@@ -7374,7 +7374,13 @@ class Painel_Campanhas
                     'exclusion_enabled' => $exclude_recent_execution ?? 1
                 ]);
             } else {
-                wp_send_json_error($result['message'] ?? 'Não foi possível gerar a campanha.');
+                $fail_msg = $result['message'] ?? 'Não foi possível gerar a campanha.';
+                $http = !empty($result['http_status']) ? (int) $result['http_status'] : null;
+                if ($http !== null && $http > 0) {
+                    wp_send_json_error($fail_msg, $http);
+                } else {
+                    wp_send_json_error($fail_msg);
+                }
             }
         } catch (\Throwable $e) {
             error_log('[Gerar Agora] Erro fatal: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
@@ -8003,7 +8009,19 @@ class Painel_Campanhas
 
                 foreach ($batches as $batch_index => $batch) {
                     error_log("🔵 Inserindo lote " . ($batch_index + 1) . " de " . count($batches) . " (" . count($batch) . " registros)...");
-                    $this->bulk_insert_recurring($envios_table, $batch);
+                    $ok_insert = $this->bulk_insert_recurring($envios_table, $batch);
+                    if ($ok_insert !== true) {
+                        $err = $wpdb->last_error ?: 'erro SQL desconhecido';
+                        error_log('🔴 bulk_insert_recurring falhou no lote ' . ($batch_index + 1) . ': ' . $err);
+
+                        return [
+                            'success' => false,
+                            'http_status' => 500,
+                            'message' => 'Falha ao gravar contatos na fila de envios (' . esc_html((string) $err) . '). Confira estrutura da tabela wp_envios_pendentes e o log PHP.',
+                            'records_inserted' => $total_inserted,
+                            'records_skipped' => $total_skipped,
+                        ];
+                    }
                     $total_inserted += count($batch);
                 }
                 error_log('🔵 Inserção concluída! Total: ' . $total_inserted);
@@ -8136,7 +8154,7 @@ class Painel_Campanhas
         global $wpdb;
 
         if (empty($data_array)) {
-            return;
+            return true;
         }
 
         // Lazy migrations (Garantiro que colunas vitais novas existam caso usuário não reativou plugin)
@@ -8168,12 +8186,12 @@ class Painel_Campanhas
             }
 
             $values[] = $wpdb->prepare(
-                "(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %s, %s, %s, %d, %d, %s)",
+                '(%s, %s, %d, %s, %d, %s, %s, %s, %s, %s, %s, %s, %d, %d, %s)',
                 $data['telefone'],
                 $data['nome'],
-                $data['idgis_ambiente'],
+                (int) $data['idgis_ambiente'],
                 $id_carteira,
-                $idcob_contrato,
+                (int) $idcob_contrato,
                 $data['cpf_cnpj'],
                 $data['mensagem'],
                 $data['fornecedor'],
@@ -8181,8 +8199,8 @@ class Painel_Campanhas
                 $nome_campanha_ins,
                 $nome_carteira_ins,
                 $data['status'],
-                $data['current_user_id'],
-                $data['valido'],
+                (int) $data['current_user_id'],
+                (int) $data['valido'],
                 $data['data_cadastro']
             );
         }
@@ -8194,7 +8212,9 @@ class Painel_Campanhas
         $result = $wpdb->query($sql);
         if ($result === false) {
             error_log('🚨 [ERRO MySQL bulk_insert_recurring] ' . $wpdb->last_error);
+            return false;
         }
+        return true;
     }
 
     // ========== HANDLERS PARA APROVAR CAMPANHAS ==========
@@ -8217,7 +8237,7 @@ class Painel_Campanhas
         $filter_agendamento = sanitize_text_field($_POST['filter_agendamento'] ?? '');
         $filter_fornecedor = sanitize_text_field($_POST['filter_fornecedor'] ?? '');
 
-        $where = ["LOWER(TRIM(t1.status)) = 'pendente_aprovacao'"];
+        $where = ["LOWER(TRIM(COALESCE(t1.status, ''))) IN ('pendente_aprovacao', 'pendente')"];
 
         if (!empty($filter_agendamento)) {
             $where[] = $wpdb->prepare("t1.agendamento_id LIKE %s", '%' . $wpdb->esc_like($filter_agendamento) . '%');
