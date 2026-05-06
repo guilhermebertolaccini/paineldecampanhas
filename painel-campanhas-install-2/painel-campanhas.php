@@ -8729,38 +8729,51 @@ class Painel_Campanhas
         }
 
         $uid = get_current_user_id();
-        $update_row = [
-            'status' => 'negado',
-            'motivo_cancelamento' => $motivo !== '' ? $motivo : 'Negado pelo administrador (sem motivo informado).',
-            'cancelado_por' => $uid,
-        ];
+        $motivo_final = $motivo !== '' ? $motivo : 'Negado pelo administrador (sem motivo informado).';
 
-        $where = [
-            'agendamento_id' => $agendamento_id,
-            'status' => 'pendente_aprovacao',
-        ];
-        $where_format = ['%s', '%s'];
+        // Deve coincidir com handle_get_pending_campaigns (pendente + pendente_aprovacao) e tolerar diferença de caixa em fornecedor.
+        // Importante: $wpdb->update com 0 linhas afetadas retorna int 0, não false — antes disso gerava "sucesso" à toa.
         if ($fornecedor !== '') {
-            $where['fornecedor'] = $fornecedor;
-            $where_format[] = '%s';
+            $sql = $wpdb->prepare(
+                "UPDATE `{$table}` SET `status` = 'negado', `motivo_cancelamento` = %s, `cancelado_por` = %d
+                 WHERE `agendamento_id` = %s
+                 AND LOWER(TRIM(COALESCE(`status`, ''))) IN ('pendente_aprovacao', 'pendente')
+                 AND LOWER(TRIM(COALESCE(`fornecedor`, ''))) = LOWER(TRIM(%s))",
+                $motivo_final,
+                $uid,
+                $agendamento_id,
+                $fornecedor
+            );
+        } else {
+            $sql = $wpdb->prepare(
+                "UPDATE `{$table}` SET `status` = 'negado', `motivo_cancelamento` = %s, `cancelado_por` = %d
+                 WHERE `agendamento_id` = %s
+                 AND LOWER(TRIM(COALESCE(`status`, ''))) IN ('pendente_aprovacao', 'pendente')",
+                $motivo_final,
+                $uid,
+                $agendamento_id
+            );
         }
 
-        $updated = $wpdb->update(
-            $table,
-            $update_row,
-            $where,
-            ['%s', '%s', '%d'],
-            $where_format
-        );
+        $affected = $wpdb->query($sql);
 
-        if ($updated === false) {
-            wp_send_json_error('Erro ao atualizar status no banco de dados');
+        if ($affected === false) {
+            wp_send_json_error('Erro ao atualizar status no banco de dados: ' . $wpdb->last_error, 500);
+            return;
+        }
+
+        if ((int) $affected === 0) {
+            wp_send_json_error(
+                'Nenhum registro foi atualizado. Verifique se a campanha ainda está pendente de aprovação e se o fornecedor corresponde ao cartão.',
+                409
+            );
             return;
         }
 
         wp_send_json_success([
             'message' => 'Campanha negada com sucesso!',
-            'agendamento_id' => $agendamento_id
+            'agendamento_id' => $agendamento_id,
+            'rows_updated' => (int) $affected,
         ]);
     }
 

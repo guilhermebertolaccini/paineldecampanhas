@@ -51,13 +51,13 @@ export default function AprovarCampanhas() {
 
   const approveMutation = useMutation({
     mutationFn: (campaign: PendingCampaign) => approveCampaign(campaign.agendamento_id, campaign.provider),
-    onSuccess: () => {
+    onSuccess: async () => {
       toast({
         title: "Campanha aprovada!",
         description: "A campanha foi enviada para execução.",
       });
-      queryClient.invalidateQueries({ queryKey: ['pending-campaigns'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+      await queryClient.invalidateQueries({ queryKey: ["pending-campaigns"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
     },
     onError: (error: any) => {
       toast({
@@ -71,13 +71,13 @@ export default function AprovarCampanhas() {
   const denyMutation = useMutation({
     mutationFn: ({ campaign, motivo }: { campaign: PendingCampaign; motivo: string }) => 
       denyCampaign(campaign.agendamento_id, campaign.provider, motivo),
-    onSuccess: () => {
+    onSuccess: async () => {
       toast({
         title: "Campanha negada",
         description: "O usuário será notificado sobre a negação.",
       });
-      queryClient.invalidateQueries({ queryKey: ['pending-campaigns'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+      await queryClient.invalidateQueries({ queryKey: ["pending-campaigns"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
       setShowDenyDialog(false);
       setDenyReason("");
       setSelectedCampaign(null);
