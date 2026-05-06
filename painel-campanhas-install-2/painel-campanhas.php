@@ -8237,7 +8237,8 @@ class Painel_Campanhas
         $filter_agendamento = sanitize_text_field($_POST['filter_agendamento'] ?? '');
         $filter_fornecedor = sanitize_text_field($_POST['filter_fornecedor'] ?? '');
 
-        $where = ["LOWER(TRIM(COALESCE(t1.status, ''))) IN ('pendente_aprovacao', 'pendente')"];
+        // Somente campanhas aguardando decisão humana. 'pendente' = já aprovadas e na fila de disparo — não devem aparecer aqui.
+        $where = ["LOWER(TRIM(COALESCE(t1.status, ''))) = 'pendente_aprovacao'"];
 
         if (!empty($filter_agendamento)) {
             $where[] = $wpdb->prepare("t1.agendamento_id LIKE %s", '%' . $wpdb->esc_like($filter_agendamento) . '%');
@@ -8419,50 +8420,46 @@ class Painel_Campanhas
         $agendamento_id = sanitize_text_field($_POST['agendamento_id'] ?? '');
         $fornecedor = sanitize_text_field($_POST['fornecedor'] ?? '');
 
-        if (empty($agendamento_id)) {
+        if ($agendamento_id === '') {
             wp_send_json_error('Agendamento ID é obrigatório');
             return;
         }
 
-        // Busca configuração do microserviço
-        $microservice_config = get_option('acm_microservice_config', []);
-        $microservice_url = $microservice_config['url'] ?? '';
-        $microservice_api_key = $microservice_config['api_key'] ?? '';
-        $master_api_key = get_option('acm_master_api_key', '');
+        try {
+            // Busca configuração do microserviço
+            $microservice_config = get_option('acm_microservice_config', []);
+            $microservice_url = $microservice_config['url'] ?? '';
+            $microservice_api_key = $microservice_config['api_key'] ?? '';
+            $master_api_key = get_option('acm_master_api_key', '');
 
-        if (empty($microservice_url)) {
-            wp_send_json_error('URL do microserviço não configurada. Configure em API Manager.');
-            return;
-        }
+            if (empty($microservice_url)) {
+                wp_send_json_error('URL do microserviço não configurada. Configure em API Manager.');
+                return;
+            }
 
-        // Envia para o microserviço
-        $api_key = trim(!empty($microservice_api_key) ? $microservice_api_key : $master_api_key);
+            $api_key = trim(!empty($microservice_api_key) ? $microservice_api_key : $master_api_key);
 
-        if (empty($api_key)) {
-            wp_send_json_error('API Key não configurada. Configure em API Manager.');
-            return;
-        }
+            if (empty($api_key)) {
+                wp_send_json_error('API Key não configurada. Configure em API Manager.');
+                return;
+            }
 
-        // Endpoint correto: /campaigns/dispatch (sem /api, pois não há prefixo global)
-        $base_url = rtrim($microservice_url, '/');
+            $base_url = rtrim($microservice_url, '/');
+            if (substr($base_url, -4) === '/api') {
+                $base_url = substr($base_url, 0, -4);
+            }
 
-        // Remove /api se estiver na URL base (o NestJS não tem prefixo /api por padrão)
-        if (substr($base_url, -4) === '/api') {
-            $base_url = substr($base_url, 0, -4);
-        }
+            $dispatch_url = $base_url . '/campaigns/dispatch';
 
-        $dispatch_url = $base_url . '/campaigns/dispatch';
+            $payload = [
+                'agendamento_id' => $agendamento_id,
+            ];
 
-        $payload = [
-            'agendamento_id' => $agendamento_id
-        ];
+            $static_credentials = get_option('acm_static_credentials', []);
+            $fornecedor_upper = strtoupper($fornecedor);
 
-        // Inclui credenciais estáticas no payload conforme o fornecedor
-        $static_credentials = get_option('acm_static_credentials', []);
-        $fornecedor_upper = strtoupper($fornecedor);
-
-        if (!empty($static_credentials)) {
-            if ($fornecedor_upper === 'SALESFORCE') {
+            if (!empty($static_credentials)) {
+                if ($fornecedor_upper === 'SALESFORCE') {
                 $sf_creds = [
                     'client_id' => $static_credentials['sf_client_id'] ?? '',
                     'client_secret' => $static_credentials['sf_client_secret'] ?? '',
@@ -8523,7 +8520,7 @@ class Painel_Campanhas
                 ];
                 error_log('🔵 [Aprovar Campanha] Credenciais do Ótima RCS incluídas no payload');
             }
-        }
+            }
 
         // Busca uma mensagem de exemplo para verificar se é template da Ótima
         $sample_message_query = $wpdb->prepare("
@@ -8681,29 +8678,77 @@ class Painel_Campanhas
             return;
         }
 
-        // Se sucesso, atualiza status para 'pendente' (será processado pelo microserviço)
-        $updated = $wpdb->update(
-            $table,
-            ['status' => 'pendente'],
-            [
-                'agendamento_id' => $agendamento_id,
-                'status' => 'pendente_aprovacao'
-            ],
-            ['%s'],
-            ['%s', '%s']
-        );
+        // Sucesso HTTP no NestJS: marca fila WP como pendente de disparo (fora da tela de aprovação).
+        // Usa UPDATE explícito (evita falha por caixa/trim); escopo por fornecedor quando informado — mesmo cartão da UI.
+        if ($fornecedor !== '') {
+            $upd_sql = $wpdb->prepare(
+                "UPDATE `{$table}` SET `status` = 'pendente' WHERE `agendamento_id` = %s
+                 AND LOWER(TRIM(COALESCE(`status`, ''))) = 'pendente_aprovacao'
+                 AND LOWER(TRIM(COALESCE(`fornecedor`, ''))) = LOWER(TRIM(%s))",
+                $agendamento_id,
+                $fornecedor
+            );
+        } else {
+            $upd_sql = $wpdb->prepare(
+                "UPDATE `{$table}` SET `status` = 'pendente' WHERE `agendamento_id` = %s
+                 AND LOWER(TRIM(COALESCE(`status`, ''))) = 'pendente_aprovacao'",
+                $agendamento_id
+            );
+        }
 
-        if ($updated === false) {
-            error_log('🔴 Erro ao atualizar status no banco');
-            wp_send_json_error('Erro ao atualizar status no banco de dados');
+        $updated_rows = $wpdb->query($upd_sql);
+
+        if ($updated_rows === false) {
+            error_log('🔴 [Aprovar Campanha] Erro SQL após dispatch aceito: ' . $wpdb->last_error);
+            wp_send_json_error(
+                'O microserviço aceitou o disparo, mas falhou a atualização do status no WordPress: ' . $wpdb->last_error,
+                500,
+            );
+
             return;
         }
 
-        error_log('🔵 Campanha aprovada e enviada com sucesso!');
+        if ((int) $updated_rows === 0) {
+            $already_dispatch = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM `{$table}` WHERE `agendamento_id` = %s AND LOWER(TRIM(COALESCE(`status`, ''))) = 'pendente'",
+                $agendamento_id
+            ));
+
+            if ($already_dispatch > 0) {
+                error_log('[Aprovar Campanha] Idempotência: já em status pendente — ' . $agendamento_id);
+                wp_send_json_success([
+                    'message' => 'Campanha já estava liberada para processamento.',
+                    'agendamento_id' => $agendamento_id,
+                ]);
+
+                return;
+            }
+
+            error_log(
+                '🔴 [Aprovar Campanha] CRÍTICO: Nest aceitou mas 0 linhas atualizadas. agendamento=' . $agendamento_id .
+                ' fornecedor=' . $fornecedor,
+            );
+
+            wp_send_json_error(
+                'O microserviço aceitou o disparo, mas nenhum registro pendente_aprovacao foi atualizado no WordPress ' .
+                '(verifique fornecedor/ID). Não repita cliques até confirmar na fila de envios.',
+                500,
+            );
+
+            return;
+        }
+
+        error_log('🔵 [Aprovar Campanha] Campanha aprovada — linhas atualizadas: ' . (int) $updated_rows);
         wp_send_json_success([
             'message' => 'Campanha aprovada e enviada ao microserviço com sucesso!',
-            'agendamento_id' => $agendamento_id
+            'agendamento_id' => $agendamento_id,
+            'records_updated' => (int) $updated_rows,
         ]);
+        } catch (\Throwable $e) {
+            error_log('[Aprovar Campanha] Throwable: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+            error_log($e->getTraceAsString());
+            wp_send_json_error('Erro inesperado ao aprovar: ' . $e->getMessage(), 500);
+        }
     }
 
     public function handle_deny_campaign()
@@ -8731,7 +8776,7 @@ class Painel_Campanhas
         $uid = get_current_user_id();
         $motivo_final = $motivo !== '' ? $motivo : 'Negado pelo administrador (sem motivo informado).';
 
-        // Deve coincidir com handle_get_pending_campaigns (pendente + pendente_aprovacao) e tolerar diferença de caixa em fornecedor.
+        // Alinhado ao filtro de aprovação: pendentes são `pendente_aprovacao`; inclui também `pendente` para segurança legada.
         // Importante: $wpdb->update com 0 linhas afetadas retorna int 0, não false — antes disso gerava "sucesso" à toa.
         if ($fornecedor !== '') {
             $sql = $wpdb->prepare(

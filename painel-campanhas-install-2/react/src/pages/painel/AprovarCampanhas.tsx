@@ -59,10 +59,13 @@ export default function AprovarCampanhas() {
       await queryClient.invalidateQueries({ queryKey: ["pending-campaigns"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
+      console.error("[Aprovar Campanhas] Erro ao aprovar:", error);
+      const message =
+        error instanceof Error ? error.message : typeof error === "string" ? error : "Erro ao aprovar campanha";
       toast({
         title: "Erro ao aprovar",
-        description: error.message || "Erro ao aprovar campanha",
+        description: message,
         variant: "destructive",
       });
     },
@@ -82,10 +85,13 @@ export default function AprovarCampanhas() {
       setDenyReason("");
       setSelectedCampaign(null);
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
+      console.error("[Aprovar Campanhas] Erro ao negar:", error);
+      const message =
+        error instanceof Error ? error.message : typeof error === "string" ? error : "Erro ao negar campanha";
       toast({
         title: "Erro ao negar",
-        description: error.message || "Erro ao negar campanha",
+        description: message,
         variant: "destructive",
       });
     },
