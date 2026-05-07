@@ -9247,6 +9247,17 @@ class Painel_Campanhas
                 continue;
             }
 
+            $existing_bulk = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM `{$table}` WHERE agendamento_id = %s",
+                $agendamento_id
+            ));
+            if ($existing_bulk === 0) {
+                $total_errors++;
+                $results[] = ['agendamento_id' => $agendamento_id, 'ok' => false, 'reason' => 'agendamento_not_found'];
+                error_log('[Webhook][bulk] Sem linhas para agendamento_id=' . $agendamento_id);
+                continue;
+            }
+
             $wp_status = $status_map[$status] ?? 'erro';
             $data_disparo = sanitize_text_field($item['data_disparo'] ?? '');
             $resposta_api = sanitize_textarea_field($item['resposta_api'] ?? '');
@@ -9332,6 +9343,29 @@ class Painel_Campanhas
         global $wpdb;
         $table = $wpdb->prefix . 'envios_pendentes';
 
+        $existing_count = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM `{$table}` WHERE agendamento_id = %s",
+            $agendamento_id
+        ));
+        if ($existing_count === 0) {
+            error_log(sprintf(
+                '[Webhook] Nenhuma linha em envios_pendentes para agendamento_id="%s" (provider=%s, status webhook=%s). O Nest pode estar enviando ID diferente do gravado na fila (ex.: truncamento ou ambiente diferente).',
+                $agendamento_id,
+                $provider ?: '-',
+                $status
+            ));
+            return new WP_Error(
+                'agendamento_not_found',
+                'Nenhum registro encontrado neste servidor para este agendamento_id na fila de envios.',
+                [
+                    'status' => 404,
+                    'agendamento_id' => $agendamento_id,
+                    'received_status' => $status,
+                    'normalized_status' => $wp_status,
+                ]
+            );
+        }
+
         $update_data = ['status' => $wp_status];
         $update_formats = ['%s'];
 
@@ -9360,6 +9394,16 @@ class Painel_Campanhas
         if ($updated === false) {
             error_log('🔴 [Webhook] Erro ao atualizar status no banco de dados: ' . $wpdb->last_error);
             return new WP_Error('database_error', 'Erro ao atualizar status no banco de dados: ' . $wpdb->last_error, ['status' => 500]);
+        }
+
+        // 0 = nenhuma linha mudou (já estava no status destino ou mesmos valores nas colunas atualizadas) — aceitável p/ webhook idempotente.
+        if ((int) $updated === 0) {
+            error_log(sprintf(
+                '[Webhook] Nenhuma linha alterada (idempotência?) — agendamento_id=%s alvo_status=%s linhas_na_fila=%d',
+                $agendamento_id,
+                $wp_status,
+                $existing_count
+            ));
         }
 
         error_log('✅ [Webhook] Status atualizado com sucesso: ' . $agendamento_id . ' -> ' . $wp_status . ' (' . $updated . ' registros)');

@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { WebhookService } from '../../webhook/webhook.service';
 import { BaseProvider } from '../../providers/base/base.provider';
 import { DigitalFunnelMssqlService } from '../../sql-server/digital-funnel-mssql.service';
+import { wordpressConfig } from '../../config/wordpress.config';
 
 export interface ProviderSendJobData {
   campaignId: string;
@@ -111,9 +112,8 @@ export abstract class BaseProviderProcessor extends WorkerHost {
           this.providerName,
           'SUCESSO',
         );
-        
-        // Envia webhook para WordPress
-        await this.webhookService.sendStatusUpdate({
+
+        const wpOkSuccess = await this.webhookService.sendStatusUpdate({
           agendamento_id: agendamentoId,
           status: 'enviado',
           resposta_api: result.data?.body ? JSON.stringify(result.data.body) : 'Campanha enviada com sucesso',
@@ -122,7 +122,12 @@ export abstract class BaseProviderProcessor extends WorkerHost {
           total_falhas: 0,
           provider: this.providerName,
         });
-        
+        if (!wpOkSuccess) {
+          this.logger.error(
+            `[Webhook WP] Falha ao notificar WordPress após SUCESSO do provider — agendamento=${agendamentoId} provider=${this.providerName}. Confira MASTER API KEY (WORDPRESS_API_KEY / ACM_MASTER_API_KEY no Nest igual a acm_master_api_key no WP), URL=${wordpressConfig.url}, e logs do Nest com prefixo [Webhook WP].`,
+          );
+        }
+
         return {
           success: true,
           campaignId,
@@ -159,8 +164,7 @@ export abstract class BaseProviderProcessor extends WorkerHost {
           errStr,
         );
         
-        // Envia webhook de erro para WordPress
-        await this.webhookService.sendStatusUpdate({
+        const wpOkFail = await this.webhookService.sendStatusUpdate({
           agendamento_id: agendamentoId,
           status: 'erro_envio',
           resposta_api: errStr,
@@ -169,7 +173,12 @@ export abstract class BaseProviderProcessor extends WorkerHost {
           total_falhas: data.length,
           provider: this.providerName,
         });
-        
+        if (!wpOkFail) {
+          this.logger.error(
+            `[Webhook WP] Falha ao notificar WordPress (erro_envio) — agendamento=${agendamentoId} provider=${this.providerName} url=${wordpressConfig.url}`,
+          );
+        }
+
         throw new Error(errStr || `Erro ao enviar campanha ${this.providerName}`);
       }
     } catch (error: any) {
@@ -197,8 +206,7 @@ export abstract class BaseProviderProcessor extends WorkerHost {
         errStr,
       );
       
-      // Envia webhook de erro para WordPress
-      await this.webhookService.sendStatusUpdate({
+      const wpOkCatch = await this.webhookService.sendStatusUpdate({
         agendamento_id: agendamentoId,
         status: 'erro_envio',
         resposta_api: errStr,
@@ -207,7 +215,12 @@ export abstract class BaseProviderProcessor extends WorkerHost {
         total_falhas: data.length,
         provider: this.providerName,
       });
-      
+      if (!wpOkCatch) {
+        this.logger.error(
+          `[Webhook WP] Falha ao notificar WordPress (catch erro_envio) — agendamento=${agendamentoId} provider=${this.providerName} url=${wordpressConfig.url}`,
+        );
+      }
+
       throw error;
     }
   }

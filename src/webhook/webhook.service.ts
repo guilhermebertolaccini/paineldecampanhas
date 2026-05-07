@@ -80,6 +80,37 @@ export class WebhookService {
     return statusMap[status] || 'erro_envio';
   }
 
+  /** Detalhe legível para logs (401 Master Key, 404 agendamento, corpo WP REST, etc.). */
+  private formatWpWebhookError(error: unknown, url: string): string {
+    const e = error as {
+      message?: string;
+      code?: string;
+      response?: { status?: number; statusText?: string; data?: unknown };
+    };
+    const parts: string[] = [];
+    parts.push(`url=${url}`);
+    if (e?.message) {
+      parts.push(`message=${e.message}`);
+    }
+    if (e?.code) {
+      parts.push(`code=${e.code}`);
+    }
+    const st = e?.response?.status;
+    if (st != null) {
+      parts.push(`http=${st} ${e.response?.statusText ?? ''}`.trim());
+    }
+    const data = e?.response?.data;
+    if (data !== undefined) {
+      try {
+        const serialized = typeof data === 'string' ? data : JSON.stringify(data);
+        parts.push(`body=${serialized.slice(0, 2000)}`);
+      } catch {
+        parts.push('body=<unserializable>');
+      }
+    }
+    return parts.join(' | ');
+  }
+
   // ---------------------------------------------------------------------------
 
   private async sendSingleWithRetry(payload: WebhookStatusPayload): Promise<boolean> {
@@ -88,7 +119,7 @@ export class WebhookService {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         this.logger.log(
-          `Sending webhook (attempt ${attempt}/${MAX_RETRIES}) for ${payload.agendamento_id}`,
+          `Sending webhook (attempt ${attempt}/${MAX_RETRIES}) for ${payload.agendamento_id} provider=${payload.provider} status=${payload.status}`,
         );
 
         const response = await firstValueFrom(
@@ -101,20 +132,30 @@ export class WebhookService {
           }),
         );
 
-        if (response.status === 200) {
+        if (response.status >= 200 && response.status < 300) {
+          const body = response.data as Record<string, unknown> | undefined;
+          if (body && body.success === false) {
+            this.logger.error(
+              `[Webhook WP] Resposta HTTP ${response.status} com success=false | ${JSON.stringify(body).slice(0, 1500)}`,
+            );
+            return false;
+          }
           this.logger.log(`✅ Webhook sent successfully for ${payload.agendamento_id}`);
           return true;
         }
 
-        this.logger.warn(`⚠️ Webhook returned status ${response.status}`);
-      } catch (error: any) {
+        this.logger.error(
+          `[Webhook WP] Status HTTP inesperado ${response.status} | body=${JSON.stringify(response.data)?.slice(0, 1200)}`,
+        );
+      } catch (error: unknown) {
         const isRetryable = this.isRetryableError(error);
+        const detail = this.formatWpWebhookError(error, url);
         this.logger.warn(
-          `⚠️ Webhook attempt ${attempt}/${MAX_RETRIES} failed: ${error.message} (retryable: ${isRetryable})`,
+          `[Webhook WP] Tentativa ${attempt}/${MAX_RETRIES} falhou (retryable=${isRetryable}): ${detail}`,
         );
 
         if (!isRetryable || attempt === MAX_RETRIES) {
-          this.logger.error(`❌ Webhook failed permanently for ${payload.agendamento_id}: ${error.message}`);
+          this.logger.error(`[Webhook WP] Falha definitiva ao atualizar WordPress | ${detail}`);
           return false;
         }
 
@@ -148,20 +189,28 @@ export class WebhookService {
           }),
         );
 
-        if (response.status === 200) {
+        if (response.status >= 200 && response.status < 300) {
+          const body = response.data as Record<string, unknown> | undefined;
+          if (body && body.success === false) {
+            this.logger.error(
+              `[Webhook WP][bulk] success=false no corpo | ${JSON.stringify(body).slice(0, 1500)}`,
+            );
+            return false;
+          }
           this.logger.log(`✅ Bulk webhook chunk sent (${chunk.length} items)`);
           return true;
         }
 
-        this.logger.warn(`⚠️ Bulk webhook returned status ${response.status}`);
-      } catch (error: any) {
-        const isRetryable = this.isRetryableError(error);
-        this.logger.warn(
-          `⚠️ Bulk webhook attempt ${attempt}/${MAX_RETRIES} failed: ${error.message}`,
+        this.logger.error(
+          `[Webhook WP][bulk] HTTP ${response.status} | ${JSON.stringify(response.data)?.slice(0, 1200)}`,
         );
+      } catch (error: unknown) {
+        const isRetryable = this.isRetryableError(error);
+        const detail = this.formatWpWebhookError(error, url);
+        this.logger.warn(`[Webhook WP][bulk] Tentativa ${attempt}/${MAX_RETRIES}: ${detail}`);
 
         if (!isRetryable || attempt === MAX_RETRIES) {
-          this.logger.error(`❌ Bulk webhook chunk failed permanently (${chunk.length} items)`);
+          this.logger.error(`[Webhook WP][bulk] Chunk falhou definitivamente (${chunk.length}) | ${detail}`);
           return false;
         }
 
