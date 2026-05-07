@@ -4224,7 +4224,7 @@ class Painel_Campanhas
                         }
                         $isca_record = [
                             'telefone' => $isca['telefone'],
-                            'nome' => $isca['nome'],
+                            'nome' => $this->resolve_bait_display_nome($isca['nome'] ?? ''),
                             'cpf_cnpj' => $isca['cpf'] ?? '',
                             'idgis_ambiente' => $isca['idgis_ambiente'] ?? 0,
                             'id_carteira' => $isca_id_carteira,
@@ -5035,6 +5035,16 @@ class Painel_Campanhas
         return $out;
     }
 
+    /**
+     * Nome do contato ao inserir isca na fila (Ótima, WhatsApp, etc.).
+     * Não usa marcadores como "[ISCA]" — só o nome cadastrado ou fallback neutro.
+     */
+    private function resolve_bait_display_nome($nome_raw)
+    {
+        $n = isset($nome_raw) ? trim((string) $nome_raw) : '';
+        return $n !== '' ? $n : 'Cliente';
+    }
+
     public function handle_schedule_campaign()
     {
         // Bases muito grandes (100k–300k+ linhas): tempo ilimitado e mais RAM (o host pode ignorar ini_set)
@@ -5270,7 +5280,7 @@ class Painel_Campanhas
                     }
                     $isca_record = [
                         'telefone' => $isca['telefone'],
-                        'nome' => $isca['nome'],
+                        'nome' => $this->resolve_bait_display_nome($isca['nome'] ?? ''),
                         'cpf_cnpj' => $isca['cpf'] ?? '',
                         'idgis_ambiente' => $isca['idgis_ambiente'] ?? 0,
                         'id_carteira' => $isca_id_carteira,
@@ -7697,12 +7707,9 @@ class Painel_Campanhas
                         continue;
                     }
 
-                    $nome_isc = isset($bait['nome']) ? trim((string) $bait['nome']) : '';
-                    $nome_linha = $nome_isc !== '' ? ($nome_isc . ' [ISCA]') : 'Isca [ISCA]';
-
                     $records[] = [
                         'telefone' => $bait['telefone'],
-                        'nome' => $nome_linha,
+                        'nome' => $this->resolve_bait_display_nome($bait['nome'] ?? ''),
                         'idgis_ambiente' => $bait_idgis_raw,
                         'id_carteira' => $bait_id_carteira,
                         'idcob_contrato' => 0,
