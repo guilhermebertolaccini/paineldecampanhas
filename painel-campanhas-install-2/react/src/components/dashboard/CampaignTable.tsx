@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Eye, MoreHorizontal, Ban, Loader2, Info } from "lucide-react";
+import { Eye, MoreHorizontal, Ban, Loader2, Info, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -30,7 +30,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { cancelCampanha } from "@/lib/api";
+import { cancelCampanha, downloadCampaignMailingCsv } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Progress } from "@/components/ui/progress";
 
@@ -218,6 +218,20 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
     },
   });
 
+  const downloadMutation = useMutation({
+    mutationFn: (agendamentoId: string) => downloadCampaignMailingCsv(agendamentoId),
+    onSuccess: () => {
+      toast({ title: "Download iniciado", description: "O arquivo CSV foi gerado a partir do motor Nest." });
+    },
+    onError: (e: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Não foi possível baixar o mailing",
+        description: e.message || "Confirme se a campanha já foi disparada no Nest e se o microserviço está configurado.",
+      });
+    },
+  });
+
   const openCancel = (c: Campaign) => {
     setCancelTarget(c);
     setCancelMotivo("");
@@ -326,6 +340,26 @@ export function CampaignTable({ campaigns, showActions = true }: CampaignTablePr
                             <Eye className="mr-2 h-4 w-4" />
                             Ver detalhes
                           </DropdownMenuItem>
+                          {campaign.agendamentoId && (
+                            <DropdownMenuItem
+                              disabled={
+                                downloadMutation.isPending &&
+                                downloadMutation.variables === campaign.agendamentoId
+                              }
+                              onSelect={(e) => {
+                                e.preventDefault();
+                                downloadMutation.mutate(campaign.agendamentoId!);
+                              }}
+                            >
+                              {downloadMutation.isPending &&
+                              downloadMutation.variables === campaign.agendamentoId ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              ) : (
+                                <Download className="mr-2 h-4 w-4" />
+                              )}
+                              Baixar mailing (CSV)
+                            </DropdownMenuItem>
+                          )}
                           {canCancelCampaign(campaign) && (
                             <DropdownMenuItem onClick={() => openCancel(campaign)}>
                               <Ban className="mr-2 h-4 w-4" />

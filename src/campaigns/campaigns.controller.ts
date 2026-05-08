@@ -1,4 +1,15 @@
-import { Controller, Post, Get, Param, Body, UseGuards, HttpCode, HttpStatus, Inject } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Param,
+  Body,
+  UseGuards,
+  HttpCode,
+  HttpStatus,
+  Inject,
+  StreamableFile,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { CampaignsService } from './campaigns.service';
@@ -19,6 +30,18 @@ export class CampaignsController {
   @HttpCode(HttpStatus.ACCEPTED)
   async dispatch(@Body() dto: DispatchCampaignDto) {
     return this.campaignsService.dispatchCampaign(dto.agendamento_id, this.dispatchQueue);
+  }
+
+  /** Exporta mailing (campaign_messages) como CSV. `:id` = UUID da campanha no Postgres ou `agendamento_id` do WordPress. */
+  @Get(':id/export-csv')
+  async exportMailingCsv(@Param('id') id: string): Promise<StreamableFile> {
+    const stream = await this.campaignsService.createMailingCsvStream(id);
+    const safeSeg = id.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 96);
+    const filename = `mailing-${safeSeg || 'campanha'}.csv`;
+    return new StreamableFile(stream, {
+      type: 'text/csv; charset=utf-8',
+      disposition: `attachment; filename="${filename}"`,
+    });
   }
 
   @Get(':id/status')

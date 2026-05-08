@@ -503,6 +503,21 @@ class Painel_Campanhas
             'permission_callback' => [$this, 'check_api_key_rest'],
         ]);
 
+        /** Proxy CSV mailing: utilizador autenticado → GET Nest /campaigns/:id/export-csv (Master Key só no servidor). */
+        register_rest_route('campaigns/v1', '/export/(?P<id>[^/]+)', [
+            'methods' => 'GET',
+            'callback' => [$this, 'rest_proxy_nest_mailing_csv'],
+            'permission_callback' => function () {
+                return is_user_logged_in() && current_user_can('read');
+            },
+            'args' => [
+                'id' => [
+                    'required' => true,
+                    'type' => 'string',
+                ],
+            ],
+        ]);
+
         // Webhook Robbu — autenticação: header X-Robbu-Token, Bearer ou ?token= (segredo em API Manager)
         register_rest_route('robbu-webhook/v2', '/receive', [
             'methods' => ['GET', 'POST'],
@@ -1237,6 +1252,94 @@ class Painel_Campanhas
             'min_atualizacao' => ($min !== null && $min !== '') ? (string) $min : null,
             'source' => 'MySQL',
         ]);
+    }
+
+    /**
+     * GET /wp-json/campaigns/v1/export/{id} — repassa CSV do Nest (campaign_messages / Postgres).
+     * Parâmetro id: `agendamento_id` do WordPress ou UUID da campanha no Prisma.
+     */
+    public function rest_proxy_nest_mailing_csv(WP_REST_Request $request)
+    {
+        $id = (string) $request->get_param('id');
+        if ($id === '') {
+            return new WP_Error('invalid_id', 'ID obrigatório', ['status' => 400]);
+        }
+
+        error_log('[rest_proxy_nest_mailing_csv] Solicitado export id=' . $id);
+
+        $microservice_config = get_option('acm_microservice_config', []);
+        $microservice_url = $microservice_config['url'] ?? '';
+        $microservice_api_key = $microservice_config['api_key'] ?? '';
+        $master_api_key = get_option('acm_master_api_key', '');
+        $api_key = !empty($microservice_api_key) ? $microservice_api_key : $master_api_key;
+
+        $base_url = rtrim((string) $microservice_url, '/');
+        if (substr($base_url, -4) === '/api') {
+            $base_url = substr($base_url, 0, -4);
+        }
+
+        if ($base_url === '' || $api_key === '') {
+            error_log('[rest_proxy_nest_mailing_csv] Nest não configurado (URL ou API key vazios).');
+            return new WP_Error(
+                'nest_not_configured',
+                'Configure a URL e a API Key do microserviço em API Manager.',
+                ['status' => 503]
+            );
+        }
+
+        $url = $base_url . '/campaigns/' . rawurlencode($id) . '/export-csv';
+
+        $remote = wp_remote_get(
+            $url,
+            [
+                'timeout' => 300,
+                'headers' => [
+                    'X-API-KEY' => $api_key,
+                    'Accept' => 'text/csv, */*',
+                ],
+            ]
+        );
+
+        if (is_wp_error($remote)) {
+            error_log('[rest_proxy_nest_mailing_csv] wp_remote_get error: ' . $remote->get_error_message());
+            return new WP_Error('nest_unreachable', $remote->get_error_message(), ['status' => 502]);
+        }
+
+        $code = (int) wp_remote_retrieve_response_code($remote);
+        $body = wp_remote_retrieve_body($remote);
+        error_log('[rest_proxy_nest_mailing_csv] Nest response HTTP ' . $code . ' bytes=' . strlen($body));
+
+        if ($code === 404) {
+            return new WP_Error(
+                'campaign_not_found_nest',
+                'Campanha não encontrada no motor de disparos. Confirme se já houve dispatch e se o agendamento_id está correto.',
+                ['status' => 404]
+            );
+        }
+
+        if ($code === 401 || $code === 403) {
+            return new WP_Error('nest_auth', 'Nest recusou a chave de API (confira API Manager / acm_master_api_key).', ['status' => 502]);
+        }
+
+        if ($code < 200 || $code >= 300) {
+            $snippet = is_string($body) ? substr($body, 0, 2000) : '';
+            return new WP_Error(
+                'nest_error',
+                $snippet !== '' ? $snippet : ('O microserviço retornou HTTP ' . $code),
+                ['status' => ($code >= 400 && $code < 600) ? $code : 502]
+            );
+        }
+
+        $fn = 'mailing-' . preg_replace('/[^a-zA-Z0-9._-]+/', '_', $id) . '.csv';
+        if (strlen($fn) > 180) {
+            $fn = 'mailing-export.csv';
+        }
+
+        $response = new WP_REST_Response($body, 200);
+        $response->header('Content-Type', 'text/csv; charset=utf-8');
+        $response->header('Content-Disposition', 'attachment; filename="' . $fn . '"');
+
+        return $response;
     }
 
     public function get_campaign_data_rest($request)

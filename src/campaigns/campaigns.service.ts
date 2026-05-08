@@ -1,15 +1,19 @@
-import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
+import { Injectable, Logger, HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { firstValueFrom } from 'rxjs';
-import { CampaignStatus } from '@prisma/client';
+import { CampaignStatus, type Campaign } from '@prisma/client';
+import { Readable } from 'stream';
 import { wordpressConfig } from '../config/wordpress.config';
 import { CampaignData } from '../providers/base/provider.interface';
 import { CampaignStatusDto } from './dto/campaign-status.dto';
+import { escapeCsvCell, isNestCampaignUuid } from './utils/mailing-csv.util';
 
 @Injectable()
 export class CampaignsService {
   private readonly logger = new Logger(CampaignsService.name);
+
+  private static readonly MAILING_EXPORT_PAGE = 8000;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -287,6 +291,95 @@ export class CampaignsService {
       agendamento_id: agendamentoId,
       estimated_time: '2-5 minutos',
     };
+  }
+
+  /**
+   * Resolve campanha por UUID Prisma ou por `agendamentoId` (chave WordPress / BullMQ).
+   */
+  async findCampaignForExport(key: string): Promise<Campaign | null> {
+    const k = key.trim();
+    if (!k) {
+      return null;
+    }
+    if (isNestCampaignUuid(k)) {
+      return this.prisma.campaign.findUnique({ where: { id: k } });
+    }
+    return this.prisma.campaign.findUnique({ where: { agendamentoId: k } });
+  }
+
+  /**
+   * Stream CSV UTF-8 (BOM inicial para Excel) com linhas de mailing do Postgres.
+   * @throws NotFoundException se não existir campanha para a chave (UUID Nest ou agendamento_id)
+   */
+  async createMailingCsvStream(key: string): Promise<Readable> {
+    const campaign = await this.findCampaignForExport(key);
+    if (!campaign) {
+      throw new NotFoundException(
+        'Campanha não encontrada no motor (UUID ou agendamento_id). Dispare a campanha pelo menos uma vez.',
+      );
+    }
+    return Readable.from(this.iterateMailingCsvLinesForCampaign(campaign));
+  }
+
+  private async *iterateMailingCsvLinesForCampaign(
+    campaign: Campaign,
+  ): AsyncGenerator<string, void, undefined> {
+    yield '\uFEFF';
+
+    const headerCols = [
+      'agendamento_id',
+      'nest_campaign_id',
+      'provider',
+      'message_id',
+      'telefone',
+      'nome',
+      'status',
+      'tentativas',
+      'erro',
+      'data_envio',
+      'criado_em',
+    ];
+    yield headerCols.map(escapeCsvCell).join(',') + '\r\n';
+
+    const pageSize = CampaignsService.MAILING_EXPORT_PAGE;
+    let cursor: { id: string } | undefined;
+
+    for (;;) {
+      const page = await this.prisma.campaignMessage.findMany({
+        where: { campaignId: campaign.id },
+        orderBy: { id: 'asc' },
+        take: pageSize,
+        ...(cursor ? { cursor, skip: 1 } : {}),
+      });
+
+      if (page.length === 0) {
+        break;
+      }
+
+      for (const m of page) {
+        const line = [
+          campaign.agendamentoId,
+          campaign.id,
+          campaign.provider,
+          m.id,
+          m.phone,
+          m.name ?? '',
+          m.status,
+          m.attempts,
+          m.lastError ?? '',
+          m.sentAt ? m.sentAt.toISOString() : '',
+          m.createdAt.toISOString(),
+        ]
+          .map(escapeCsvCell)
+          .join(',');
+        yield line + '\r\n';
+      }
+
+      cursor = { id: page[page.length - 1].id };
+      if (page.length < pageSize) {
+        break;
+      }
+    }
   }
 
   async getCampaignStatus(campaignId: string): Promise<CampaignStatusDto> {

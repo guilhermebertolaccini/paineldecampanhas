@@ -380,6 +380,56 @@ export const denyCampaign = (agendamentoId: string, fornecedor: string, motivo?:
   return wpAjax('pc_deny_campaign', { agendamento_id: agendamentoId, fornecedor, motivo });
 };
 
+/**
+ * Baixa CSV do mailing (Postgres/Nest) via proxy WordPress — não expõe Master API Key ao browser.
+ * Usa `agendamento_id` (mesmo valor usado no dispatch Nest) ou UUID da campanha no Prisma.
+ */
+export async function downloadCampaignMailingCsv(agendamentoOrNestId: string): Promise<void> {
+  const id = String(agendamentoOrNestId || '').trim();
+  if (!id) {
+    throw new Error('ID da campanha inválido.');
+  }
+  const pc = (window as {
+    pcAjax?: { restUrl?: string; restNonce?: string; siteUrl?: string };
+  }).pcAjax;
+  const base = (pc?.restUrl || '').replace(/\/?$/, '/');
+  if (!base) {
+    throw new Error('URL REST do painel indisponível. Recarregue a página.');
+  }
+  const url = `${base}export/${encodeURIComponent(id)}`;
+  const res = await fetch(url, {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'text/csv, */*',
+      'X-WP-Nonce': pc?.restNonce || '',
+    },
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const j = (await res.json()) as { message?: string; code?: string };
+      if (j?.message) msg = String(j.message);
+      if (j?.code) msg = `${j.code}: ${msg}`;
+    } catch {
+      const t = await res.text();
+      if (t) msg = t.slice(0, 500);
+    }
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  const safe = id.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80);
+  const filename = `mailing-${safe || 'campanha'}.csv`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
 // Filtros e bases
 export const getFilters = (base: string) => {
   // Usa cmNonce para handlers de campanha (cm_*)
