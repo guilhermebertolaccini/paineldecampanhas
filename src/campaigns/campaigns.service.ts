@@ -346,10 +346,12 @@ export class CampaignsService {
         };
 
       case 'RCS_OTIMA':
-        // RCS Ótima usa token para autenticação
+        // RCS Ótima: token + customer_code (API Manager / estáticos `otima_rcs_*`) — alinhado ao WHATSAPP_OTIMA
         return {
           ...credentials,
           authorization: credentials.token || credentials.authorization,
+          customer_code:
+            credentials.customer_code ?? credentials.otima_rcs_customer_code ?? '',
         };
 
       case 'WHATSAPP_OTIMA':

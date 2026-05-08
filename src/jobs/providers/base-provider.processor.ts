@@ -82,6 +82,22 @@ export abstract class BaseProviderProcessor extends WorkerHost {
         'PROCESSANDO',
       );
 
+      // WordPress + UI: mesmo sinal que outros providers (fila MSSQL já em PROCESSANDO)
+      const wpOkProcessing = await this.webhookService.sendStatusUpdate({
+        agendamento_id: agendamentoId,
+        status: 'processando',
+        resposta_api: 'Disparo em andamento (Nest worker)',
+        data_disparo: new Date().toISOString(),
+        total_enviados: 0,
+        total_falhas: 0,
+        provider: this.providerName,
+      });
+      if (!wpOkProcessing) {
+        this.logger.warn(
+          `[Webhook WP] Aviso: falha ao notificar status processando — agendamento=${agendamentoId} provider=${this.providerName} url=${wordpressConfig.url}`,
+        );
+      }
+
       // Envia para o provider
       const result = await this.provider.send(data, credentials);
 

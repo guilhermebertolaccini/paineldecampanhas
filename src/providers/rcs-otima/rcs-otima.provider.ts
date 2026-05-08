@@ -99,11 +99,21 @@ export class RcsOtimaProvider extends BaseProvider {
       groups.get(key)!.push(item);
     }
 
+    /** Mesmo contrato que WhatsApp Ótima: carteira padrão nas credenciais quando a linha não traz id_carteira. */
+    const credCustomerFallback = String(
+      credentials.customer_code ?? (credentials as { otima_rcs_customer_code?: string }).otima_rcs_customer_code ?? '',
+    ).trim();
+
     let lastResult: any = null;
     for (const [custKey, groupData] of groups) {
-      const customer_code = custKey === '__default__' ? '' : custKey;
+      let customer_code = custKey === '__default__' ? '' : custKey;
       if (!customer_code) {
-        this.logger.warn(`⚠️ [RCS Ótima] Mensagens sem id_carteira/customer_code serão ignoradas: ${groupData.length}`);
+        customer_code = credCustomerFallback;
+      }
+      if (!customer_code) {
+        this.logger.warn(
+          `⚠️ [RCS Ótima] Mensagens sem id_carteira/customer_code e sem customer_code nas credenciais serão ignoradas: ${groupData.length}`,
+        );
         continue;
       }
 
