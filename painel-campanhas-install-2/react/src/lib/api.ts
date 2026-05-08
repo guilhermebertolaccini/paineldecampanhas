@@ -262,10 +262,6 @@ export const getCampanhas = (params: Record<string, any> = {}) => {
   return wpAjax('pc_get_campanhas', params);
 };
 
-export const getSalesforceSyncStatus = () => {
-  return wpAjax('pc_get_salesforce_sync_status', {});
-};
-
 export const cancelCampanha = (params: {
   agendamento_id: string;
   fornecedor: string;
