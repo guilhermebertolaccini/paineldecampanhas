@@ -9194,13 +9194,23 @@ class Painel_Campanhas
 
     public function handle_webhook_status_update($request)
     {
-        error_log('🔵 [Webhook] Recebendo atualização de status');
+        $raw_body = $request->get_body();
+        $len = is_string($raw_body) ? strlen($raw_body) : 0;
+        $preview = is_string($raw_body) ? substr($raw_body, 0, 8000) : '';
+        error_log('[Webhook] handle_webhook_status_update — RAW len=' . $len . ' preview=' . $preview);
 
         $body = $request->get_json_params();
 
         if (empty($body)) {
-            error_log('🔴 [Webhook] Body vazio');
+            error_log('🔴 [Webhook] Body vazio após get_json_params (verifique Content-Type: application/json)');
             return new WP_Error('invalid_request', 'Body vazio', ['status' => 400]);
+        }
+
+        if (is_array($body)) {
+            error_log('[Webhook] JSON decodificado (keys): ' . implode(', ', array_keys($body)));
+            $log_copy = $body;
+            unset($log_copy['resposta_api']);
+            error_log('[Webhook] JSON (sem resposta_api trunc): ' . wp_json_encode($log_copy, JSON_UNESCAPED_UNICODE));
         }
 
         // Bulk mode: { bulk: true, updates: [ ...payloads ] }
@@ -9261,6 +9271,16 @@ class Painel_Campanhas
             $wp_status = $status_map[$status] ?? 'erro';
             $data_disparo = sanitize_text_field($item['data_disparo'] ?? '');
             $resposta_api = sanitize_textarea_field($item['resposta_api'] ?? '');
+            $mensagem_progresso = sanitize_textarea_field($item['mensagem_progresso'] ?? '');
+            $resposta_merge = '';
+            if ($mensagem_progresso !== '') {
+                $resposta_merge = $mensagem_progresso;
+            }
+            if ($resposta_api !== '') {
+                $resposta_merge = $resposta_merge === ''
+                    ? $resposta_api
+                    : ($resposta_merge . "\n\n" . $resposta_api);
+            }
 
             $update_data = ['status' => $wp_status];
             $update_formats = ['%s'];
@@ -9270,11 +9290,11 @@ class Painel_Campanhas
                 $update_formats[] = '%s';
             }
 
-            if ($has_resposta_api && !empty($resposta_api)) {
-                $resposta_decoded = json_decode($resposta_api, true);
-                $update_data['resposta_api'] = (json_last_error() === JSON_ERROR_NONE)
-                    ? json_encode($resposta_decoded, JSON_UNESCAPED_UNICODE)
-                    : $resposta_api;
+            if ($has_resposta_api && $resposta_merge !== '') {
+                $resposta_decoded = json_decode($resposta_merge, true);
+                $update_data['resposta_api'] = (json_last_error() === JSON_ERROR_NONE && is_array($resposta_decoded))
+                    ? wp_json_encode($resposta_decoded, JSON_UNESCAPED_UNICODE)
+                    : $resposta_merge;
                 $update_formats[] = '%s';
             }
 
@@ -9313,13 +9333,24 @@ class Painel_Campanhas
         $status = sanitize_text_field($body['status'] ?? '');
         $provider = sanitize_text_field($body['provider'] ?? '');
         $resposta_api = sanitize_textarea_field($body['resposta_api'] ?? '');
+        $mensagem_progresso = sanitize_textarea_field($body['mensagem_progresso'] ?? '');
         $data_disparo = sanitize_text_field($body['data_disparo'] ?? '');
         $total_enviados = intval($body['total_enviados'] ?? 0);
         $total_falhas = intval($body['total_falhas'] ?? 0);
 
-        error_log('🔵 [Webhook] Agendamento ID: ' . $agendamento_id);
-        error_log('🔵 [Webhook] Status: ' . $status);
-        error_log('🔵 [Webhook] Provider: ' . $provider);
+        /** Texto combinado Nest (mensagem_progresso primeiro — visível no painel) + resposta_api (corpo técnico). */
+        $resposta_merge = '';
+        if ($mensagem_progresso !== '') {
+            $resposta_merge = $mensagem_progresso;
+        }
+        if ($resposta_api !== '') {
+            $resposta_merge = $resposta_merge === ''
+                ? $resposta_api
+                : ($resposta_merge . "\n\n" . $resposta_api);
+        }
+
+        error_log('[Webhook][single] agendamento_id=' . $agendamento_id . ' status=' . $status . ' provider=' . ($provider ?: '-') . ' total_enviados=' . $total_enviados . ' total_falhas=' . $total_falhas);
+        error_log('[Webhook][single] mensagem_progresso(len)=' . strlen($mensagem_progresso) . ' resposta_merge(len)=' . strlen($resposta_merge));
 
         if (empty($agendamento_id) || empty($status)) {
             error_log('🔴 [Webhook] Dados incompletos: agendamento_id=' . $agendamento_id . ', status=' . $status);
@@ -9366,6 +9397,22 @@ class Painel_Campanhas
             );
         }
 
+        /** Amostras de fornecedor no MySQL (diagnóstico de mismatch NEST provider vs WP fornecedor). */
+        $fornecedor_sample = $wpdb->get_col($wpdb->prepare(
+            "SELECT DISTINCT fornecedor FROM `{$table}` WHERE agendamento_id = %s LIMIT 8",
+            $agendamento_id
+        ));
+        error_log('[Webhook][single] linhas_na_fila=' . $existing_count . ' DISTINCT fornecedor=' . wp_json_encode($fornecedor_sample));
+
+        /** Coerência: totais reportados pelo Nest não devem exceder linhas disponíveis (alerta apenas). */
+        if ($total_enviados > $existing_count) {
+            error_log('[Webhook][warn] total_enviados (' . $total_enviados . ') > envios na fila (' . $existing_count . ') agendamento_id=' . $agendamento_id);
+        }
+
+        if ($wp_status === 'enviado' && $total_enviados > 0 && $total_enviados < $existing_count) {
+            error_log('[Webhook][info] Lote parcial Nest: total_enviados=' . $total_enviados . ' < linhas_WP=' . $existing_count . ' agendamento_id=' . $agendamento_id . ' (throttling / vários jobs).');
+        }
+
         $update_data = ['status' => $wp_status];
         $update_formats = ['%s'];
 
@@ -9375,11 +9422,11 @@ class Painel_Campanhas
         }
 
         $columns = $wpdb->get_col("SHOW COLUMNS FROM {$table}");
-        if (in_array('resposta_api', $columns) && !empty($resposta_api)) {
-            $resposta_decoded = json_decode($resposta_api, true);
-            $update_data['resposta_api'] = (json_last_error() === JSON_ERROR_NONE)
-                ? json_encode($resposta_decoded, JSON_UNESCAPED_UNICODE)
-                : $resposta_api;
+        if (in_array('resposta_api', $columns) && $resposta_merge !== '') {
+            $resposta_decoded = json_decode($resposta_merge, true);
+            $update_data['resposta_api'] = (json_last_error() === JSON_ERROR_NONE && is_array($resposta_decoded))
+                ? wp_json_encode($resposta_decoded, JSON_UNESCAPED_UNICODE)
+                : $resposta_merge;
             $update_formats[] = '%s';
         }
 
@@ -9406,7 +9453,7 @@ class Painel_Campanhas
             ));
         }
 
-        error_log('✅ [Webhook] Status atualizado com sucesso: ' . $agendamento_id . ' -> ' . $wp_status . ' (' . $updated . ' registros)');
+        error_log('✅ [Webhook] OK agendamento_id=' . $agendamento_id . ' -> wp_status=' . $wp_status . ' rows_updated=' . (int) $updated . ' Nest_total_enviados=' . $total_enviados);
 
         return rest_ensure_response([
             'success' => true,
@@ -9415,7 +9462,7 @@ class Painel_Campanhas
             'status' => $wp_status,
             'records_updated' => $updated,
             'total_enviados' => $total_enviados,
-            'total_falhas' => $total_falhas
+            'total_falhas' => $total_falhas,
         ]);
     }
 

@@ -86,6 +86,7 @@ export abstract class BaseProviderProcessor extends WorkerHost {
       const wpOkProcessing = await this.webhookService.sendStatusUpdate({
         agendamento_id: agendamentoId,
         status: 'processando',
+        mensagem_progresso: `Processando… lote BullMQ: ${data.length} msg(s) | campaignId=${campaignId}`,
         resposta_api: 'Disparo em andamento (Nest worker)',
         data_disparo: new Date().toISOString(),
         total_enviados: 0,
@@ -129,12 +130,20 @@ export abstract class BaseProviderProcessor extends WorkerHost {
           'SUCESSO',
         );
 
+        const batchCount = data.length;
+        const progressLine = `Processado: 100% (${batchCount} / ${batchCount} msgs neste lote)`;
+        const respostaNest =
+          result.data?.body != null
+            ? JSON.stringify(result.data.body)
+            : 'Campanha enviada com sucesso';
+
         const wpOkSuccess = await this.webhookService.sendStatusUpdate({
           agendamento_id: agendamentoId,
           status: 'enviado',
-          resposta_api: result.data?.body ? JSON.stringify(result.data.body) : 'Campanha enviada com sucesso',
+          mensagem_progresso: progressLine,
+          resposta_api: `${progressLine}\n\n${respostaNest}`,
           data_disparo: new Date().toISOString(),
-          total_enviados: data.length,
+          total_enviados: batchCount,
           total_falhas: 0,
           provider: this.providerName,
         });
@@ -180,10 +189,12 @@ export abstract class BaseProviderProcessor extends WorkerHost {
           errStr,
         );
         
+        const failLine = `Falha no lote (${data.length} msg)`;
         const wpOkFail = await this.webhookService.sendStatusUpdate({
           agendamento_id: agendamentoId,
           status: 'erro_envio',
-          resposta_api: errStr,
+          mensagem_progresso: failLine,
+          resposta_api: `${failLine}\n\n${errStr}`,
           data_disparo: new Date().toISOString(),
           total_enviados: 0,
           total_falhas: data.length,
@@ -222,10 +233,12 @@ export abstract class BaseProviderProcessor extends WorkerHost {
         errStr,
       );
       
+      const failCatch = `Exceção no worker (${data.length} msg no lote): ${errStr}`;
       const wpOkCatch = await this.webhookService.sendStatusUpdate({
         agendamento_id: agendamentoId,
         status: 'erro_envio',
-        resposta_api: errStr,
+        mensagem_progresso: 'Erro durante processamento',
+        resposta_api: failCatch,
         data_disparo: new Date().toISOString(),
         total_enviados: 0,
         total_falhas: data.length,

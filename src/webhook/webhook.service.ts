@@ -1,12 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import axios, { type AxiosResponse } from 'axios';
 import { wordpressConfig } from '../config/wordpress.config';
 
 export interface WebhookStatusPayload {
   agendamento_id: string;
   status: 'enviado' | 'erro_envio' | 'erro_credenciais' | 'erro_validacao' | 'processando' | 'iniciado' | 'erro_inicio' | 'mkc_executado' | 'mkc_erro';
   resposta_api?: string;
+  /** Linha única ou curta para o painel (ex.: Processado 100% 106/106) — combinada ao PHP em `resposta_api`. */
+  mensagem_progresso?: string;
   data_disparo?: string;
   total_enviados?: number;
   total_falhas?: number;
@@ -111,16 +114,47 @@ export class WebhookService {
     return parts.join(' | ');
   }
 
+  /** Log seguro do body (payload não inclui secrets). */
+  private formatPayloadForDebug(payload: WebhookStatusPayload): string {
+    try {
+      return JSON.stringify(payload, null, 2);
+    } catch {
+      return String(payload);
+    }
+  }
+
+  private logWpHttpResponse(context: string, response: AxiosResponse<unknown>): void {
+    let bodySnippet: string;
+    try {
+      const raw =
+        typeof response.data === 'string'
+          ? response.data
+          : JSON.stringify(response.data);
+      bodySnippet = raw.length > 4000 ? `${raw.slice(0, 4000)}…(trunc)` : raw;
+    } catch {
+      bodySnippet = '<unserializable>';
+    }
+    this.logger.log(
+      `[Webhook WP] ${context} RES http=${response.status} ${response.statusText ?? ''} | headers[content-type]=${response.headers?.['content-type'] ?? 'n/a'} | body=${bodySnippet}`,
+    );
+  }
+
   // ---------------------------------------------------------------------------
 
   private async sendSingleWithRetry(payload: WebhookStatusPayload): Promise<boolean> {
     const url = wordpressConfig.endpoints.webhookStatus();
+    const hasKey = !!wordpressConfig.apiKey?.trim();
+    this.logger.warn(
+      `[Webhook WP] PREQ url=${url} | WORDPRESS configurada=${!!wordpressConfig.url?.trim()} | X-API-KEY definida nest=${hasKey} (compare com acm_master_api_key no WP)`,
+    );
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
+        this.logger.log(`[Webhook WP] OUT (single) tentativa ${attempt}/${MAX_RETRIES}`);
         this.logger.log(
-          `Sending webhook (attempt ${attempt}/${MAX_RETRIES}) for ${payload.agendamento_id} provider=${payload.provider} status=${payload.status}`,
+          `[Webhook WP] PAYLOAD_OUT agendamento_id=${payload.agendamento_id} provider=${payload.provider} status=${payload.status}`,
         );
+        this.logger.log(`[Webhook WP] PAYLOAD_JSON_OUT\n${this.formatPayloadForDebug(payload)}`);
 
         const response = await firstValueFrom(
           this.httpService.post(url, payload, {
@@ -132,22 +166,40 @@ export class WebhookService {
           }),
         );
 
+        this.logWpHttpResponse('single', response as AxiosResponse<unknown>);
+
         if (response.status >= 200 && response.status < 300) {
           const body = response.data as Record<string, unknown> | undefined;
           if (body && body.success === false) {
             this.logger.error(
-              `[Webhook WP] Resposta HTTP ${response.status} com success=false | ${JSON.stringify(body).slice(0, 1500)}`,
+              `[Webhook WP] RES http=${response.status} mas success=false | ${JSON.stringify(body).slice(0, 1500)}`,
             );
             return false;
           }
-          this.logger.log(`✅ Webhook sent successfully for ${payload.agendamento_id}`);
+          this.logger.log(`[Webhook WP] OK single agendamento_id=${payload.agendamento_id} status_wp_flow=${payload.status}`);
           return true;
         }
 
         this.logger.error(
-          `[Webhook WP] Status HTTP inesperado ${response.status} | body=${JSON.stringify(response.data)?.slice(0, 1200)}`,
+          `[Webhook WP] RES inesperado (single) http=${response.status} | ${JSON.stringify(response.data)?.slice(0, 1200)}`,
         );
       } catch (error: unknown) {
+        if (axios.isAxiosError(error)) {
+          const st = error.response?.status;
+          const stTxt = error.response?.statusText;
+          let errBody = '';
+          try {
+            const d = error.response?.data;
+            errBody =
+              typeof d === 'string' ? d.slice(0, 2500) : JSON.stringify(d)?.slice(0, 2500);
+          } catch {
+            errBody = '<unserializable>';
+          }
+          this.logger.error(
+            `[Webhook WP] AXIOS_ERR single http=${st ?? 'n/a'} ${stTxt ?? ''} | response_body=${errBody}`,
+          );
+        }
+
         const isRetryable = this.isRetryableError(error);
         const detail = this.formatWpWebhookError(error, url);
         this.logger.warn(
@@ -174,8 +226,14 @@ export class WebhookService {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         this.logger.log(
-          `Sending bulk webhook chunk (attempt ${attempt}/${MAX_RETRIES}, ${chunk.length} items)`,
+          `[Webhook WP] OUT (bulk) chunk=${chunk.length} tentativa=${attempt}/${MAX_RETRIES}`,
         );
+        const sample = chunk.slice(0, 3).map((c) => ({
+          agendamento_id: c.agendamento_id,
+          status: c.status,
+          provider: c.provider,
+        }));
+        this.logger.log(`[Webhook WP] PAYLOAD_SAMPLE_OUT ${JSON.stringify(sample)}`);
 
         const response = await firstValueFrom(
           this.httpService.post(url, bulkPayload, {
@@ -189,22 +247,37 @@ export class WebhookService {
           }),
         );
 
+        this.logWpHttpResponse('bulk', response as AxiosResponse<unknown>);
+
         if (response.status >= 200 && response.status < 300) {
           const body = response.data as Record<string, unknown> | undefined;
           if (body && body.success === false) {
             this.logger.error(
-              `[Webhook WP][bulk] success=false no corpo | ${JSON.stringify(body).slice(0, 1500)}`,
+              `[Webhook WP][bulk] http=${response.status} mas success=false | ${JSON.stringify(body).slice(0, 1500)}`,
             );
             return false;
           }
-          this.logger.log(`✅ Bulk webhook chunk sent (${chunk.length} items)`);
+          this.logger.log(`[Webhook WP] OK bulk chunk=${chunk.length}`);
           return true;
         }
 
         this.logger.error(
-          `[Webhook WP][bulk] HTTP ${response.status} | ${JSON.stringify(response.data)?.slice(0, 1200)}`,
+          `[Webhook WP][bulk] RES inesperado http=${response.status} | ${JSON.stringify(response.data)?.slice(0, 1200)}`,
         );
       } catch (error: unknown) {
+        if (axios.isAxiosError(error)) {
+          const st = error.response?.status;
+          let errBody = '';
+          try {
+            const d = error.response?.data;
+            errBody =
+              typeof d === 'string' ? d.slice(0, 2500) : JSON.stringify(d)?.slice(0, 2500);
+          } catch {
+            errBody = '<unserializable>';
+          }
+          this.logger.error(`[Webhook WP] AXIOS_ERR bulk http=${st ?? 'n/a'} | response_body=${errBody}`);
+        }
+
         const isRetryable = this.isRetryableError(error);
         const detail = this.formatWpWebhookError(error, url);
         this.logger.warn(`[Webhook WP][bulk] Tentativa ${attempt}/${MAX_RETRIES}: ${detail}`);
