@@ -7414,7 +7414,9 @@ class Painel_Campanhas
      */
     private function pcm_try_apply_execute_recurring_template_override(&$campaign, $table, $rec_id, $owner_id)
     {
-        if (empty($_POST['apply_recurring_template_override'])) {
+        $raw_override = strtolower(trim(wp_unslash((string) ($_POST['apply_recurring_template_override'] ?? ''))));
+        // Aceita apenas valores explícitos de “sim” (evita empty('0') no PHP tratando '0' como ausente).
+        if ($raw_override === '' || ! in_array($raw_override, ['1', 'true', 'yes', 'on'], true)) {
             return null;
         }
 
@@ -7576,6 +7578,25 @@ class Painel_Campanhas
         return null;
     }
 
+    /**
+     * Desfaz transação de “Gerar agora” (recorrente) sem lançar exceção.
+     * @param bool &$tx_active_flag true se START TRANSACTION tinha sucesso e ainda não houve COMMIT/ROLLBACK
+     */
+    private function pcm_recurring_execute_maybe_rollback(&$tx_active_flag)
+    {
+        if (! $tx_active_flag) {
+            return;
+        }
+        global $wpdb;
+        if (! isset($wpdb)) {
+            $tx_active_flag = false;
+            return;
+        }
+        $wpdb->query('ROLLBACK');
+        error_log('[Gerar Agora] ROLLBACK: transação de geração recorrente desfeita (override + fila).');
+        $tx_active_flag = false;
+    }
+
     public function handle_execute_recurring_now()
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
@@ -7591,6 +7612,7 @@ class Painel_Campanhas
         $id = intval($_POST['id'] ?? 0);
         $current_user_id = get_current_user_id();
         $table = $wpdb->prefix . 'cm_recurring_campaigns';
+        $gen_tx_active = false;
 
         try {
             // Busca a campanha recorrente
@@ -7654,21 +7676,28 @@ class Painel_Campanhas
                 $campaign['providers_config'] = json_encode($providers_config);
             }
 
+            $gen_tx_active = ($wpdb->query('START TRANSACTION') !== false);
+            if (! $gen_tx_active) {
+                error_log('[Gerar Agora] AVISO: START TRANSACTION indisponível ou falhou — geração sem atomicidade garantida entre cm_recurring_campaigns / envios_pendentes.');
+            }
+
             $tpl_err = $this->pcm_try_apply_execute_recurring_template_override($campaign, $table, $id, $current_user_id);
             if ($tpl_err !== null && $tpl_err !== '') {
+                $this->pcm_recurring_execute_maybe_rollback($gen_tx_active);
                 wp_send_json_error($tpl_err);
                 return;
             }
 
             $result = $this->execute_recurring_campaign_optimized($campaign, $exclude_recent_execution);
 
-            if (!is_array($result)) {
+            if (! is_array($result)) {
                 error_log('[Gerar Agora] Resposta inválida de execute_recurring_campaign_optimized (não é array).');
+                $this->pcm_recurring_execute_maybe_rollback($gen_tx_active);
                 wp_send_json_error('Falha interna ao gerar campanha (resposta inválida do servidor).');
                 return;
             }
 
-            if (!empty($result['success'])) {
+            if (! empty($result['success'])) {
                 $wpdb->update(
                     $table,
                     ['ultima_execucao' => current_time('mysql')],
@@ -7676,6 +7705,15 @@ class Painel_Campanhas
                     ['%s'],
                     ['%d']
                 );
+
+                if ($gen_tx_active) {
+                    $cm = @$wpdb->query('COMMIT');
+                    if ($cm === false) {
+                        error_log('[Gerar Agora] AVISO: COMMIT falhou após geração recorrente: ' . ($wpdb->last_error ?: 'desconhecido'));
+                    }
+                    $gen_tx_active = false;
+                }
+
                 wp_send_json_success([
                     'message' => $result['message'],
                     'records_inserted' => $result['records_inserted'] ?? 0,
@@ -7684,7 +7722,8 @@ class Painel_Campanhas
                 ]);
             } else {
                 $fail_msg = $result['message'] ?? 'Não foi possível gerar a campanha.';
-                $http = !empty($result['http_status']) ? (int) $result['http_status'] : null;
+                $http = ! empty($result['http_status']) ? (int) $result['http_status'] : null;
+                $this->pcm_recurring_execute_maybe_rollback($gen_tx_active);
                 if ($http !== null && $http > 0) {
                     wp_send_json_error($fail_msg, $http);
                 } else {
@@ -7692,6 +7731,7 @@ class Painel_Campanhas
                 }
             }
         } catch (\Throwable $e) {
+            $this->pcm_recurring_execute_maybe_rollback($gen_tx_active);
             error_log('[Gerar Agora] Erro fatal: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
             error_log('[Gerar Agora] Trace: ' . $e->getTraceAsString());
             wp_send_json_error('Erro ao gerar campanha: ' . $e->getMessage());

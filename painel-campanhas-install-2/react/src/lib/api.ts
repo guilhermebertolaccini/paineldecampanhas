@@ -809,6 +809,10 @@ export const executeRecurringNow = (
   if (templateOverride && typeof templateOverride === "object") {
     for (const [k, raw] of Object.entries(templateOverride)) {
       if (raw === undefined || raw === null) continue;
+      if (k === "apply_recurring_template_override") {
+        body[k] = raw === true || raw === 1 ? "1" : String(raw);
+        continue;
+      }
       body[k] = raw;
     }
   }
