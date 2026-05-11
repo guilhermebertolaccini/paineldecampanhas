@@ -299,6 +299,80 @@ export class MakingOficialProvider extends BaseProvider {
     };
   }
 
+  /**
+   * Falha semântica: Making pode devolver HTTP 200 com corpo indicando erro (ex.: saldo).
+   * Avalia raiz e, se existir objeto aninhado `data`, o mesmo critério.
+   */
+  private evaluateMakingSemanticError(raw: unknown): { isError: boolean; message: string } {
+    const pickMessage = (b: Record<string, unknown>): string => {
+      for (const key of ['message', 'error', 'mensagem', 'erro'] as const) {
+        const v = b[key];
+        if (v == null) {
+          continue;
+        }
+        if (typeof v === 'string' && v.trim() !== '') {
+          return v.trim();
+        }
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          return String(v);
+        }
+        if (typeof v === 'boolean') {
+          return v ? 'true' : 'false';
+        }
+        if (Array.isArray(v) && v.length > 0) {
+          return v.map((x) => String(x)).join('; ');
+        }
+      }
+      try {
+        return JSON.stringify(b).slice(0, 800);
+      } catch {
+        return 'Resposta Making inválida ou não serializável';
+      }
+    };
+
+    const isFailureShape = (b: Record<string, unknown>): boolean => {
+      if (b.success === false || b.ok === false) {
+        return true;
+      }
+      const st = b.status;
+      if (typeof st === 'string' && st.trim().toLowerCase() === 'error') {
+        return true;
+      }
+      const erroStr = b.erro;
+      if (typeof erroStr === 'string' && erroStr.trim() !== '') {
+        return true;
+      }
+      return false;
+    };
+
+    const scan = (node: unknown): { isError: boolean; message: string } => {
+      if (!node || typeof node !== 'object' || Array.isArray(node)) {
+        return { isError: false, message: '' };
+      }
+      const b = node as Record<string, unknown>;
+      if (isFailureShape(b)) {
+        const msg = pickMessage(b);
+        return {
+          isError: true,
+          message: msg || 'A API Making indicou falha na resposta (HTTP 200).',
+        };
+      }
+      return { isError: false, message: '' };
+    };
+
+    const root = scan(raw);
+    if (root.isError) {
+      return root;
+    }
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const nested = (raw as Record<string, unknown>).data;
+      if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+        return scan(nested);
+      }
+    }
+    return { isError: false, message: '' };
+  }
+
   private resolvePostUrl(credentials: MakingOfficialCredentials): string {
     const raw =
       credentials.making_api_url ||
@@ -424,6 +498,22 @@ export class MakingOficialProvider extends BaseProvider {
       );
 
       const body = createResponse.data as Record<string, unknown> | undefined;
+
+      // Trava falso-positivo: 200 OK com success/ok/status/erro indicando falha (antes de tratar campaign_id).
+      const semantic = this.evaluateMakingSemanticError(createResponse.data);
+      if (semantic.isError) {
+        this.logger.error(
+          `[MAKING] Falha semântica (HTTP 200): ${semantic.message}`,
+          undefined,
+          { provider: 'MAKING_OFICIAL' },
+        );
+        return {
+          success: false,
+          error: semantic.message,
+          data: { body: createResponse.data },
+        };
+      }
+
       const campaignId =
         body?.campaign_id ??
         body?.campaignId ??

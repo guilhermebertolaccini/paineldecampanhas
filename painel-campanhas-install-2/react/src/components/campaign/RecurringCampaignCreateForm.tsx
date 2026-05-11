@@ -46,6 +46,7 @@ import {
   getIscas,
   saveRecurring,
 } from "@/lib/api";
+import { PROVIDER_TO_SOURCE_MAP } from "@/components/campaign/recurringTemplateProviders";
 
 const PROVIDERS_LIST = [
   { id: "OTIMA_RCS", name: "Ótima RCS" },
@@ -61,21 +62,6 @@ const PROVIDERS_LIST = [
   { id: "SALESFORCE", name: "Salesforce" },
   { id: "TECH_IA", name: "TECHIA (Discador)" },
 ];
-
-const PROVIDER_TO_SOURCE_MAP: Record<string, string[]> = {
-  GOSAC_OFICIAL: ["gosac_oficial"],
-  OTIMA_WPP: ["otima_wpp"],
-  OTIMA_RCS: ["otima_rcs"],
-  SALESFORCE: [],
-  CDA: [],
-  CDA_RCS: [],
-  NOAH: [],
-  NOAH_OFICIAL: ["noah_oficial"],
-  ROBBU_OFICIAL: ["robbu_oficial"],
-  MAKING_OFICIAL: ["making_oficial"],
-  TECH_IA: [],
-  GOSAC: [],
-};
 
 export function RecurringCampaignCreateForm() {
   const { toast } = useToast();

@@ -7386,6 +7386,196 @@ class Painel_Campanhas
         }
     }
 
+    /**
+     * “Gerar agora”: permite mesmo conjunto permitido pela UI (Ótima WPP ↔ RCS quando ambos usam Ótima, NOAH/noah oficial).
+     */
+    private function pcm_recurring_execute_template_sources_compatible(string $stored, string $incoming): bool
+    {
+        $s = strtolower(trim($stored));
+        $i = strtolower(trim($incoming));
+
+        $noah = ['noah', 'noah_oficial'];
+        if (in_array($s, $noah, true) && in_array($i, $noah, true)) {
+            return true;
+        }
+
+        $otima = ['otima_wpp', 'otima_rcs'];
+        if (in_array($s, $otima, true) && in_array($i, $otima, true)) {
+            return true;
+        }
+
+        return $s === $i;
+    }
+
+    /**
+     * Persiste novo template/meta na campanha recorrente antes de executar quando o POST traz flag do React.
+     * @param array &$campaign Linha atual (ARRAY_A); mesclado após sucesso para o mesmo request.
+     * @return string|null mensagem de erro ou null quando ok / sem override.
+     */
+    private function pcm_try_apply_execute_recurring_template_override(&$campaign, $table, $rec_id, $owner_id)
+    {
+        if (empty($_POST['apply_recurring_template_override'])) {
+            return null;
+        }
+
+        global $wpdb;
+
+        $stored_src = strtolower(trim((string) ($campaign['template_source'] ?? 'local')));
+        $template_source = strtolower(trim(sanitize_text_field(wp_unslash($_POST['template_source'] ?? ''))));
+        if ($template_source === '') {
+            return 'Tipo de template (template_source) ausente.';
+        }
+
+        if (!$this->pcm_recurring_execute_template_sources_compatible($stored_src, $template_source)) {
+            return 'Não é permitido alterar para um tipo de template incompatível com o filtro salvo.';
+        }
+
+        $providers_cfg = json_decode($campaign['providers_config'] ?? '{}', true);
+        $only_sf_recurring = is_array($providers_cfg) && $this->is_salesforce_only_providers($providers_cfg);
+
+        if ($only_sf_recurring) {
+            return null;
+        }
+
+        if ($template_source === 'techia_discador' || $template_source === 'salesforce') {
+            return null;
+        }
+
+        $template_id = intval($_POST['template_id'] ?? 0);
+        $template_code = sanitize_text_field(wp_unslash($_POST['template_code'] ?? ''));
+        $broker_code = sanitize_text_field(wp_unslash($_POST['broker_code'] ?? ''));
+        $customer_code = sanitize_text_field(wp_unslash($_POST['customer_code'] ?? ''));
+
+        if ($template_source === 'local' && $template_id <= 0) {
+            return 'Template local inválido (template_id).';
+        }
+
+        if (in_array($template_source, ['otima_wpp', 'otima_rcs', 'gosac_oficial', 'noah_oficial', 'noah', 'robbu_oficial', 'making_oficial'], true) && trim($template_code) === '') {
+            return 'Informe o código/nome do template para este fornecedor.';
+        }
+
+        if (in_array($template_source, ['otima_wpp', 'otima_rcs'], true) && trim($broker_code) === '') {
+            return 'Selecione o remetente (broker Ótima).';
+        }
+
+        $gosac_tid = intval($_POST['gosac_template_id'] ?? 0);
+        $gosac_cid = intval($_POST['gosac_connection_id'] ?? 0);
+        $gosac_vc_raw = isset($_POST['gosac_variable_components']) ? json_decode(stripslashes((string) $_POST['gosac_variable_components']), true) : [];
+        $gosac_variable_components = is_array($gosac_vc_raw) ? $gosac_vc_raw : [];
+
+        if ($template_source === 'gosac_oficial') {
+            if ($gosac_cid <= 0) {
+                return 'Selecione a ilha GOSAC Oficial.';
+            }
+            if ($gosac_tid <= 0) {
+                return 'Template GOSAC Oficial inválido.';
+            }
+        }
+
+        if ($template_source === 'making_oficial') {
+            $mk_tid = intval($_POST['making_team_id'] ?? 0);
+            $mk_ccid = intval($_POST['making_cost_center_id'] ?? 0);
+            if ($mk_tid <= 0 || $mk_ccid <= 0) {
+                return 'Making Oficial: selecione Equipe e Centro de Custo.';
+            }
+        }
+
+        $variables_map_final = isset($campaign['variables_map']) ? $campaign['variables_map'] : null;
+        if (isset($_POST['variables_map'])) {
+            $vj = stripslashes((string) wp_unslash($_POST['variables_map']));
+            $dec = json_decode($vj, true);
+            $variables_map_final = is_array($dec) && count($dec) > 0
+                ? wp_json_encode($dec, JSON_UNESCAPED_UNICODE)
+                : null;
+        }
+
+        $noah_channel_id = intval($_POST['noah_channel_id'] ?? 0);
+        $noah_template_id = intval($_POST['noah_template_id'] ?? 0);
+        $noah_language = sanitize_text_field(wp_unslash($_POST['noah_language'] ?? 'pt_BR'));
+
+        $template_meta_arr = [];
+        if ($template_source === 'noah_oficial' || $template_source === 'noah') {
+            $template_meta_arr['noah_channel_id'] = $noah_channel_id;
+            $template_meta_arr['noah_template_id'] = $noah_template_id;
+            $template_meta_arr['noah_language'] = $noah_language;
+            $noah_td_save_raw = isset($_POST['noah_template_data']) ? wp_unslash((string) $_POST['noah_template_data']) : '';
+            $noah_td_save = json_decode($noah_td_save_raw, true);
+            if (is_array($noah_td_save) && count($noah_td_save) > 0) {
+                $template_meta_arr['noah_template_data'] = $noah_td_save;
+            }
+            $noah_nm_save = sanitize_text_field(wp_unslash($_POST['noah_template_name'] ?? ''));
+            if ($noah_nm_save !== '') {
+                $template_meta_arr['noah_template_name'] = $noah_nm_save;
+            }
+        }
+        if ($template_source === 'gosac_oficial') {
+            $template_meta_arr['gosac_template_id'] = $gosac_tid;
+            $template_meta_arr['gosac_connection_id'] = $gosac_cid;
+            $template_meta_arr['gosac_variable_components'] = $gosac_variable_components;
+        }
+        if ($template_source === 'robbu_oficial') {
+            $template_meta_arr['robbu_channel'] = intval($_POST['robbu_channel'] ?? 3);
+        }
+        if ($template_source === 'making_oficial') {
+            $template_meta_arr['making_team_id'] = intval($_POST['making_team_id'] ?? 0);
+            $template_meta_arr['making_cost_center_id'] = intval($_POST['making_cost_center_id'] ?? 0);
+        }
+
+        $template_meta_json = !empty($template_meta_arr)
+            ? wp_json_encode($template_meta_arr, JSON_UNESCAPED_UNICODE)
+            : null;
+
+        if ($template_source === 'techia_discador') {
+            $template_id = 0;
+            $template_code = '';
+        }
+
+        $upd = [
+            'template_id' => $template_id,
+            'template_code' => $template_code,
+            'template_source' => $template_source,
+            'broker_code' => $broker_code,
+            'customer_code' => $customer_code,
+            'variables_map' => $variables_map_final,
+            'template_meta' => $template_meta_json,
+        ];
+        $fmt = ['%d', '%s', '%s', '%s', '%s', '%s', '%s'];
+
+        $ok_owner = intval($wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM `$table` WHERE id = %d AND criado_por = %d",
+            $rec_id,
+            $owner_id
+        )));
+        if ($ok_owner !== 1) {
+            return 'Filtro não encontrado ou permissão negada.';
+        }
+
+        $r = $wpdb->update($table, $upd, ['id' => $rec_id, 'criado_por' => $owner_id], $fmt, ['%d', '%d']);
+
+        if ($r === false) {
+            error_log('[Gerar Agora] Falha UPDATE template recorrente: ' . ($wpdb->last_error ?: 'wpdb->update falhou'));
+            return 'Erro ao salvar o novo template no filtro antes da execução.';
+        }
+
+        $campaign['template_id'] = (string) $template_id;
+        $campaign['template_code'] = $template_code;
+        $campaign['template_source'] = $template_source;
+        $campaign['broker_code'] = $broker_code;
+        $campaign['customer_code'] = $customer_code;
+        $campaign['variables_map'] = $variables_map_final;
+        $campaign['template_meta'] = $template_meta_json;
+
+        error_log(sprintf(
+            '[Gerar Agora] Template recorrente id=%d atualizado antes da fila (%s → %s, code=%s).',
+            (int) $rec_id,
+            $stored_src,
+            $template_source,
+            substr($template_code, 0, 80)
+        ));
+
+        return null;
+    }
+
     public function handle_execute_recurring_now()
     {
         check_ajax_referer('campaign-manager-nonce', 'nonce');
@@ -7462,6 +7652,12 @@ class Painel_Campanhas
                 }
                 $providers_config['exclude_recent_phones'] = $exclude_recent_execution;
                 $campaign['providers_config'] = json_encode($providers_config);
+            }
+
+            $tpl_err = $this->pcm_try_apply_execute_recurring_template_override($campaign, $table, $id, $current_user_id);
+            if ($tpl_err !== null && $tpl_err !== '') {
+                wp_send_json_error($tpl_err);
+                return;
             }
 
             $result = $this->execute_recurring_campaign_optimized($campaign, $exclude_recent_execution);

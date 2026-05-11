@@ -777,12 +777,44 @@ export const toggleRecurring = (id: string, active: boolean) => {
 };
 
 /** Geração de campanha a partir de filtro salvo — pode levar vários minutos (SQL + lotes). */
+
+/** Sobrescrita opcional ao “Gerar agora”: template + meta salvo antes da execução. */
+export type RecurringExecuteTemplatePayload = {
+  apply_recurring_template_override?: string;
+  template_id?: number;
+  template_code?: string;
+  template_source?: string;
+  broker_code?: string;
+  customer_code?: string;
+  variables_map?: string;
+  noah_channel_id?: number;
+  noah_template_id?: number;
+  noah_language?: string;
+  noah_template_data?: string;
+  noah_template_name?: string;
+  gosac_template_id?: number;
+  gosac_connection_id?: number;
+  gosac_variable_components?: string;
+  robbu_channel?: number;
+  making_team_id?: number;
+  making_cost_center_id?: number;
+};
 const RECURRING_EXECUTE_TIMEOUT_MS = 25 * 60 * 1000;
 
-export const executeRecurringNow = (id: string) => {
+export const executeRecurringNow = (
+  id: string,
+  templateOverride?: RecurringExecuteTemplatePayload | null,
+) => {
+  const body: Record<string, unknown> = { id: parseInt(id, 10) };
+  if (templateOverride && typeof templateOverride === "object") {
+    for (const [k, raw] of Object.entries(templateOverride)) {
+      if (raw === undefined || raw === null) continue;
+      body[k] = raw;
+    }
+  }
   return wpAjax(
     'cm_execute_recurring_now',
-    { id: parseInt(id, 10) },
+    body,
     'cmNonce',
     RECURRING_EXECUTE_TIMEOUT_MS,
   );
