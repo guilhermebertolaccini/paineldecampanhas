@@ -389,7 +389,11 @@ type Props = {
 
 export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, isExecuting, onExecute }: Props) {
   const carteiraStr = campaign?.carteira ?? "";
-  const providers = campaign ? providersListFromCampaign(campaign) : [];
+  /** Lista estável por campanha (evita `filteredTemplates` novo a cada render e loop no efeito de auto‑match). */
+  const providers = useMemo(() => {
+    if (!campaign) return [] as string[];
+    return providersListFromCampaign(campaign);
+  }, [campaign]);
   const userTouchedSelRef = useRef(false);
 
   const [templateSel, setTemplateSel] = useState(RECURRING_EXECUTE_KEEP_TEMPLATE_VALUE);

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Play, Trash2, Clock, CheckCircle, Pause, Loader2, Info,
@@ -308,6 +308,27 @@ export default function CampanhasRecorrentes() {
   const queryClient = useQueryClient();
   const [execDialogOpen, setExecDialogOpen] = useState(false);
   const [execCampaignTarget, setExecCampaignTarget] = useState<RecurringCampaign | null>(null);
+
+  /** Referência estável para o modal (evita loop infinito de efeitos por novo objeto `{}` a cada render). */
+  const execCampaignForDialog = useMemo(() => {
+    if (!execCampaignTarget) return null;
+    const c = execCampaignTarget;
+    return {
+      id: String(c.id),
+      nome_campanha: c.nome_campanha,
+      tabela_origem: c.tabela_origem,
+      template_id: c.template_id,
+      template_code: c.template_code,
+      template_source: c.template_source,
+      broker_code: c.broker_code,
+      customer_code: c.customer_code,
+      carteira: c.carteira,
+      providers_config: c.providers_config,
+      providers_config_parsed: c.providers_config_parsed as Record<string, unknown> | undefined,
+      template_meta: c.template_meta,
+      variables_map: c.variables_map,
+    };
+  }, [execCampaignTarget]);
   const [refreshedEstimates, setRefreshedEstimates] = useState<
     Record<string, { count: number; date: string }>
   >({});
@@ -1121,26 +1142,7 @@ export default function CampanhasRecorrentes() {
           setExecDialogOpen(next);
           if (!next) setExecCampaignTarget(null);
         }}
-        campaign={
-          execCampaignTarget
-            ? {
-                id: String(execCampaignTarget.id),
-                nome_campanha: execCampaignTarget.nome_campanha,
-                tabela_origem: execCampaignTarget.tabela_origem,
-                template_id: execCampaignTarget.template_id,
-                template_code: execCampaignTarget.template_code,
-                template_source: execCampaignTarget.template_source,
-                broker_code: execCampaignTarget.broker_code,
-                customer_code: execCampaignTarget.customer_code,
-                carteira: execCampaignTarget.carteira,
-                providers_config: execCampaignTarget.providers_config,
-                providers_config_parsed:
-                  execCampaignTarget.providers_config_parsed as Record<string, unknown> | undefined,
-                template_meta: execCampaignTarget.template_meta,
-                variables_map: execCampaignTarget.variables_map,
-              }
-            : null
-        }
+        campaign={execCampaignForDialog}
         isExecuting={executeMutation.isPending}
         onExecute={(tpl) => {
           if (!execCampaignTarget) return;
