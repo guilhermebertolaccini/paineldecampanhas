@@ -53,6 +53,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { RecurringCampaignCreateForm } from "@/components/campaign/RecurringCampaignCreateForm";
 import { RecurringExecuteTemplateDialog } from "@/components/campaign/RecurringExecuteTemplateDialog";
 import { FilterBuilder, type FilterItem } from "@/components/campaign/FilterBuilder";
 
