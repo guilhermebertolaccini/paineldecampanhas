@@ -180,64 +180,6 @@ function draftFromCampaign(campaign: CampaignExecuteTarget): ExecuteDraft {
   };
 }
 
-function matchCampaignToTemplateOptionId(
-  campaign: CampaignExecuteTarget,
-  list: { id?: string; source?: string; templateCode?: string; templateId?: unknown; connectionId?: unknown; channelId?: unknown; sendMetaTemplate?: string }[],
-): string {
-  const src = campaign.template_source || "local";
-  const code = String(campaign.template_code || "").trim();
-  const tid = String(campaign.template_id || "");
-  const meta = parseTemplateMeta(campaign.template_meta);
-
-  for (const t of list) {
-    const id = String(t.id ?? "");
-    const ts = String(t.source || "");
-    const tCode = String(t.templateCode || "");
-
-    if (src === "local" && ts === "local" && String(t.id) === tid) {
-      return id;
-    }
-
-    if ((src === "otima_wpp" || src === "otima_rcs") && ts === src && code && tCode === code) {
-      return id;
-    }
-
-    if (src === "gosac_oficial" && ts === "gosac_oficial") {
-      const gtMeta = typeof meta.gosac_template_id === "number" ? meta.gosac_template_id : 0;
-      const connMeta =
-        typeof meta.gosac_connection_id === "number" ? meta.gosac_connection_id : parseInt(String(meta.gosac_connection_id ?? 0), 10) || 0;
-      const tTid =
-        typeof t.templateId === "number" ? t.templateId : parseInt(String(t.templateId ?? 0), 10);
-      const connT =
-        typeof t.connectionId === "number"
-          ? t.connectionId
-          : parseInt(String(t.connectionId ?? 0), 10) || 0;
-      if (gtMeta > 0 && tTid === gtMeta && connMeta === connT && connMeta > 0) return id;
-      if (code && tCode === code) return id;
-    }
-
-    if ((src === "noah_oficial" || src === "noah") && ts === "noah_oficial") {
-      const ch = meta.noah_channel_id != null ? String(meta.noah_channel_id) : "";
-      const nti = meta.noah_template_id != null ? String(meta.noah_template_id) : "";
-      const chSel = t.channelId != null ? String(t.channelId) : "";
-      const idSel = t.templateId != null ? String(t.templateId) : "";
-      if ((ch === chSel || ch === "" || chSel === "") && nti !== "" && nti === idSel) return id;
-      if (code && tCode === code) return id;
-    }
-
-    if (src === "robbu_oficial" && ts === "robbu_oficial" && code && tCode === code) {
-      return id;
-    }
-
-    if (src === "making_oficial" && ts === "making_oficial") {
-      const send = String(t.sendMetaTemplate || "").trim();
-      const useCode = send || tCode;
-      if (code && useCode === code) return id;
-    }
-  }
-  return "";
-}
-
 function applyTemplateRowToDraft(
   sel: Record<string, unknown>,
   prev: ExecuteDraft,
@@ -390,11 +332,35 @@ type Props = {
 export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, isExecuting, onExecute }: Props) {
   const carteiraStr = campaign?.carteira ?? "";
   /** Lista estável por campanha (evita `filteredTemplates` novo a cada render e loop no efeito de auto‑match). */
+  const providersStableKey =
+    typeof campaign?.providers_config === "string"
+      ? campaign.providers_config
+      : JSON.stringify(campaign?.providers_config_parsed ?? null);
+
   const providers = useMemo(() => {
     if (!campaign) return [] as string[];
     return providersListFromCampaign(campaign);
-  }, [campaign]);
+    // Primitive key: evita reinterpretar quando só a referência de `campaign` muda sem alterar dados.
+  }, [campaign?.id, providersStableKey]);
+
   const userTouchedSelRef = useRef(false);
+
+  /** Só deve rodar quando o formulário deve ser “rebocado” sincronamente aos dados vindos da campanha salva — nunca dentro de `.map`/render. */
+  const campaignHydrationKey = campaign
+    ? [
+        campaign.id,
+        campaign.template_source ?? "",
+        campaign.template_code ?? "",
+        campaign.template_id ?? "",
+        campaign.broker_code ?? "",
+        campaign.customer_code ?? "",
+        providersStableKey,
+        campaign.carteira ?? "",
+        campaign.template_meta ?? "",
+        campaign.variables_map ?? "",
+        campaign.tabela_origem ?? "",
+      ].join("|")
+    : "";
 
   const [templateSel, setTemplateSel] = useState(RECURRING_EXECUTE_KEEP_TEMPLATE_VALUE);
   const [draft, setDraft] = useState<ExecuteDraft | null>(null);
@@ -406,10 +372,15 @@ export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, i
   useEffect(() => {
     userTouchedSelRef.current = false;
     if (!open || !campaign) return;
+    /*
+     * Lista vazia (ex.: Ótima `templates: []`) → só “(Manter atual)”; não pré-selecionamos linha na lista para
+     * não acoplar `setState` a novas referências de `filteredTemplates`/`carteiras` (erro #185).
+     */
     setDraft(draftFromCampaign(campaign));
     setSelectedTemplateObj(null);
     setTemplateSel(RECURRING_EXECUTE_KEEP_TEMPLATE_VALUE);
-  }, [open, campaign]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `campaignHydrationKey` cobre campos escalares relevantes vs. referência de `campaign`
+  }, [open, campaignHydrationKey]);
 
   const { data: carteiras = [] } = useQuery({
     queryKey: ["carteiras"],
@@ -638,20 +609,6 @@ export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, i
       return providerMatch && walletMatch;
     });
   }, [templates, providers, selectedWalletRow]);
-
-  useEffect(() => {
-    if (!open || !campaign || userTouchedSelRef.current || filteredTemplates.length === 0) return;
-    const match = matchCampaignToTemplateOptionId(campaign, filteredTemplates);
-    if (!match) return;
-    setTemplateSel(match);
-    const sel = filteredTemplates.find((x) => String(x.id) === String(match));
-    if (!sel) return;
-    setSelectedTemplateObj(sel);
-    setDraft((prev) => {
-      const base = prev || draftFromCampaign(campaign);
-      return applyTemplateRowToDraft(sel as Record<string, unknown>, base, campaign, true);
-    });
-  }, [open, campaign, filteredTemplates]);
 
   const otimaBrokersForTemplate = useMemo(() => {
     const list = Array.isArray(otimaBrokersData) ? otimaBrokersData : [];
