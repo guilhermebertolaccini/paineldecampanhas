@@ -119,9 +119,23 @@ export class WhatsappOtimaProvider extends BaseProvider {
 
       const itemVariables = (item as { variables?: Record<string, unknown> }).variables ?? {};
       const itemAsRecord = item as unknown as Record<string, unknown>;
+      const pickCiLine = (rawKey: string): string => {
+        const key = String(rawKey ?? '').trim();
+        if (!key || !lineVariablesFromMessage) return '';
+        const direct = lineVariablesFromMessage[key];
+        if (direct != null && String(direct).trim() !== '') return String(direct).trim();
+        const low = key.toLowerCase();
+        const alt = Object.keys(lineVariablesFromMessage).find((k) => k.toLowerCase() === low);
+        if (alt != null && lineVariablesFromMessage[alt] != null) {
+          const s = String(lineVariablesFromMessage[alt]).trim();
+          if (s !== '') return s;
+        }
+        return '';
+      };
+
       const lookupField = (fieldName: string): string => {
-        const fromLine = lineVariablesFromMessage?.[fieldName];
-        if (fromLine != null && fromLine !== '') return String(fromLine);
+        const fromLine = pickCiLine(fieldName);
+        if (fromLine !== '') return fromLine;
         const fromItemVars = itemVariables[fieldName];
         if (fromItemVars != null && fromItemVars !== '') return String(fromItemVars);
         const fromRoot = itemAsRecord[fieldName];
@@ -134,8 +148,16 @@ export class WhatsappOtimaProvider extends BaseProvider {
       if (variables_map) {
         for (const [varName, mapping] of Object.entries(variables_map)) {
           if (mapping.type === 'field') {
-            // Cascata: linha-resolvida (PHP) → item.variables → raiz do item
-            resolvedVariables[varName] = lookupField(String(mapping.value ?? ''));
+            // O PHP grava `mensagem.variables` com chave = nome da variável do template (`valor`, `data`),
+            // NÃO com o nome da coluna do CSV. Antes buscávamos só por `mapping.value` (coluna) → vinha vazio.
+            const col = String(mapping.value ?? '').trim();
+            let v = pickCiLine(varName);
+            if (v === '') {
+              const inner = varName.replace(/^\{\{|\}\}$/gu, '').trim();
+              if (inner !== varName) v = pickCiLine(inner);
+            }
+            if (v === '') v = lookupField(col);
+            resolvedVariables[varName] = v;
           } else {
             resolvedVariables[varName] = String(mapping.value ?? '');
           }
@@ -186,6 +208,12 @@ export class WhatsappOtimaProvider extends BaseProvider {
       messages,
       template_code: final_template_code,
     };
+
+    if (messages[0]) {
+      this.logger.error(
+        `[VAR DEBUG] WhatsApp Ótima — 1ª mensagem do lote (corpo API): ${JSON.stringify(messages[0])}`,
+      );
+    }
 
     this.logger.log(`📦 [WhatsApp Ótima] Payload preparado com ${messages.length} mensagens`);
     this.logger.log(`🏢 [WhatsApp Ótima] Broker: ${broker_code}, Customer: ${customer_code}, Template: ${final_template_code}`);

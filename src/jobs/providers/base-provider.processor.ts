@@ -6,6 +6,7 @@ import { WebhookService } from '../../webhook/webhook.service';
 import { BaseProvider } from '../../providers/base/base.provider';
 import { DigitalFunnelMssqlService } from '../../sql-server/digital-funnel-mssql.service';
 import { wordpressConfig } from '../../config/wordpress.config';
+import { enforceTemplateVariableIntegrity } from '../../providers/base/template-variable-failsafe';
 
 export interface ProviderSendJobData {
   campaignId: string;
@@ -98,6 +99,8 @@ export abstract class BaseProviderProcessor extends WorkerHost {
           `[Webhook WP] Aviso: falha ao notificar status processando — agendamento=${agendamentoId} provider=${this.providerName} url=${wordpressConfig.url}`,
         );
       }
+
+      enforceTemplateVariableIntegrity(data, this.providerName, this.logger);
 
       // Envia para o provider
       const result = await this.provider.send(data, credentials);

@@ -234,6 +234,19 @@ export class MakingOficialProvider extends BaseProvider {
   mapMakingVariables(dado: CampaignData): Record<string, string> {
     const out: Record<string, string> = {};
 
+    const msgParsed = this.parseMakingMensagemJson(dado.mensagem);
+    const varsFromMsg = msgParsed?.variables;
+    if (varsFromMsg && typeof varsFromMsg === 'object' && !Array.isArray(varsFromMsg)) {
+      for (const [k, v] of Object.entries(varsFromMsg as Record<string, unknown>)) {
+        const key = String(k).trim();
+        if (!key) continue;
+        const val = this.coerceToDisplayString(v);
+        if (val !== '') {
+          out[key] = val;
+        }
+      }
+    }
+
     const vars = dado.variables;
     if (vars && typeof vars === 'object' && !Array.isArray(vars)) {
       for (const [k, v] of Object.entries(vars)) {

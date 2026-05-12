@@ -163,6 +163,27 @@ export class RcsOtimaProvider extends BaseProvider {
           Object.assign(rowExtraFields, fromWpRow);
         }
 
+        const pickCiLineVars = (templateKeyHint: string): string => {
+          const k = String(templateKeyHint ?? '').trim();
+          if (!k || !lineVariablesFromMessage) {
+            return '';
+          }
+          const direct = lineVariablesFromMessage[k];
+          if (direct != null && String(direct).trim() !== '') {
+            return String(direct).trim();
+          }
+          const low = k.toLowerCase();
+          const alt = Object.keys(lineVariablesFromMessage).find((x) => x.toLowerCase() === low);
+          if (
+            alt != null &&
+            lineVariablesFromMessage[alt] != null &&
+            String(lineVariablesFromMessage[alt]).trim() !== ''
+          ) {
+            return String(lineVariablesFromMessage[alt]).trim();
+          }
+          return '';
+        };
+
         /**
          * De/Para coluna → valor: a planilha chega em `extra_fields` / `extraFields`, não na raiz.
          * Ordem: PHP (linha) → extra_fields do contato → merged (JSON msg + WP) → item.variables → raiz (case-insensitive).
@@ -173,9 +194,9 @@ export class RcsOtimaProvider extends BaseProvider {
             return '';
           }
 
-          const fromLine = lineVariablesFromMessage?.[key];
-          if (fromLine != null && fromLine !== '') {
-            return String(fromLine);
+          const fromLine = pickCiLineVars(key);
+          if (fromLine !== '') {
+            return fromLine;
           }
 
           const extraSolo = this.normalizeRowExtraFields(
@@ -211,7 +232,18 @@ export class RcsOtimaProvider extends BaseProvider {
           for (const [varName, mapping] of Object.entries(variables_map)) {
             const key = this.rcsTemplateVarKey(varName);
             if (mapping.type === 'field') {
-              resolvedVariables[key] = lookupField(String(mapping.value ?? ''));
+              const col = String(mapping.value ?? '').trim();
+              let v = pickCiLineVars(varName);
+              if (v === '') {
+                const inner = String(varName).replace(/^\{\{|\}\}$/gu, '').trim();
+                if (inner !== String(varName)) {
+                  v = pickCiLineVars(inner);
+                }
+              }
+              if (v === '') {
+                v = lookupField(col);
+              }
+              resolvedVariables[key] = v;
             } else {
               resolvedVariables[key] = String(mapping.value ?? '');
             }
@@ -297,8 +329,8 @@ export class RcsOtimaProvider extends BaseProvider {
       // Debug obrigatório p/ validar substituição de placeholders (Campanha por Arquivo):
       // inspecionar 1ª linha do lote antes do HTTP (valores reais vs literais -varN-).
       if (messages[0]) {
-        this.logger.warn(
-          `[RCS Ótima] DEBUG amostra (1º contato deste customer_code): ${JSON.stringify(messages[0])}`,
+        this.logger.error(
+          `[VAR DEBUG] RCS Ótima — 1ª mensagem do lote (corpo API): ${JSON.stringify(messages[0])}`,
         );
       }
       const validationPayload: Record<string, unknown> = {

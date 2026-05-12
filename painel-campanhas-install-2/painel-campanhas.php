@@ -1446,12 +1446,35 @@ class Painel_Campanhas
                 $variables_row['noah_channel_id'] = $noah_channel_rest;
                 $variables_row['broker_code'] = $noah_channel_rest;
             }
-            if (is_array($msg_decoded) && ($msg_decoded['template_source'] ?? '') === 'making_oficial') {
-                $mk_vars = $msg_decoded['variables'] ?? [];
-                if (is_array($mk_vars)) {
-                    foreach ($mk_vars as $mk_k => $mk_v) {
-                        if (is_string($mk_k) && $mk_k !== '') {
-                            $variables_row[$mk_k] = (string) $mk_v;
+            // Mescla `mensagem.variables` (resolvidas por linha no PHP) para o Nest consumir também
+            // via `CampaignData.variables` — antes só fazíamos merge explícito p/ Making, e Ótima/NOAH/etc.
+            // dependiam só do parse de `mensagem` no provider (com bugs de lookup por nome de coluna).
+            if (is_array($msg_decoded)) {
+                $ts_merge = strtolower(trim((string) ($msg_decoded['template_source'] ?? '')));
+                $sources_com_variables_linha = [
+                    'making_oficial',
+                    'otima_wpp',
+                    'otima_rcs',
+                    'gosac_oficial',
+                    'noah_oficial',
+                    'robbu_oficial',
+                    'techia_discador',
+                ];
+                if (in_array($ts_merge, $sources_com_variables_linha, true)) {
+                    $mk_vars = $msg_decoded['variables'] ?? null;
+                    if (is_object($mk_vars)) {
+                        $mk_vars = (array) $mk_vars;
+                    }
+                    if (is_array($mk_vars)) {
+                        foreach ($mk_vars as $mk_k => $mk_v) {
+                            if (! is_string($mk_k) || $mk_k === '') {
+                                continue;
+                            }
+                            if (is_scalar($mk_v)) {
+                                $variables_row[$mk_k] = (string) $mk_v;
+                            } else {
+                                $variables_row[$mk_k] = wp_json_encode($mk_v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                            }
                         }
                     }
                 }
