@@ -16,12 +16,23 @@ export interface WebhookStatusPayload {
   provider: string;
 }
 
-const BATCH_SIZE = 50;
+const BULK_WEBHOOK_CHUNK_SIZE = 250;
+
+/** Mantém payloads HTTP pequenos: respostas brutas dos providers podem ultrapassar limites PHP. */
+const MAX_RESPOSTA_API_CHARS = 12_000;
+const MAX_MENSAGEM_PROGRESSO_CHARS = 2_048;
+
 const MAX_RETRIES = 3;
 const INITIAL_RETRY_DELAY_MS = 1000;
-const REQUEST_TIMEOUT_MS = 30000;
-const DELAY_BETWEEN_BATCHES_MS = 500;
-const MAX_CONCURRENT_REQUESTS = 3;
+const SINGLE_REQUEST_TIMEOUT_MS = 30000;
+const BULK_CHUNK_REQUEST_TIMEOUT_MS = 120_000;
+const DELAY_BETWEEN_BULK_BATCHES_MS = 600;
+
+/**
+ * Um único cliente HTTP por vez contra o WP evita rajadas paralelas vindas de vários workers BullMQ.
+ * Pedidos únicos continuam passando por enqueueRequest().
+ */
+const MAX_CONCURRENT_SINGLE_REQUESTS = 1;
 
 @Injectable()
 export class WebhookService {
@@ -40,19 +51,25 @@ export class WebhookService {
   async sendBulkStatusUpdate(payloads: WebhookStatusPayload[]): Promise<{ succeeded: number; failed: number }> {
     if (!payloads.length) return { succeeded: 0, failed: 0 };
 
-    this.logger.log(`📦 Sending bulk webhook: ${payloads.length} updates in chunks of ${BATCH_SIZE}`);
+    const chunks = this.chunkArray(payloads, BULK_WEBHOOK_CHUNK_SIZE);
+    const totalBatches = chunks.length;
+
+    this.logger.log(
+      `[Webhook WP] modo bulk: ${payloads.length} atualização(ões) em ${totalBatches} lote(s) sequencial(is) — máximo ${BULK_WEBHOOK_CHUNK_SIZE} atualizações por POST`,
+    );
 
     let succeeded = 0;
     let failed = 0;
 
-    const chunks = this.chunkArray(payloads, BATCH_SIZE);
-
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      this.logger.log(`📦 Processing chunk ${i + 1}/${chunks.length} (${chunk.length} items)`);
+    for (let batchIndex = 0; batchIndex < chunks.length; batchIndex++) {
+      const chunk = chunks[batchIndex];
 
       try {
-        const ok = await this.enqueueRequest(() => this.sendChunkWithRetry(chunk));
+        this.logger.log(
+          `[Webhook WP] Enviando lote ${batchIndex + 1} de ${totalBatches} (${chunk.length} atualizações neste POST)`,
+        );
+        /** Lotes bulk são sempre sequenciais (sem dequeue paralelo): reduz timeouts no WordPress/PHP. */
+        const ok = await this.sendChunkWithRetry(chunk, batchIndex + 1, totalBatches);
         if (ok) {
           succeeded += chunk.length;
         } else {
@@ -62,12 +79,14 @@ export class WebhookService {
         failed += chunk.length;
       }
 
-      if (i < chunks.length - 1) {
-        await this.sleep(DELAY_BETWEEN_BATCHES_MS);
+      if (batchIndex < chunks.length - 1) {
+        await this.sleep(DELAY_BETWEEN_BULK_BATCHES_MS);
       }
     }
 
-    this.logger.log(`📦 Bulk webhook complete: ${succeeded} succeeded, ${failed} failed`);
+    this.logger.log(
+      `[Webhook WP] modo bulk concluído: ${succeeded} bem-sucedida(s), ${failed} falhada(s)`,
+    );
     return { succeeded, failed };
   }
 
@@ -141,9 +160,27 @@ export class WebhookService {
 
   // ---------------------------------------------------------------------------
 
+  /** Evita POST único gigante (timeouts PHP/memória WP) ao truncar corpos de provedor volumosos. */
+  private clampPayloadForTransport(p: WebhookStatusPayload): WebhookStatusPayload {
+    let { resposta_api, mensagem_progresso } = p;
+    if (resposta_api != null && resposta_api.length > MAX_RESPOSTA_API_CHARS) {
+      const suffix = '\n...[trunc Nest: resposta_api]';
+      resposta_api =
+        resposta_api.slice(0, Math.max(0, MAX_RESPOSTA_API_CHARS - suffix.length)) + suffix;
+    }
+    if (mensagem_progresso != null && mensagem_progresso.length > MAX_MENSAGEM_PROGRESSO_CHARS) {
+      mensagem_progresso = mensagem_progresso.slice(0, MAX_MENSAGEM_PROGRESSO_CHARS) + '…';
+    }
+    if (resposta_api === p.resposta_api && mensagem_progresso === p.mensagem_progresso) {
+      return p;
+    }
+    return { ...p, resposta_api, mensagem_progresso };
+  }
+
   private async sendSingleWithRetry(payload: WebhookStatusPayload): Promise<boolean> {
     const url = wordpressConfig.endpoints.webhookStatus();
     const hasKey = !!wordpressConfig.apiKey?.trim();
+    const safe = this.clampPayloadForTransport(payload);
     this.logger.warn(
       `[Webhook WP] PREQ url=${url} | WORDPRESS configurada=${!!wordpressConfig.url?.trim()} | X-API-KEY definida nest=${hasKey} (compare com acm_master_api_key no WP)`,
     );
@@ -152,17 +189,17 @@ export class WebhookService {
       try {
         this.logger.log(`[Webhook WP] OUT (single) tentativa ${attempt}/${MAX_RETRIES}`);
         this.logger.log(
-          `[Webhook WP] PAYLOAD_OUT agendamento_id=${payload.agendamento_id} provider=${payload.provider} status=${payload.status}`,
+          `[Webhook WP] PAYLOAD_OUT agendamento_id=${safe.agendamento_id} provider=${safe.provider} status=${safe.status}`,
         );
-        this.logger.log(`[Webhook WP] PAYLOAD_JSON_OUT\n${this.formatPayloadForDebug(payload)}`);
+        this.logger.log(`[Webhook WP] PAYLOAD_JSON_OUT\n${this.formatPayloadForDebug(safe)}`);
 
         const response = await firstValueFrom(
-          this.httpService.post(url, payload, {
+          this.httpService.post(url, safe, {
             headers: {
               'Content-Type': 'application/json',
               'X-API-KEY': wordpressConfig.apiKey,
             },
-            timeout: REQUEST_TIMEOUT_MS,
+            timeout: SINGLE_REQUEST_TIMEOUT_MS,
           }),
         );
 
@@ -176,7 +213,7 @@ export class WebhookService {
             );
             return false;
           }
-          this.logger.log(`[Webhook WP] OK single agendamento_id=${payload.agendamento_id} status_wp_flow=${payload.status}`);
+          this.logger.log(`[Webhook WP] OK single agendamento_id=${safe.agendamento_id} status_wp_flow=${safe.status}`);
           return true;
         }
 
@@ -219,16 +256,21 @@ export class WebhookService {
     return false;
   }
 
-  private async sendChunkWithRetry(chunk: WebhookStatusPayload[]): Promise<boolean> {
+  private async sendChunkWithRetry(
+    chunk: WebhookStatusPayload[],
+    batchOrdinal: number,
+    totalBatches: number,
+  ): Promise<boolean> {
     const url = wordpressConfig.endpoints.webhookStatus();
-    const bulkPayload = { bulk: true, updates: chunk };
+    const updates = chunk.map((p) => this.clampPayloadForTransport(p));
+    const bulkPayload = { bulk: true, updates };
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         this.logger.log(
-          `[Webhook WP] OUT (bulk) chunk=${chunk.length} tentativa=${attempt}/${MAX_RETRIES}`,
+          `[Webhook WP] OUT (bulk) lote ${batchOrdinal}/${totalBatches}, ${updates.length} item(ns), tentativa ${attempt}/${MAX_RETRIES}`,
         );
-        const sample = chunk.slice(0, 3).map((c) => ({
+        const sample = updates.slice(0, 3).map((c) => ({
           agendamento_id: c.agendamento_id,
           status: c.status,
           provider: c.provider,
@@ -241,7 +283,7 @@ export class WebhookService {
               'Content-Type': 'application/json',
               'X-API-KEY': wordpressConfig.apiKey,
             },
-            timeout: REQUEST_TIMEOUT_MS,
+            timeout: BULK_CHUNK_REQUEST_TIMEOUT_MS,
             maxContentLength: 50 * 1024 * 1024,
             maxBodyLength: 50 * 1024 * 1024,
           }),
@@ -257,7 +299,9 @@ export class WebhookService {
             );
             return false;
           }
-          this.logger.log(`[Webhook WP] OK bulk chunk=${chunk.length}`);
+          this.logger.log(
+            `[Webhook WP] OK bulk lote ${batchOrdinal}/${totalBatches}: ${updates.length} atualização(ões) aplicada(s) neste POST`,
+          );
           return true;
         }
 
@@ -283,7 +327,9 @@ export class WebhookService {
         this.logger.warn(`[Webhook WP][bulk] Tentativa ${attempt}/${MAX_RETRIES}: ${detail}`);
 
         if (!isRetryable || attempt === MAX_RETRIES) {
-          this.logger.error(`[Webhook WP][bulk] Chunk falhou definitivamente (${chunk.length}) | ${detail}`);
+          this.logger.error(
+            `[Webhook WP][bulk] lote ${batchOrdinal}/${totalBatches} falhou definitivamente (${updates.length}) | ${detail}`,
+          );
           return false;
         }
 
@@ -295,8 +341,7 @@ export class WebhookService {
   }
 
   /**
-   * Concurrency limiter: ensures at most MAX_CONCURRENT_REQUESTS hit WordPress
-   * simultaneously. Excess requests are queued and drained automatically.
+   * Fila apenas para chamadas single: garante que no máximo MAX_CONCURRENT_SINGLE_REQUESTS pedidos ao WP corram em paralelo.
    */
   private enqueueRequest<T>(fn: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -312,7 +357,7 @@ export class WebhookService {
         }
       };
 
-      if (this.activeRequests < MAX_CONCURRENT_REQUESTS) {
+      if (this.activeRequests < MAX_CONCURRENT_SINGLE_REQUESTS) {
         execute();
       } else {
         this.requestQueue.push(execute);
@@ -321,7 +366,7 @@ export class WebhookService {
   }
 
   private drainQueue(): void {
-    while (this.activeRequests < MAX_CONCURRENT_REQUESTS && this.requestQueue.length > 0) {
+    while (this.activeRequests < MAX_CONCURRENT_SINGLE_REQUESTS && this.requestQueue.length > 0) {
       const next = this.requestQueue.shift();
       if (next) next();
     }
