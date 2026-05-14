@@ -799,13 +799,24 @@ export type RecurringExecuteTemplatePayload = {
   making_team_id?: number;
   making_cost_center_id?: number;
 };
+
+/** Cadência apenas para este disparo “Gerar agora” da recorrência (Nest lê pc_campaign_settings). */
+export type RecurringExecuteThrottlePayload = {
+  throttling_type: 'none' | 'linear' | 'split';
+  throttling_config: Record<string, unknown>;
+};
 const RECURRING_EXECUTE_TIMEOUT_MS = 25 * 60 * 1000;
 
 export const executeRecurringNow = (
   id: string,
   templateOverride?: RecurringExecuteTemplatePayload | null,
+  throttleOverlay?: RecurringExecuteThrottlePayload | null,
 ) => {
   const body: Record<string, unknown> = { id: parseInt(id, 10) };
+  if (throttleOverlay && typeof throttleOverlay === 'object') {
+    body.throttling_type = throttleOverlay.throttling_type ?? 'none';
+    body.throttling_config = JSON.stringify(throttleOverlay.throttling_config ?? {});
+  }
   if (templateOverride && typeof templateOverride === "object") {
     for (const [k, raw] of Object.entries(templateOverride)) {
       if (raw === undefined || raw === null) continue;

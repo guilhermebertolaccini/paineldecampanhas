@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -35,6 +36,7 @@ import {
   getOtimaTemplates,
   getOtimaBrokers,
   type RecurringExecuteTemplatePayload,
+  type RecurringExecuteThrottlePayload,
 } from "@/lib/api";
 import {
   TemplateVariableMapper,
@@ -65,6 +67,14 @@ export type CampaignExecuteTarget = {
   providers_config_parsed?: Record<string, unknown>;
   template_meta?: string;
   variables_map?: string;
+  /** Cadência gravada na recorrência; base para o formulário opcional ao disparar. */
+  throttling_type?: string;
+  throttling_config?: string;
+};
+
+export type RecurringExecuteSubmitOptions = {
+  templatePayload: RecurringExecuteTemplatePayload | null;
+  throttleOverlay: RecurringExecuteThrottlePayload;
 };
 
 type ExecuteDraft = {
@@ -326,7 +336,7 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   campaign: CampaignExecuteTarget | null;
   isExecuting?: boolean;
-  onExecute: (payload: RecurringExecuteTemplatePayload | null) => void;
+  onExecute: (opts: RecurringExecuteSubmitOptions) => void;
 };
 
 export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, isExecuting, onExecute }: Props) {
@@ -359,12 +369,22 @@ export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, i
         campaign.template_meta ?? "",
         campaign.variables_map ?? "",
         campaign.tabela_origem ?? "",
+        campaign.throttling_type ?? "",
+        campaign.throttling_config ?? "",
       ].join("|")
     : "";
 
   const [templateSel, setTemplateSel] = useState(RECURRING_EXECUTE_KEEP_TEMPLATE_VALUE);
   const [draft, setDraft] = useState<ExecuteDraft | null>(null);
   const [selectedTemplateObj, setSelectedTemplateObj] = useState<Record<string, unknown> | null>(null);
+  const [thrType, setThrType] = useState<"none" | "linear" | "split">("none");
+  const [thrCfg, setThrCfg] = useState<Record<string, unknown>>({
+    qtd_msgs: 100,
+    intervalo_minutos: 60,
+    fase1_percent: 70,
+    fase1_horas: 2,
+    fase2_horas: 4,
+  });
 
   const salesforceOnly = useMemo(() => providers.length > 0 && providers.every((p) => p === "SALESFORCE"), [providers]);
   const techiaOnly = useMemo(() => providers.length > 0 && providers.every((p) => p === "TECH_IA"), [providers]);
@@ -379,6 +399,22 @@ export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, i
     setDraft(draftFromCampaign(campaign));
     setSelectedTemplateObj(null);
     setTemplateSel(RECURRING_EXECUTE_KEEP_TEMPLATE_VALUE);
+    const rawT = String(campaign.throttling_type ?? "none").toLowerCase();
+    setThrType(rawT === "linear" || rawT === "split" ? rawT : "none");
+    let pj: Record<string, unknown> = {};
+    try {
+      const jc = campaign.throttling_config;
+      if (typeof jc === "string" && jc.trim()) pj = JSON.parse(jc);
+    } catch {
+      pj = {};
+    }
+    setThrCfg({
+      qtd_msgs: pj.qtd_msgs ?? 100,
+      intervalo_minutos: pj.intervalo_minutos ?? 60,
+      fase1_percent: pj.fase1_percent ?? 70,
+      fase1_horas: pj.fase1_horas ?? 2,
+      fase2_horas: pj.fase2_horas ?? 4,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `campaignHydrationKey` cobre campos escalares relevantes vs. referência de `campaign`
   }, [open, campaignHydrationKey]);
 
@@ -683,7 +719,27 @@ export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, i
   }, [draft?.template_source, draft?.template_variables, selectedTemplateObj]);
 
   const footerDisabledReason = useMemo(() => {
-    if (!draft || salesforceOnly || techiaOnly) return null;
+    if (thrType === "linear") {
+      const q = Number(thrCfg.qtd_msgs);
+      const iv = Number(thrCfg.intervalo_minutos);
+      if (!Number.isFinite(q) || q < 1)
+        return "Cadência linear: informe mensagens por lote (inteiro ≥ 1).";
+      if (!Number.isFinite(iv) || iv < 1)
+        return "Cadência linear: intervalo em minutos deve ser ≥ 1.";
+    }
+    if (thrType === "split") {
+      const fp = Number(thrCfg.fase1_percent);
+      const fh = Number(thrCfg.fase1_horas);
+      const s2 = Number(thrCfg.fase2_horas);
+      if (!Number.isFinite(fp) || fp < 1 || fp > 99)
+        return "Cadência em fases: percentual da fase 1 entre 1 e 99.";
+      if (!Number.isFinite(fh) || fh <= 0 || !Number.isFinite(s2) || s2 <= 0)
+        return "Cadência em fases: durações (horas) devem ser > 0.";
+    }
+
+    if (salesforceOnly || techiaOnly) return null;
+
+    if (!draft) return null;
 
     const effectiveSource = draft.template_source || "local";
 
@@ -701,14 +757,20 @@ export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, i
         return "Making Oficial: selecione equipe e centro de custo.";
     }
 
-    if (effectiveSource === "local" && (!draft.template_id || draft.template_id <= 0) && templateSel !== RECURRING_EXECUTE_KEEP_TEMPLATE_VALUE) {
+    if (
+      effectiveSource === "local" &&
+      (!draft.template_id || draft.template_id <= 0) &&
+      templateSel !== RECURRING_EXECUTE_KEEP_TEMPLATE_VALUE
+    ) {
       return "Template local inválido.";
     }
 
     const codeOk =
       !!draft.template_code && String(draft.template_code).trim() !== ""
         ? true
-        : effectiveSource === "local" ? draft.template_id > 0 : false;
+        : effectiveSource === "local"
+          ? draft.template_id > 0
+          : false;
 
     const keep = templateSel === RECURRING_EXECUTE_KEEP_TEMPLATE_VALUE;
     if (!keep && !["techia_discador", "salesforce"].includes(effectiveSource) && !codeOk && effectiveSource !== "local") {
@@ -716,7 +778,28 @@ export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, i
     }
 
     return null;
-  }, [draft, salesforceOnly, techiaOnly, templateSel]);
+  }, [draft, salesforceOnly, techiaOnly, templateSel, thrCfg, thrType]);
+
+  const buildThrottleOverlay = (): RecurringExecuteThrottlePayload => {
+    if (thrType === "none") return { throttling_type: "none", throttling_config: {} };
+    if (thrType === "linear") {
+      return {
+        throttling_type: "linear",
+        throttling_config: {
+          qtd_msgs: Math.max(1, parseInt(String(thrCfg.qtd_msgs ?? 100), 10) || 100),
+          intervalo_minutos: Math.max(1, parseInt(String(thrCfg.intervalo_minutos ?? 60), 10) || 60),
+        },
+      };
+    }
+    return {
+      throttling_type: "split",
+      throttling_config: {
+        fase1_percent: Math.min(99, Math.max(1, parseInt(String(thrCfg.fase1_percent ?? 70), 10) || 70)),
+        fase1_horas: Math.max(0.1, parseFloat(String(thrCfg.fase1_horas ?? 2)) || 2),
+        fase2_horas: Math.max(0.1, parseFloat(String(thrCfg.fase2_horas ?? 4)) || 4),
+      },
+    };
+  };
 
   const handleTemplateDropdownChange = (value: string) => {
     userTouchedSelRef.current = true;
@@ -747,15 +830,15 @@ export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, i
 
   const validateAndExecute = () => {
     if (!campaign) return;
+    const throttleOverlay = buildThrottleOverlay();
     if (salesforceOnly || techiaOnly) {
-      onExecute(null);
+      onExecute({ templatePayload: null, throttleOverlay });
       return;
     }
     if (!draft) return;
 
-    /* Manter atual: não envia override (BD permanece como está). */
     if (templateSel === RECURRING_EXECUTE_KEEP_TEMPLATE_VALUE) {
-      onExecute(null);
+      onExecute({ templatePayload: null, throttleOverlay });
       return;
     }
 
@@ -767,14 +850,17 @@ export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, i
         return;
     }
 
-    onExecute(serializeRecurringExecuteTemplatePayload(draft));
+    onExecute({
+      templatePayload: serializeRecurringExecuteTemplatePayload(draft),
+      throttleOverlay,
+    });
   };
 
   if (!campaign) return null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Gerar envio agora</DialogTitle>
           <DialogDescription>
@@ -963,6 +1049,114 @@ export function RecurringExecuteTemplateDialog({ open, onOpenChange, campaign, i
             )}
           </div>
         )}
+
+        <div className="space-y-3 border-t pt-4 mt-2">
+          <p className="text-sm font-medium">Cadência neste disparo</p>
+          <p className="text-xs text-muted-foreground">
+            Distribuição opcional igual à Nova Campanha (persistida em <code className="text-xs bg-muted px-1 rounded">pc_campaign_settings</code>
+            até o próximo disparo ou alteração nos dados da recorrência).
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <button
+              type="button"
+              className={`cursor-pointer rounded-lg border-2 p-2 text-left text-xs transition-all ${thrType === "none" ? "border-primary bg-primary/5" : "border-border"}`}
+              onClick={() => setThrType("none")}
+            >
+              Imediato
+            </button>
+            <button
+              type="button"
+              className={`cursor-pointer rounded-lg border-2 p-2 text-left text-xs transition-all ${thrType === "linear" ? "border-primary bg-primary/5" : "border-border"}`}
+              onClick={() => setThrType("linear")}
+            >
+              Uniforme (% / min)
+            </button>
+            <button
+              type="button"
+              className={`cursor-pointer rounded-lg border-2 p-2 text-left text-xs transition-all ${thrType === "split" ? "border-primary bg-primary/5" : "border-border"}`}
+              onClick={() => {
+                setThrType("split");
+                setThrCfg((c) => ({
+                  ...c,
+                  fase1_percent: c.fase1_percent ?? 70,
+                  fase1_horas: c.fase1_horas ?? 2,
+                  fase2_horas: c.fase2_horas ?? 4,
+                }));
+              }}
+            >
+              Em fases
+            </button>
+          </div>
+          {thrType === "linear" && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Msgs / lote</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={String(thrCfg.qtd_msgs ?? 100)}
+                  onChange={(e) =>
+                    setThrCfg((x) => ({ ...x, qtd_msgs: e.target.value === "" ? "" : parseInt(e.target.value, 10) }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Intervalo (min)</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={String(thrCfg.intervalo_minutos ?? 60)}
+                  onChange={(e) =>
+                    setThrCfg((x) => ({
+                      ...x,
+                      intervalo_minutos: e.target.value === "" ? "" : parseInt(e.target.value, 10),
+                    }))
+                  }
+                />
+              </div>
+            </div>
+          )}
+          {thrType === "split" && (
+            <div className="grid grid-cols-3 gap-2">
+              <div className="space-y-1">
+                <Label className="text-xs">Fase 1 %</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={99}
+                  value={String(thrCfg.fase1_percent ?? 70)}
+                  onChange={(e) =>
+                    setThrCfg((x) => ({ ...x, fase1_percent: e.target.value === "" ? "" : parseInt(e.target.value, 10) }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Fase 1 (h)</Label>
+                <Input
+                  type="number"
+                  step="0.1"
+                  min={0.1}
+                  value={String(thrCfg.fase1_horas ?? 2)}
+                  onChange={(e) =>
+                    setThrCfg((x) => ({ ...x, fase1_horas: e.target.value === "" ? "" : parseFloat(e.target.value) }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Fase 2 (h)</Label>
+                <Input
+                  type="number"
+                  step="0.1"
+                  min={0.1}
+                  value={String(thrCfg.fase2_horas ?? 4)}
+                  onChange={(e) =>
+                    setThrCfg((x) => ({ ...x, fase2_horas: e.target.value === "" ? "" : parseFloat(e.target.value) }))
+                  }
+                />
+              </div>
+            </div>
+          )}
+        </div>
 
         {footerDisabledReason ? (
           <Alert variant="destructive" className="text-xs">

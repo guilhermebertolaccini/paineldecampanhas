@@ -3715,6 +3715,10 @@ class Painel_Campanhas
             $v = $this->get_cpf_record_field_ci($record, $ek);
             $out[$ek] = ($v !== '' && $v !== null) ? (string) $v : null;
         }
+        /* Rastreamento opcional proveniente da fila ao injetar iscas (consumido pelo Nest / fail‑safe). */
+        if (!empty($record['_pcm_is_bait'])) {
+            $out['is_bait'] = true;
+        }
 
         return $out;
     }
@@ -4355,6 +4359,7 @@ class Painel_Campanhas
                             'idgis_ambiente' => $isca['idgis_ambiente'] ?? 0,
                             'id_carteira' => $isca_id_carteira,
                             'idcob_contrato' => 0,
+                            '_pcm_is_bait' => true,
                         ];
                         $records[] = $isca_record;
                         $baits_added++;
@@ -5411,6 +5416,7 @@ class Painel_Campanhas
                         'idgis_ambiente' => $isca['idgis_ambiente'] ?? 0,
                         'id_carteira' => $isca_id_carteira,
                         'idcob_contrato' => 0,
+                        '_pcm_is_bait' => true,
                     ];
                     $records[] = $isca_record;
                     $baits_added++;
@@ -7699,6 +7705,19 @@ class Painel_Campanhas
                 $campaign['providers_config'] = json_encode($providers_config);
             }
 
+            // Cadência (throttling) opcional apenas neste “Gerar agora” — alinha-se ao fluxo Nova Campanha (<pc_campaign_settings).
+            $thr_type_post = sanitize_text_field(wp_unslash($_POST['throttling_type'] ?? ''));
+            if ($thr_type_post !== '' && in_array($thr_type_post, ['none', 'linear', 'split'], true)) {
+                $campaign['throttling_type'] = $thr_type_post;
+            }
+            $thr_cfg_raw = isset($_POST['throttling_config']) ? wp_unslash((string) $_POST['throttling_config']) : '';
+            if ($thr_cfg_raw !== '') {
+                $decoded_thr = json_decode(stripslashes($thr_cfg_raw), true);
+                if (is_array($decoded_thr)) {
+                    $campaign['throttling_config'] = wp_json_encode($decoded_thr, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                }
+            }
+
             $gen_tx_active = ($wpdb->query('START TRANSACTION') !== false);
             if (! $gen_tx_active) {
                 error_log('[Gerar Agora] AVISO: START TRANSACTION indisponível ou falhou — geração sem atomicidade garantida entre cm_recurring_campaigns / envios_pendentes.');
@@ -8076,6 +8095,7 @@ class Painel_Campanhas
                         'id_carteira' => $bait_id_carteira,
                         'idcob_contrato' => 0,
                         'cpf_cnpj' => isset($bait['cpf']) ? (string) $bait['cpf'] : '',
+                        '_pcm_is_bait' => true,
                     ];
                     $baits_count++;
                 }

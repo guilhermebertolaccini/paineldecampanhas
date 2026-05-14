@@ -5,7 +5,7 @@ import { CampaignsService } from '../campaigns/campaigns.service';
 import { DigitalFunnelMssqlService } from '../sql-server/digital-funnel-mssql.service';
 import { queueNames } from '../config/bullmq.config';
 import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
+import { applyDonorVariablesToBaitRows } from '../utils/bait-variables-fallback';
 
 @Processor(queueNames.DISPATCH_CAMPAIGN)
 export class DispatchCampaignProcessor extends WorkerHost {
@@ -40,7 +40,9 @@ export class DispatchCampaignProcessor extends WorkerHost {
       this.logger.log(`Provider identified: ${provider}`);
 
       // 2. Buscar dados no WordPress
-      const data = await this.campaignsService.fetchDataFromWordPress(agendamento_id);
+      let data = await this.campaignsService.fetchDataFromWordPress(agendamento_id);
+      /* Iscas: replicar template variables da 1ª linha real (fail-safe + envio coerente ao ficheiro). */
+      data = applyDonorVariablesToBaitRows(data);
       this.logger.log(`Fetched ${data.length} records from WordPress`);
 
       // 3. Buscar credenciais

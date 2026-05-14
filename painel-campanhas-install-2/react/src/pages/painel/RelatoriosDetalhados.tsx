@@ -20,9 +20,40 @@ import {
   Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
   BarChart3, Calendar, RefreshCw, Send, AlertTriangle,
   CheckCircle, Clock, TrendingUp, Gauge, Timer,
+  Download,
+  Loader2,
 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { objectsToCsv, downloadCsvUtf8 } from "@/lib/csvExport";
 
 // ─── Helpers ─────────────────────────────────────────────
+
+/** Concatena todas as páginas REST (máx 100/pág no PHP) para exportação CSV local. */
+async function fetchAllReportPages(
+  fetchFn: (p: Record<string, unknown>) => Promise<{
+    records?: unknown[];
+    total_pages?: number;
+  }>,
+  base: Record<string, unknown>,
+  maxPages = 3000,
+): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  let page = 1;
+  let totalPages = 1;
+  do {
+    const d = await fetchFn({ ...base, page, per_page: 100 });
+    totalPages = Math.max(1, Number(d?.total_pages) || 1);
+    const rec = d?.records;
+    if (Array.isArray(rec)) {
+      for (const r of rec) {
+        if (r && typeof r === "object") out.push(r as Record<string, unknown>);
+      }
+    }
+    page += 1;
+    if (page > totalPages || page > maxPages) break;
+  } while (page <= totalPages);
+  return out;
+}
 
 const STATUS_MAP: Record<string, { variant: "success" | "destructive" | "warning" | "info" | "secondary"; label: string }> = {
   enviado: { variant: "success", label: "Enviado" },
@@ -109,13 +140,17 @@ function Pager({ page, totalPages, total, perPage, onPage, onPerPage }: {
 
 // ─── Generic Dynamic Table Tab ───────────────────────────
 
-function DynamicTableTab({ queryKey, fetchFn, label }: {
+function DynamicTableTab({ queryKey, fetchFn, label, exportBasename }: {
   queryKey: string;
   fetchFn: (params: Record<string, any>) => Promise<any>;
   label: string;
+  /** Prefixo do ficheiro CSV (ASCII). */
+  exportBasename?: string;
 }) {
   const [p, setP] = useState<Record<string, any>>({ page: 1, per_page: 50, search: "", col_filter: "", col_filter_val: "", date_from: "", date_to: "" });
   const [si, setSi] = useState("");
+  const { toast } = useToast();
+  const [exportingCsv, setExportingCsv] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: [queryKey, p],
@@ -136,6 +171,46 @@ function DynamicTableTab({ queryKey, fetchFn, label }: {
   const go = useCallback(() => setP((x: any) => ({ ...x, search: si, page: 1 })), [si]);
 
   const displayCols = columns.length > 0 ? columns : (rows.length > 0 ? Object.keys(rows[0]) : []);
+
+  const exportCsvBasename =
+    exportBasename ||
+    label.replace(/[^\w\-]+/g, "_");
+
+  const handleExportCsv = useCallback(async () => {
+    if (!exists || isLoading) return;
+    setExportingCsv(true);
+    try {
+      const mergedParams = {
+        ...p,
+        search: si || p.search || "",
+      };
+      const all = await fetchAllReportPages(
+        fetchFn as (args: Record<string, unknown>) => Promise<{ records?: unknown[]; total_pages?: number }>,
+        mergedParams,
+      );
+      if (!all.length) {
+        toast({
+          title: "Sem dados",
+          description: "Nada para exportar com os filtros atuais.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const cols =
+        displayCols.length > 0 ? displayCols : Object.keys(all[0]);
+      const csv = objectsToCsv(all, cols);
+      downloadCsvUtf8(`${exportCsvBasename}-${Date.now()}.csv`, csv);
+      toast({ title: "CSV gerado", description: `${all.length} linha(s).` });
+    } catch (e: unknown) {
+      toast({
+        variant: "destructive",
+        title: "Falha ao exportar",
+        description: e instanceof Error ? e.message : "Erro desconhecido",
+      });
+    } finally {
+      setExportingCsv(false);
+    }
+  }, [exists, isLoading, fetchFn, p, si, displayCols, toast, exportCsvBasename]);
 
   if (!exists && !isLoading) {
     return (
@@ -186,6 +261,23 @@ function DynamicTableTab({ queryKey, fetchFn, label }: {
             <Input type="date" value={p.date_to} onChange={(e) => setP((x: any) => ({ ...x, date_to: e.target.value, page: 1 }))} className="text-xs" />
           </>
         )}
+      </div>
+
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!exists || isLoading || exportingCsv}
+          onClick={() => void handleExportCsv()}
+        >
+          {exportingCsv ? (
+            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+          ) : (
+            <Download className="h-4 w-4 mr-2" />
+          )}
+          Exportar (CSV)
+        </Button>
       </div>
 
       {dateColumns.length > 0 && (
@@ -242,6 +334,47 @@ function TabEnvios() {
   const fornecedores = data?.fornecedores ?? [];
 
   const go = useCallback(() => setP((x: any) => ({ ...x, search: si, page: 1 })), [si]);
+  const { toast } = useToast();
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const ENV_COLS = [
+    "id",
+    "telefone",
+    "nome",
+    "cpf_cnpj",
+    "status",
+    "fornecedor",
+    "agendamento_id",
+    "idgis_ambiente",
+    "data_cadastro",
+    "data_disparo",
+    "resposta_api",
+  ] as const;
+
+  const handleExportCsv = useCallback(async () => {
+    setExportingCsv(true);
+    try {
+        const merged = { ...p, search: (si || p.search) ?? "" };
+      const all = await fetchAllReportPages(
+        getEnviosPendentes as (q: Record<string, unknown>) => Promise<{ records?: unknown[]; total_pages?: number }>,
+        merged as Record<string, unknown>,
+      );
+      if (!all.length) {
+        toast({ variant: "destructive", title: "Sem dados para exportar" });
+        return;
+      }
+      const csv = objectsToCsv(all, [...ENV_COLS]);
+      downloadCsvUtf8(`envios-${Date.now()}.csv`, csv);
+      toast({ title: "CSV gerado", description: `${all.length} linha(s).` });
+    } catch (e: unknown) {
+      toast({
+        variant: "destructive",
+        title: "Falha ao exportar",
+        description: e instanceof Error ? e.message : "Erro desconhecido",
+      });
+    } finally {
+      setExportingCsv(false);
+    }
+  }, [p, si, toast]);
 
   return (
     <div className="space-y-4">
@@ -261,6 +394,22 @@ function TabEnvios() {
         </Select>
         <Input type="date" value={p.date_from} onChange={(e) => setP((x: any) => ({ ...x, date_from: e.target.value, page: 1 }))} className="text-xs" />
         <Input type="date" value={p.date_to} onChange={(e) => setP((x: any) => ({ ...x, date_to: e.target.value, page: 1 }))} className="text-xs" />
+      </div>
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={isLoading || exportingCsv}
+          onClick={() => void handleExportCsv()}
+        >
+          {exportingCsv ? (
+            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+          ) : (
+            <Download className="h-4 w-4 mr-2" />
+          )}
+          Exportar (CSV)
+        </Button>
       </div>
       <Card><CardContent className="p-0"><div className="overflow-x-auto">
         <Table>
@@ -315,6 +464,48 @@ function TabResumo() {
   const totalErros = byStatus.filter((s: any) => ["erro", "erro_envio", "negado"].includes(s.status)).reduce((a: number, s: any) => a + Number(s.total), 0);
   const totalPendentes = byStatus.filter((s: any) => ["pendente", "pendente_aprovacao", "processando"].includes(s.status)).reduce((a: number, s: any) => a + Number(s.total), 0);
 
+  const { toast } = useToast();
+
+  const exportCsvResumoPorStatus = useCallback(() => {
+    if (!byStatus.length) {
+      toast({ variant: "destructive", title: "Sem dados para exportar" });
+      return;
+    }
+    const rows = byStatus.map((s: any) => ({ status: String(s.status ?? ""), total: String(s.total ?? "") }));
+    downloadCsvUtf8(`resumo-por-status-${dateFrom}_${dateTo}.csv`, objectsToCsv(rows, ["status", "total"]));
+    toast({ title: "CSV exportado", description: `${rows.length} linha(s).` });
+  }, [byStatus, dateFrom, dateTo, toast]);
+
+  const exportCsvResumoPorFornecedor = useCallback(() => {
+    if (!byProvider.length) {
+      toast({ variant: "destructive", title: "Sem dados para exportar" });
+      return;
+    }
+    const rows = byProvider.map((pv: any) => ({
+      fornecedor: String(pv.fornecedor ?? ""),
+      total: String(pv.total ?? ""),
+      enviados: String(pv.enviados ?? ""),
+      erros: String(pv.erros ?? ""),
+    }));
+    downloadCsvUtf8(`resumo-por-fornecedor-${dateFrom}_${dateTo}.csv`, objectsToCsv(rows, ["fornecedor", "total", "enviados", "erros"]));
+    toast({ title: "CSV exportado", description: `${rows.length} linha(s).` });
+  }, [byProvider, dateFrom, dateTo, toast]);
+
+  const exportCsvEvolucaoDiaria = useCallback(() => {
+    if (!daily.length) {
+      toast({ variant: "destructive", title: "Sem dados para exportar" });
+      return;
+    }
+    const rows = daily.map((d: any) => {
+      const tot = Number(d.total) || 0;
+      const env = Number(d.enviados) || 0;
+      const taxa = tot > 0 ? (env / tot * 100).toFixed(1) : "0.0";
+      return { dia: String(d.dia ?? ""), total: String(d.total ?? ""), enviados: String(d.enviados ?? ""), taxa_pct: taxa };
+    });
+    downloadCsvUtf8(`resumo-evolucao-diaria-${dateFrom}_${dateTo}.csv`, objectsToCsv(rows, ["dia", "total", "enviados", "taxa_pct"]));
+    toast({ title: "CSV exportado", description: `${rows.length} linha(s).` });
+  }, [daily, dateFrom, dateTo, toast]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3 flex-wrap">
@@ -343,7 +534,12 @@ function TabResumo() {
 
       <div className="grid md:grid-cols-2 gap-6">
         <Card>
-          <CardHeader><CardTitle className="text-base">Por Status</CardTitle></CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+            <CardTitle className="text-base">Por Status</CardTitle>
+            <Button type="button" variant="outline" size="sm" disabled={isLoading} onClick={exportCsvResumoPorStatus}>
+              <Download className="h-4 w-4 mr-1" /> CSV
+            </Button>
+          </CardHeader>
           <CardContent>
             {isLoading ? <Skeleton className="h-40" /> : byStatus.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-4">Sem dados</p>
@@ -363,7 +559,12 @@ function TabResumo() {
         </Card>
 
         <Card>
-          <CardHeader><CardTitle className="text-base">Por Fornecedor</CardTitle></CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+            <CardTitle className="text-base">Por Fornecedor</CardTitle>
+            <Button type="button" variant="outline" size="sm" disabled={isLoading} onClick={exportCsvResumoPorFornecedor}>
+              <Download className="h-4 w-4 mr-1" /> CSV
+            </Button>
+          </CardHeader>
           <CardContent>
             {isLoading ? <Skeleton className="h-40" /> : byProvider.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-4">Sem dados</p>
@@ -386,7 +587,12 @@ function TabResumo() {
       </div>
 
       <Card>
-        <CardHeader><CardTitle className="text-base flex items-center gap-2"><TrendingUp className="h-4 w-4" /> Evolução Diária (últimos 30 dias)</CardTitle></CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base flex items-center gap-2"><TrendingUp className="h-4 w-4" /> Evolução Diária (últimos 30 dias)</CardTitle>
+          <Button type="button" variant="outline" size="sm" disabled={isLoading} onClick={exportCsvEvolucaoDiaria}>
+            <Download className="h-4 w-4 mr-1" /> CSV
+          </Button>
+        </CardHeader>
         <CardContent>
           {isLoading ? <Skeleton className="h-48" /> : daily.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-6">Sem dados no período</p>
@@ -441,13 +647,13 @@ export default function RelatoriosDetalhados() {
         <TabsContent value="summary"><TabResumo /></TabsContent>
         <TabsContent value="envios"><TabEnvios /></TabsContent>
         <TabsContent value="eventos">
-          <DynamicTableTab queryKey="rpt-ev-envios" fetchFn={getEventosEnvios} label="wp_eventos_envios" />
+          <DynamicTableTab queryKey="rpt-ev-envios" fetchFn={getEventosEnvios} label="wp_eventos_envios" exportBasename="eventos_envios" />
         </TabsContent>
         <TabsContent value="indicadores">
-          <DynamicTableTab queryKey="rpt-indicadores" fetchFn={getEventosIndicadores} label="wp_eventos_indicadores" />
+          <DynamicTableTab queryKey="rpt-indicadores" fetchFn={getEventosIndicadores} label="wp_eventos_indicadores" exportBasename="eventos_indicadores" />
         </TabsContent>
         <TabsContent value="tempos">
-          <DynamicTableTab queryKey="rpt-tempos" fetchFn={getEventosTempos} label="wp_eventos_tempos" />
+          <DynamicTableTab queryKey="rpt-tempos" fetchFn={getEventosTempos} label="wp_eventos_tempos" exportBasename="eventos_tempos" />
         </TabsContent>
       </Tabs>
     </div>

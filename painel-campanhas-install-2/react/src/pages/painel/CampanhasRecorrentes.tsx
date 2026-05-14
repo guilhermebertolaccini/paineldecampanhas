@@ -41,6 +41,7 @@ import {
   getFilters as fetchTableFilterDefs,
   updateRecurringCampaignFilters,
   type RecurringExecuteTemplatePayload,
+  type RecurringExecuteThrottlePayload,
 } from "@/lib/api";
 import {
   Dialog,
@@ -54,7 +55,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RecurringCampaignCreateForm } from "@/components/campaign/RecurringCampaignCreateForm";
-import { RecurringExecuteTemplateDialog } from "@/components/campaign/RecurringExecuteTemplateDialog";
+import { RecurringExecuteTemplateDialog, type RecurringExecuteSubmitOptions } from "@/components/campaign/RecurringExecuteTemplateDialog";
 import { FilterBuilder, type FilterItem } from "@/components/campaign/FilterBuilder";
 
 interface ParsedFilter {
@@ -327,6 +328,11 @@ export default function CampanhasRecorrentes() {
       providers_config_parsed: c.providers_config_parsed as Record<string, unknown> | undefined,
       template_meta: c.template_meta,
       variables_map: c.variables_map,
+      throttling_type: c.throttling_type,
+      throttling_config:
+        typeof c.throttling_config === "string"
+          ? c.throttling_config
+          : JSON.stringify(c.throttling_config ?? {}),
     };
   }, [execCampaignTarget]);
   const [refreshedEstimates, setRefreshedEstimates] = useState<
@@ -375,12 +381,14 @@ export default function CampanhasRecorrentes() {
     mutationFn: (vars: {
       id: string;
       templatePayload: RecurringExecuteTemplatePayload | null;
+      throttleOverlay: RecurringExecuteThrottlePayload;
     }) =>
       executeRecurringNow(
         vars.id,
         vars.templatePayload === null || vars.templatePayload === undefined
           ? undefined
           : vars.templatePayload,
+        vars.throttleOverlay,
       ),
     onSuccess: () => {
       toast({
@@ -1144,11 +1152,12 @@ export default function CampanhasRecorrentes() {
         }}
         campaign={execCampaignForDialog}
         isExecuting={executeMutation.isPending}
-        onExecute={(tpl) => {
+        onExecute={(opts: RecurringExecuteSubmitOptions) => {
           if (!execCampaignTarget) return;
           executeMutation.mutate({
             id: String(execCampaignTarget.id),
-            templatePayload: tpl,
+            templatePayload: opts.templatePayload,
+            throttleOverlay: opts.throttleOverlay,
           });
         }}
       />
