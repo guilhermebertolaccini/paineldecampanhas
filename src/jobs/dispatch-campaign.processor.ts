@@ -1,5 +1,5 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
+import { Job, Queue } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { DigitalFunnelMssqlService } from '../sql-server/digital-funnel-mssql.service';
